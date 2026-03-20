@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
-use crate::chain_config::{MAX_QC_BLOB_BYTES, QC_BLOB_TTL_EPOCHS};
+use crate::core::chain_config::{MAX_QC_BLOB_BYTES, QC_BLOB_TTL_EPOCHS};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QcBlob {

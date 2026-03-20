@@ -1,6 +1,6 @@
 use crate::consensus::pos::SlashingEvidence;
-use crate::storage::Storage;
-use crate::transaction::{Transaction, TransactionType};
+use crate::storage::db::Storage;
+use crate::core::transaction::{Transaction, TransactionType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 pub const MIN_TX_FEE: u64 = 1;
@@ -135,7 +135,7 @@ impl AccountState {
         let mut prefix_bytes = b"BDLM_STATE_V1".to_vec();
         prefix_bytes.extend(bytes);
 
-        crate::hash::calculate_hash(&prefix_bytes)
+        crate::core::hash::calculate_hash(&prefix_bytes)
     }
     pub fn init_genesis(&mut self, genesis_pubkey: &str) {
         let account = Account::with_balance(genesis_pubkey.to_string(), GENESIS_BALANCE);
@@ -308,117 +308,6 @@ impl AccountState {
             }
         }
     }
-
-    pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), String> {
-        if tx.from == "genesis" {
-            return Ok(());
-        }
-
-        let total_cost = tx.total_cost();
-
-        {
-            let sender_account = self.get_or_create(&tx.from);
-            if sender_account.balance < total_cost {
-                return Err("Insufficient balance".into());
-            }
-        }
-
-        match tx.tx_type {
-            TransactionType::Transfer => {
-                let sender = self.get_or_create(&tx.from);
-                sender.balance -= total_cost;
-                sender.nonce += 1;
-
-                let receiver = self.get_or_create(&tx.to);
-                receiver.balance += tx.amount;
-            }
-            TransactionType::Stake => {
-                let sender = self.get_or_create(&tx.from);
-                sender.balance -= total_cost;
-                sender.nonce += 1;
-
-                let stake_amount = tx.amount;
-                let validator = self
-                    .validators
-                    .entry(tx.from.clone())
-                    .or_insert_with(|| Validator::new(tx.from.clone(), 0));
-                validator.stake += stake_amount;
-                validator.active = true;
-                println!("Stake added: {} now has {}", tx.from, validator.stake);
-            }
-            TransactionType::Unstake => {
-                let sender_start_balance = self.get_balance(&tx.from);
-                if sender_start_balance < tx.fee {
-                    return Err("Insufficient balance for fee".into());
-                }
-
-                if let Some(validator) = self.validators.get_mut(&tx.from) {
-                    if validator.stake < tx.amount {
-                        return Err("Insufficient stake".into());
-                    }
-                    validator.stake -= tx.amount;
-                    if validator.stake == 0 {
-                        validator.active = false;
-                    }
-                    println!(
-                        "Unstake queued: {} amount {} releases at epoch {}",
-                        tx.from,
-                        tx.amount,
-                        self.epoch_index + UNBONDING_EPOCHS
-                    );
-                } else {
-                    return Err("Not a validator".into());
-                }
-
-                self.unbonding_queue.push(UnbondingEntry {
-                    address: tx.from.clone(),
-                    amount: tx.amount,
-                    release_epoch: self.epoch_index + UNBONDING_EPOCHS,
-                });
-
-                let sender = self.get_or_create(&tx.from);
-                sender.balance -= tx.fee;
-                sender.nonce += 1;
-            }
-            TransactionType::Vote => {
-                let sender = self.get_or_create(&tx.from);
-                sender.balance -= tx.fee;
-                sender.nonce += 1;
-
-                println!("Vote TX processed from {}", tx.from);
-            }
-        }
-
-        Ok(())
-    }
-    pub fn apply_block(
-        &mut self,
-        transactions: &[Transaction],
-        block_producer: Option<&str>,
-    ) -> Result<(), String> {
-        let mut total_fees: u64 = 0;
-        for tx in transactions {
-            if tx.from == "genesis" {
-                continue;
-            }
-            if let Err(e) = self.apply_transaction(tx) {
-                return Err(format!("TX apply failed: {}", e));
-            }
-            total_fees += tx.fee;
-        }
-        if let Some(producer) = block_producer {
-            if total_fees > 0 {
-                let producer_account = self.get_or_create(producer);
-                producer_account.balance += total_fees;
-                println!(
-                    "Block producer {} received {} in fees",
-                    &producer[..16.min(producer.len())],
-                    total_fees
-                );
-            }
-        }
-        Ok(())
-    }
     pub fn add_balance(&mut self, public_key: &str, amount: u64) {
         let account = self.get_or_create(public_key);
         account.balance += amount;
@@ -507,7 +396,7 @@ impl Default for AccountState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::KeyPair;
+    use crate::crypto::primitives::KeyPair;
     #[test]
     fn test_new_account() {
         let account = Account::new("pubkey123".into());
@@ -542,7 +431,7 @@ mod tests {
         );
         tx.sign(&alice);
         assert!(state.validate_transaction(&tx).is_ok());
-        state.apply_transaction(&tx).unwrap();
+        crate::execution::executor::Executor::apply_transaction(&mut state, &tx).unwrap();
         assert_eq!(state.get_balance(&alice.public_key_hex()), 895);
         assert_eq!(state.get_balance(&bob.public_key_hex()), 100);
         assert_eq!(state.get_nonce(&alice.public_key_hex()), 1);
@@ -578,7 +467,7 @@ mod tests {
             Transaction::new_with_fee(alice.public_key_hex(), "bob".into(), 50, 1, 0, vec![]);
         tx1.sign(&alice);
         assert!(state.validate_transaction(&tx1).is_ok());
-        state.apply_transaction(&tx1).unwrap();
+        crate::execution::executor::Executor::apply_transaction(&mut state, &tx1).unwrap();
         assert!(state.validate_transaction(&tx1).is_err());
         let mut tx2 =
             Transaction::new_with_fee(alice.public_key_hex(), "bob".into(), 50, 1, 1, vec![]);

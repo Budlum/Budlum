@@ -1,11 +1,13 @@
-use crate::account::AccountState;
-use crate::consensus::finality::{ValidatorEntry, ValidatorSetSnapshot};
+use crate::core::account::AccountState;
+use crate::chain::finality::{ValidatorEntry, ValidatorSetSnapshot};
 use crate::consensus::ConsensusEngine;
-use crate::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
-use crate::mempool::{Mempool, MempoolConfig};
-use crate::snapshot::PruningManager;
-use crate::storage::Storage;
-use crate::{Block, Transaction};
+use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
+use crate::mempool::pool::{Mempool, MempoolConfig};
+use crate::chain::snapshot::PruningManager;
+use crate::storage::db::Storage;
+use crate::core::block::Block;
+use crate::core::transaction::Transaction;
+use crate::execution::executor::Executor;
 use std::sync::Arc;
 use tracing::info;
 
@@ -101,7 +103,7 @@ impl Blockchain {
         );
 
         for block in chain_vec.iter().skip(start_index) {
-            if let Err(e) = state.apply_block(&block.transactions, block.producer.as_deref()) {
+            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_deref()) {
                 println!("CRITICAL: Failed to apply block {} during init: {}. Corrupted database, exiting.", block.index, e);
                 std::process::exit(1);
             }
@@ -178,7 +180,7 @@ impl Blockchain {
         let pending_txs = self.mempool.get_sorted_transactions(1000);
         for tx in &pending_txs {
             if let Ok(_) = temp_state.validate_transaction(tx) {
-                if let Ok(_) = temp_state.apply_transaction(tx) {
+                if let Ok(_) = Executor::apply_transaction(&mut temp_state, tx) {
                     valid_txs.push(tx.clone());
                 }
             } else {
@@ -197,7 +199,7 @@ impl Blockchain {
         block.producer = Some(producer_address.clone());
 
         let mut state_for_root = self.state.clone();
-        if let Err(e) = state_for_root.apply_block(&block.transactions, block.producer.as_deref()) {
+        if let Err(e) = Executor::apply_block(&mut state_for_root, &block.transactions, block.producer.as_deref()) {
             println!(
                 "Failed to apply block inside produce_block (state for root): {}",
                 e
@@ -219,9 +221,7 @@ impl Blockchain {
             let _ = store.save_canonical_height(block.index);
         }
 
-        if let Err(e) = self
-            .state
-            .apply_block(&block.transactions, block.producer.as_deref())
+        if let Err(e) = Executor::apply_block(&mut self.state, &block.transactions, block.producer.as_deref())
         {
             println!("Failed to apply block to canonical state: {}", e);
             return;
@@ -335,13 +335,13 @@ impl Blockchain {
                     return Err(format!("Invalid transaction at index {}: {}", i, e));
                 }
             }
-            if let Err(e) = temp_state.apply_transaction(tx) {
+            if let Err(e) = Executor::apply_transaction(&mut temp_state, tx) {
                 return Err(format!("Failed to apply transaction at index {}: {}", i, e));
             }
         }
 
         let mut commit_state = self.state.clone();
-        if let Err(e) = commit_state.apply_block(&block.transactions, block.producer.as_deref()) {
+        if let Err(e) = Executor::apply_block(&mut commit_state, &block.transactions, block.producer.as_deref()) {
             return Err(format!("Failed to apply block: {}", e));
         }
 
@@ -387,7 +387,7 @@ impl Blockchain {
             let last_block = self.chain.last().unwrap();
             let height = last_block.index;
             if pruning_manager.should_create_snapshot(height) {
-                let snapshot = crate::snapshot::StateSnapshot::from_state(
+                let snapshot = crate::chain::snapshot::StateSnapshot::from_state(
                     height,
                     last_block.hash.clone(),
                     self.chain_id,
@@ -544,7 +544,7 @@ impl Blockchain {
     fn rebuild_state(chain: &[Block]) -> Result<AccountState, String> {
         let mut state = AccountState::new();
         for block in chain.iter() {
-            if let Err(e) = state.apply_block(&block.transactions, block.producer.as_deref()) {
+            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_deref()) {
                 return Err(format!(
                     "Failed to rebuild state at block {}: {}",
                     block.index, e
@@ -567,13 +567,13 @@ impl Blockchain {
     }
     pub fn handle_finality_cert(
         &mut self,
-        cert: crate::consensus::finality::FinalityCert,
+        cert: crate::chain::finality::FinalityCert,
     ) -> Result<(), String> {
         if cert.checkpoint_height <= self.finalized_height {
             return Ok(());
         }
 
-        if !crate::consensus::finality::is_checkpoint_height(cert.checkpoint_height) {
+        if !crate::chain::finality::is_checkpoint_height(cert.checkpoint_height) {
             return Err(format!(
                 "Height {} is not a valid checkpoint height",
                 cert.checkpoint_height
@@ -648,7 +648,7 @@ impl Clone for Blockchain {
 mod tests {
     use super::*;
     use crate::consensus::PoWEngine;
-    use crate::crypto::KeyPair;
+    use crate::crypto::primitives::KeyPair;
 
     #[test]
     fn test_blockchain_with_pow() {
@@ -708,11 +708,11 @@ mod tests {
 
     #[test]
     fn test_slashing_execution() {
-        use crate::block::BlockHeader;
+        use crate::core::block::BlockHeader;
         use crate::consensus::pos::{PoSConfig, SlashingEvidence};
         use crate::consensus::PoSEngine;
 
-        let alice_keys = crate::crypto::ValidatorKeys::generate().unwrap();
+        let alice_keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
         let alice_key = alice_keys.sig_key.clone();
         let alice_vrf_pub = alice_keys.vrf_key.public.to_bytes().to_vec();
         let alice_pub = alice_key.public_key_hex();

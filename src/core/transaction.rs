@@ -1,5 +1,5 @@
-use crate::crypto::{verify_signature, KeyPair};
-use crate::hash::calculate_hash;
+use crate::crypto::primitives::{verify_signature, KeyPair};
+use crate::core::hash::calculate_hash;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 

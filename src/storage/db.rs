@@ -1,4 +1,4 @@
-use crate::Block;
+use crate::core::block::Block;
 use sled::Db;
 use std::str::from_utf8;
 #[derive(Clone, Debug)]
@@ -90,7 +90,7 @@ impl Storage {
     pub fn save_finality_cert(
         &self,
         height: u64,
-        cert: &crate::consensus::finality::FinalityCert,
+        cert: &crate::chain::finality::FinalityCert,
     ) -> std::io::Result<()> {
         let key = format!("FINALITY_CERT:{}", height);
         let val = serde_json::to_vec(cert)?;
@@ -101,7 +101,7 @@ impl Storage {
     pub fn get_finality_cert(
         &self,
         height: u64,
-    ) -> std::io::Result<Option<crate::consensus::finality::FinalityCert>> {
+    ) -> std::io::Result<Option<crate::chain::finality::FinalityCert>> {
         let key = format!("FINALITY_CERT:{}", height);
         if let Some(val) = self.db.get(key.as_bytes())? {
             let cert = serde_json::from_slice(&val)?;

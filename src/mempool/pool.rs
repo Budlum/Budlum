@@ -1,4 +1,4 @@
-use crate::transaction::Transaction;
+use crate::core::transaction::Transaction;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone)]

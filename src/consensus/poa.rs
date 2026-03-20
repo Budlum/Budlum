@@ -1,7 +1,6 @@
 use super::{ConsensusEngine, ConsensusError};
-use crate::account::{AccountState, Validator};
-use crate::Block;
-use std::collections::HashMap;
+use crate::core::account::{AccountState, Validator};
+use crate::core::block::Block;
 #[derive(Debug, Clone)]
 pub struct PoAConfig {
     pub block_period: u64,
@@ -20,7 +19,7 @@ impl Default for PoAConfig {
     }
 }
 
-use crate::crypto::KeyPair;
+use crate::crypto::primitives::KeyPair;
 
 pub struct PoAEngine {
     pub config: PoAConfig,
@@ -80,9 +79,10 @@ impl ConsensusEngine for PoAEngine {
                 &expected_signer_addr[..16.min(expected_signer_addr.len())]
             );
 
-            if let Some(keypair) = &self.keypair {
-                if keypair.public_key_hex() == expected_signer_addr {
-                    block.sign(keypair);
+            if let Some(kp) = &self.keypair {
+                let kp: &KeyPair = kp;
+                if kp.public_key_hex() == expected_signer_addr {
+                    block.sign(kp);
                     println!(
                         " PoA: Block {} signed by us ({})",
                         block.index,
@@ -184,8 +184,8 @@ impl ConsensusEngine for PoAEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::account::{AccountState, Validator};
-    use crate::crypto::KeyPair;
+    use crate::core::account::{AccountState, Validator};
+    use crate::crypto::primitives::KeyPair;
 
     #[test]
     fn test_proposer_rotation() {

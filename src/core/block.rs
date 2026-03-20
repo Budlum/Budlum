@@ -1,6 +1,6 @@
-use crate::crypto::{verify_signature, KeyPair};
-use crate::hash::hash_fields;
-use crate::transaction::Transaction;
+use crate::crypto::primitives::{verify_signature, KeyPair};
+use crate::core::hash::hash_fields;
+use crate::core::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
@@ -176,7 +176,7 @@ impl Block {
                 let left = &chunk[0];
                 let right = if chunk.len() > 1 { &chunk[1] } else { left };
                 let combined = format!("{}{}", left, right);
-                next_level.push(hex::encode(crate::hash::calculate_hash(
+                next_level.push(hex::encode(crate::core::hash::calculate_hash(
                     combined.as_bytes(),
                 )));
             }

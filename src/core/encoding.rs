@@ -1,5 +1,5 @@
-use crate::block::{Block, BlockHeader};
-use crate::transaction::Transaction;
+use crate::core::block::{Block, BlockHeader};
+use crate::core::transaction::Transaction;
 
 pub const PROTOCOL_VERSION_MAJOR: u32 = 1;
 

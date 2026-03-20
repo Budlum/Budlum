@@ -1,6 +1,6 @@
 use super::{ConsensusEngine, ConsensusError};
-use crate::account::AccountState;
-use crate::Block;
+use crate::core::account::AccountState;
+use crate::core::block::Block;
 use hex;
 use sha3::{Digest, Sha3_256};
 use std::collections::HashMap;
@@ -24,14 +24,14 @@ impl Default for PoSConfig {
             annual_reward_rate: 0.05,
             slashing_penalty: 0.10,
             double_sign_penalty: 0.50,
-            unbonding_epochs: crate::account::UNBONDING_EPOCHS,
+            unbonding_epochs: crate::core::account::UNBONDING_EPOCHS,
         }
     }
 }
 
 use serde::{Deserialize, Serialize};
 
-use crate::block::BlockHeader;
+use crate::core::block::BlockHeader;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SlashingEvidence {
@@ -62,7 +62,7 @@ pub struct Checkpoint {
     pub block_hash: String,
     pub timestamp: u128,
 }
-use crate::crypto::{KeyPair, ValidatorKeys};
+use crate::crypto::primitives::ValidatorKeys;
 
 use std::sync::RwLock;
 
@@ -166,7 +166,7 @@ impl PoSEngine {
         if total_stake == 0 || stake == 0 {
             return 0;
         }
-        let prob = (stake as f64 / total_stake as f64) * crate::chain_config::VRF_BASE_PROB;
+        let prob = (stake as f64 / total_stake as f64) * crate::core::chain_config::VRF_BASE_PROB;
         if prob >= 1.0 {
             u64::MAX
         } else {
@@ -267,7 +267,7 @@ impl PoSEngine {
 impl ConsensusEngine for PoSEngine {
     fn prepare_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError> {
         let slot = block.index;
-        let epoch = slot / crate::chain_config::EPOCH_LEN;
+        let epoch = slot / crate::core::chain_config::EPOCH_LEN;
         block.epoch = epoch;
         block.slot = slot;
 
@@ -535,9 +535,10 @@ impl ConsensusEngine for PoSEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::account::AccountState;
-    use crate::crypto::{KeyPair, ValidatorKeys};
-    use crate::transaction::Transaction;
+    use crate::core::account::AccountState;
+    use crate::crypto::primitives::{KeyPair, ValidatorKeys};
+    use crate::core::transaction::Transaction;
+    use crate::execution::executor::Executor;
 
     fn create_stake_tx(keypair: &KeyPair, amount: u64, nonce: u64) -> Transaction {
         let mut tx = Transaction::new_stake(keypair.public_key_hex(), amount, nonce);
@@ -552,7 +553,7 @@ mod tests {
         state.add_balance(&alice.sig_key.public_key_hex(), 2000);
 
         let tx = create_stake_tx(&alice.sig_key, 1000, 1);
-        state.apply_transaction(&tx).unwrap();
+        Executor::apply_transaction(&mut state, &tx).unwrap();
 
         let engine = PoSEngine::new(PoSConfig::default(), None);
         let threshold = engine.calculate_vrf_threshold(1000, 1000);
@@ -597,12 +598,12 @@ mod tests {
         let engine = PoSEngine::new(config, None);
 
         let tx = create_stake_tx(&alice, 500, 1);
-        state.apply_transaction(&tx).unwrap();
+        Executor::apply_transaction(&mut state, &tx).unwrap();
 
         assert!(!engine.is_validator(&alice.public_key_hex(), &state));
 
         let tx2 = create_stake_tx(&alice, 500, 2);
-        state.apply_transaction(&tx2).unwrap();
+        Executor::apply_transaction(&mut state, &tx2).unwrap();
 
         assert!(engine.is_validator(&alice.public_key_hex(), &state));
     }

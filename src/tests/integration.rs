@@ -1,13 +1,13 @@
 #[cfg(test)]
 mod integration_tests {
-    use crate::account::{AccountState, Validator};
-    use crate::block::Block;
-    use crate::blockchain::Blockchain;
+    use crate::core::account::{AccountState, Validator};
+    use crate::core::block::Block;
+    use crate::chain::blockchain::Blockchain;
     use crate::consensus::poa::PoAConfig;
     use crate::consensus::pos::PoSConfig;
-    use crate::consensus::{ConsensusEngine, PoAEngine, PoSEngine, PoWEngine};
-    use crate::crypto::KeyPair;
-    use crate::transaction::Transaction;
+    use crate::consensus::{ConsensusEngine, poa::PoAEngine, pos::PoSEngine, pow::PoWEngine};
+    use crate::crypto::primitives::KeyPair;
+    use crate::core::transaction::Transaction;
     use std::sync::Arc;
 
     #[test]
@@ -57,7 +57,7 @@ mod integration_tests {
 
     #[test]
     fn test_pos_requires_signature() {
-        let keys = crate::crypto::ValidatorKeys::generate().unwrap();
+        let keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
         let keypair = keys.sig_key.clone();
         let validator_pubkey = keypair.public_key_hex();
 
@@ -245,9 +245,9 @@ mod integration_tests {
     }
     #[test]
     fn test_finality_checkpoint_enforcement() {
-        use crate::consensus::finality::{FinalityCert, ValidatorEntry, ValidatorSetSnapshot};
+        use crate::chain::finality::{FinalityCert, ValidatorEntry, ValidatorSetSnapshot};
 
-        let keys = crate::crypto::ValidatorKeys::generate().unwrap();
+        let keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
         let sig_key = keys.sig_key.clone();
         let pubkey = sig_key.public_key_hex();
 
@@ -255,7 +255,7 @@ mod integration_tests {
         let mut blockchain = Blockchain::new(consensus, None, 1337, None);
         blockchain.init_genesis_account(&pubkey);
 
-        let mut validator = crate::account::Validator::new(pubkey.clone(), 1000);
+        let mut validator = crate::core::account::Validator::new(pubkey.clone(), 1000);
         validator.active = true;
         blockchain
             .state

@@ -1,6 +1,7 @@
 use crate::consensus::pos::SlashingEvidence;
 use crate::network::protocol::NetworkMessage;
-use crate::{Block, BlockHeader, Transaction};
+use crate::core::block::{Block, BlockHeader};
+use crate::core::transaction::{Transaction, TransactionType};
 use prost::Message;
 
 pub mod pb {
@@ -21,16 +22,16 @@ impl From<&Transaction> for pb::ProtoTransaction {
             signature: tx.signature.clone().unwrap_or_default(),
             chain_id: tx.chain_id,
             tx_type: match tx.tx_type {
-                crate::transaction::TransactionType::Transfer => {
+                TransactionType::Transfer => {
                     pb::ProtoTransactionType::Transfer as i32
                 }
-                crate::transaction::TransactionType::Stake => {
+                TransactionType::Stake => {
                     pb::ProtoTransactionType::Stake as i32
                 }
-                crate::transaction::TransactionType::Unstake => {
+                TransactionType::Unstake => {
                     pb::ProtoTransactionType::Unstake as i32
                 }
-                crate::transaction::TransactionType::Vote => pb::ProtoTransactionType::Vote as i32,
+                TransactionType::Vote => pb::ProtoTransactionType::Vote as i32,
             },
         }
     }
@@ -49,10 +50,10 @@ impl TryFrom<pb::ProtoTransaction> for Transaction {
             Some(proto.signature)
         };
         let tx_type = match pb::ProtoTransactionType::try_from(proto.tx_type) {
-            Ok(pb::ProtoTransactionType::Transfer) => crate::transaction::TransactionType::Transfer,
-            Ok(pb::ProtoTransactionType::Stake) => crate::transaction::TransactionType::Stake,
-            Ok(pb::ProtoTransactionType::Unstake) => crate::transaction::TransactionType::Unstake,
-            Ok(pb::ProtoTransactionType::Vote) => crate::transaction::TransactionType::Vote,
+            Ok(pb::ProtoTransactionType::Transfer) => TransactionType::Transfer,
+            Ok(pb::ProtoTransactionType::Stake) => TransactionType::Stake,
+            Ok(pb::ProtoTransactionType::Unstake) => TransactionType::Unstake,
+            Ok(pb::ProtoTransactionType::Vote) => TransactionType::Vote,
             Err(_) => return Err("Invalid transaction type in proto payload".into()),
         };
 
@@ -566,7 +567,7 @@ impl TryFrom<pb::ProtoNetworkMessage> for NetworkMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::KeyPair;
+    use crate::crypto::primitives::KeyPair;
 
     #[test]
     fn test_transaction_proto_conversion() {

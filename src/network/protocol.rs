@@ -1,5 +1,5 @@
-use crate::encoding::PROTOCOL_VERSION_MAJOR;
-use crate::{Block, BlockHeader, Transaction};
+use crate::core::block::{Block, BlockHeader};
+use crate::core::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;

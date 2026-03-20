@@ -23,7 +23,7 @@ pub struct BudlumBehaviour {
     kad: Kademlia<MemoryStore>,
 }
 use crate::network::peer_manager::PeerManager;
-use crate::Blockchain;
+use crate::chain::blockchain::Blockchain;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 pub enum NodeCommand {
@@ -49,7 +49,7 @@ impl NodeClient {
 }
 #[tokio::test]
 async fn test_node_creation() {
-    use crate::consensus::PoWEngine;
+    use crate::consensus::pow::PoWEngine;
     let consensus = std::sync::Arc::new(PoWEngine::new(2));
     let blockchain = Arc::new(Mutex::new(Blockchain::new(consensus, None, 1337, None)));
     let node = Node::new(blockchain);
@@ -243,8 +243,8 @@ impl Node {
                             let chain = self.blockchain.lock().unwrap_or_else(|e| { tracing::error!("Blockchain lock poisoned: {}", e); std::process::exit(1); });
 
                             let handshake = NetworkMessage::Handshake {
-                                version_major: crate::encoding::PROTOCOL_VERSION_MAJOR,
-                                version_minor: crate::encoding::PROTOCOL_VERSION_MINOR,
+                                version_major: crate::core::encoding::PROTOCOL_VERSION_MAJOR,
+                                version_minor: crate::core::encoding::PROTOCOL_VERSION_MINOR,
                                 chain_id: chain.chain_id,
                                 best_height: chain.chain.len() as u64,
                                 validator_set_hash: chain.get_validator_set_hash(),
@@ -384,7 +384,7 @@ impl Node {
                                         let end_idx = (start_idx + limit as usize).min(chain.chain.len());
                                         let headers: Vec<_> = chain.chain[start_idx..end_idx]
                                             .iter()
-                                            .map(|b| crate::BlockHeader::from_block(b))
+                                            .map(|b| crate::core::block::BlockHeader::from_block(b))
                                             .collect();
 
                                         info!("Sending {} headers to {}", headers.len(), peer_id);
@@ -559,8 +559,8 @@ impl Node {
 
                                         let chain = self.blockchain.lock().unwrap_or_else(|e| { tracing::error!("Blockchain lock poisoned: {}", e); std::process::exit(1); });
                                         let response = NetworkMessage::HandshakeAck {
-                                            version_major: crate::encoding::PROTOCOL_VERSION_MAJOR,
-                                            version_minor: crate::encoding::PROTOCOL_VERSION_MINOR,
+                                            version_major: crate::core::encoding::PROTOCOL_VERSION_MAJOR,
+                                            version_minor: crate::core::encoding::PROTOCOL_VERSION_MINOR,
                                             chain_id: chain.chain_id,
                                             best_height: chain.chain.len() as u64,
                                             validator_set_hash: chain.get_validator_set_hash(),
@@ -613,7 +613,7 @@ impl Node {
                                         info!("FinalityCert from {}: epoch={}, height={}, hash={}...",
                                             peer_id, epoch, checkpoint_height, &checkpoint_hash[..16.min(checkpoint_hash.len())]);
 
-                                        let cert = crate::consensus::finality::FinalityCert {
+                                        let cert = crate::chain::finality::FinalityCert {
                                             epoch,
                                             checkpoint_height,
                                             checkpoint_hash,

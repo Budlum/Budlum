@@ -1,5 +1,5 @@
-use crate::block::{Block, DEFAULT_CHAIN_ID};
-use crate::transaction::Transaction;
+use crate::core::block::{Block, DEFAULT_CHAIN_ID};
+use crate::core::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 
 pub const BLOCK_REWARD: u64 = 50;

@@ -1,6 +1,6 @@
 use super::{ConsensusEngine, ConsensusError};
-use crate::account::AccountState;
-use crate::Block;
+use crate::core::account::AccountState;
+use crate::core::block::Block;
 use std::sync::RwLock;
 #[derive(Debug, Clone)]
 pub struct PoWConfig {

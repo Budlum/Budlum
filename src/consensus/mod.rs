@@ -1,12 +1,12 @@
-pub mod finality;
 pub mod poa;
 pub mod pos;
-mod pow;
+pub mod pow;
 pub mod qc;
-use crate::Block;
+pub mod slashing;
+use crate::core::block::Block;
 pub use poa::PoAEngine;
 pub use pos::PoSEngine;
-pub use pow::PoWEngine;
+pub use pow::{PoWConfig, PoWEngine};
 use std::error::Error;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,7 +24,7 @@ pub const MIN_BLOCK_INTERVAL_MS: u128 = 1000;
 pub const MAX_BLOCK_SIZE: usize = 1_000_000;
 pub const MAX_TRANSACTIONS_PER_BLOCK: usize = 5000;
 pub const MAX_REORG_DEPTH: usize = 100;
-use crate::account::AccountState;
+use crate::core::account::AccountState;
 
 pub trait ConsensusEngine: Send + Sync {
     fn prepare_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError>;
