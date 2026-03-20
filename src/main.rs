@@ -37,16 +37,27 @@ async fn main() {
         return;
     }
 
+    let network = config.network;
+    let port = config.port.unwrap_or(network.default_port());
+    let chain_id = config.chain_id.unwrap_or(network.chain_id().value());
+    let consensus_type = config.consensus.unwrap_or(match network {
+        budlum_core::core::chain_config::Network::Mainnet => ConsensusType::PoS,
+        budlum_core::core::chain_config::Network::Testnet => ConsensusType::PoS,
+        budlum_core::core::chain_config::Network::Devnet => ConsensusType::PoW,
+    });
+
     println!("Budlum Node - v0.2.0 (Framework Edition)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Configuration:");
-    println!("   Port: {}", config.port);
-    println!("   Consensus: {:?}", config.consensus);
+    println!("   Network: {}", network);
+    println!("   Chain ID: {}", chain_id);
+    println!("   Port: {}", port);
+    println!("   Consensus: {:?}", consensus_type);
     println!("   Privacy: {:?}", config.privacy);
     println!("   DB Path: {}", config.db_path);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
-    let consensus: Arc<dyn ConsensusEngine> = match config.consensus {
+    let consensus: Arc<dyn ConsensusEngine> = match consensus_type {
         ConsensusType::PoW => {
             println!(" PoW mode - difficulty: {}", config.difficulty);
             Arc::new(PoWEngine::new(config.difficulty))
@@ -92,11 +103,11 @@ async fn main() {
     let blockchain = Arc::new(Mutex::new(Blockchain::new(
         consensus,
         storage,
-        config.chain_id,
+        chain_id,
         Some(pruning_manager),
     )));
 
-    if let Some(_keys) = match config.consensus {
+    if let Some(_keys) = match consensus_type {
         ConsensusType::PoS => {
            let mut bc = blockchain.lock().unwrap();
            if let Some(ref v_path) = config.validator_key_file {
@@ -117,7 +128,7 @@ async fn main() {
        
     }
 
-    if let ConsensusType::PoA = config.consensus {
+    if let Some(ConsensusType::PoA) = config.consensus {
         let validators = config.load_validators();
         if !validators.is_empty() {
             println!("Initializing PoA validators: {:?}", validators);
@@ -133,12 +144,21 @@ async fn main() {
     }
 
     let mut node = Node::new(blockchain.clone()).unwrap();
+    
+    let mut bootstraps = Vec::new();
     if let Some(ref addr) = config.bootstrap {
-        if let Err(e) = node.bootstrap(addr) {
-            eprintln!("Failed to bootstrap: {}", e);
+        bootstraps.push(addr.clone());
+    } else {
+        bootstraps.extend(network.bootnodes());
+    }
+
+    for addr in bootstraps {
+        if let Err(e) = node.bootstrap(&addr) {
+            eprintln!("Failed to bootstrap from {}: {}", addr, e);
         }
     }
-    node.listen(config.port).unwrap();
+
+    node.listen(port).unwrap();
     if let Some(ref addr) = config.dial {
         node.dial(addr).expect("Failed to dial");
     }

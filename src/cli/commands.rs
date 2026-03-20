@@ -1,3 +1,4 @@
+use crate::core::chain_config::Network;
 use clap::Parser;
 use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
@@ -43,8 +44,10 @@ impl std::fmt::Display for PrivacyLevel {
 #[command(name = "budlum-core")]
 #[command(about = "Budlum privacy-focused blockchain node")]
 pub struct NodeConfig {
-    #[arg(long, default_value = "pow")]
-    pub consensus: ConsensusType,
+    #[arg(long, default_value = "devnet")]
+    pub network: Network,
+    #[arg(long)]
+    pub consensus: Option<ConsensusType>,
     #[arg(long, default_value = "2")]
     pub difficulty: usize,
     #[arg(long, default_value = "1000")]
@@ -53,8 +56,8 @@ pub struct NodeConfig {
     pub privacy: PrivacyLevel,
     #[arg(long, default_value = "11")]
     pub ring_size: usize,
-    #[arg(long, default_value = "4001")]
-    pub port: u16,
+    #[arg(long)]
+    pub port: Option<u16>,
     #[arg(long)]
     pub bootstrap: Option<String>,
     #[arg(long, default_value = "./data/budlum.db")]
@@ -65,8 +68,8 @@ pub struct NodeConfig {
     pub validator_address: Option<String>,
     #[arg(long)]
     pub dial: Option<String>,
-    #[arg(long, default_value = "1337")]
-    pub chain_id: u64,
+    #[arg(long)]
+    pub chain_id: Option<u64>,
     #[arg(long)]
     pub validator_key_file: Option<String>,
     #[arg(long)]
