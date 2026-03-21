@@ -11,6 +11,7 @@ use budlum_core::network::protocol::NetworkMessage;
 use budlum_core::storage::db::Storage;
 use budlum_core::chain::snapshot::PruningManager;
 use budlum_core::cli::{ConsensusType, NodeConfig};
+use budlum_core::rpc::RpcServer;
 
 use clap::Parser;
 use std::sync::{Arc, Mutex};
@@ -164,6 +165,17 @@ async fn main() {
     }
     let client = node.get_client();
     let peer_id = node.peer_id;
+
+    let rpc_addr = format!("{}:{}", config.rpc_host, config.rpc_port);
+    let rpc_server = RpcServer::new(blockchain.clone(), node.get_client());
+    tokio::spawn(async move {
+        if let Err(e) = rpc_server.run(rpc_addr.clone()).await {
+            eprintln!("RPC Server Error on {}: {}", rpc_addr, e);
+        } else {
+            println!("JSON-RPC Server running on {}", rpc_addr);
+        }
+    });
+
     tokio::select! {
         _ = node.run() => {},
         _ = async {

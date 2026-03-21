@@ -44,8 +44,22 @@ pub struct BudlumBehaviour {
 pub struct Node {
     pub swarm: Swarm<BudlumBehaviour>, // Ağ Motoru
     pub blockchain: Arc<Mutex<Blockchain>>, // Zincir Verisi (Paylaşımlı)
+    pub peer_manager: Arc<Mutex<PeerManager>>, // Eş Yönetimi
+    pub peer_count: Arc<AtomicUsize>, // Bağlı Eş Sayısı (Gerçek Zamanlı)
     command_rx: mpsc::Receiver<NodeCommand>, // İçerden gelen emirler
     // ...
+}
+```
+
+### Struct: `NodeClient`
+
+Dış modüllerin (örn: RPC Sunucusu) Düğüm ile güvenli bir şekilde konuşmasını sağlayan hafif bir "kumanda" yapısıdır.
+
+```rust
+pub struct NodeClient {
+    sender: mpsc::Sender<NodeCommand>,
+    pub peer_id: PeerId,
+    pub peer_count: Arc<AtomicUsize>,
 }
 ```
 
@@ -123,9 +137,16 @@ async fn handle_network_event(&mut self, event: SwarmEvent<BudlumBehaviourEvent>
                         self.blockchain.lock().unwrap().add_transaction(tx);
                     }
                     // ...
+                    // ...
                 }
             }
         }
+    }
+}
+```
+
+**Analiz: Peer Count Takibi**
+`run` döngüsü içinde `SwarmEvent::ConnectionEstablished` olduğunda `peer_count` artırılır, `ConnectionClosed` olduğunda azaltılır. Bu veri atomik olduğu için RPC sunucusu tarafından kilitlenme (lock) gerektirmeden anlık okunabilir.
         
         // Yeni biri bağlandığında (Connection Established)
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {

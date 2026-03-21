@@ -7,6 +7,7 @@ pub mod execution;
 pub mod mempool;
 pub mod network;
 pub mod storage;
+pub mod rpc;
 
 #[cfg(test)]
 pub mod tests;

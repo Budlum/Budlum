@@ -35,6 +35,7 @@ pub enum NodeCommand {
 pub struct NodeClient {
     sender: mpsc::Sender<NodeCommand>,
     pub peer_id: PeerId,
+    pub peer_count: Arc<AtomicUsize>,
 }
 impl NodeClient {
     pub async fn subscribe(&self, topic: String) {
@@ -55,6 +56,7 @@ async fn test_node_creation() {
     let node = Node::new(blockchain);
     assert!(node.is_ok());
 }
+use std::sync::atomic::{AtomicUsize, Ordering};
 pub struct Node {
     swarm: Swarm<BudlumBehaviour>,
     command_rx: mpsc::Receiver<NodeCommand>,
@@ -63,6 +65,7 @@ pub struct Node {
     pub blockchain: Arc<Mutex<Blockchain>>,
     pub peer_manager: Arc<Mutex<PeerManager>>,
     pub bootstrap_peers: Vec<String>,
+    pub peer_count: Arc<AtomicUsize>,
 }
 impl Node {
     pub fn new(blockchain: Arc<Mutex<Blockchain>>) -> Result<Self, Box<dyn Error>> {
@@ -119,6 +122,7 @@ impl Node {
             .build();
         let (command_tx, command_rx) = mpsc::channel(32);
         let peer_manager = Arc::new(Mutex::new(PeerManager::new()));
+        let peer_count = Arc::new(AtomicUsize::new(0));
         Ok(Node {
             swarm,
             peer_id,
@@ -127,6 +131,7 @@ impl Node {
             blockchain,
             peer_manager,
             bootstrap_peers: Vec::new(),
+            peer_count,
         })
     }
     pub fn new_with_bootstrap(
@@ -141,6 +146,7 @@ impl Node {
         NodeClient {
             sender: self.command_tx.clone(),
             peer_id: self.peer_id,
+            peer_count: self.peer_count.clone(),
         }
     }
     pub fn listen(&mut self, port: u16) -> Result<(), Box<dyn Error>> {
@@ -239,7 +245,8 @@ impl Node {
                             info!("Listening on {}", address);
                         }
                         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                            info!("Connected to {}", peer_id);
+                            self.peer_count.fetch_add(1, Ordering::SeqCst);
+                            info!("Connected to {}, Peers: {}", peer_id, self.peer_count.load(Ordering::SeqCst));
                             let chain = self.blockchain.lock().unwrap_or_else(|e| { tracing::error!("Blockchain lock poisoned: {}", e); std::process::exit(1); });
 
                             let handshake = NetworkMessage::Handshake {
@@ -273,7 +280,8 @@ impl Node {
                             }
                         }
                         SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                            warn!("Disconnected from {}", peer_id);
+                            self.peer_count.fetch_sub(1, Ordering::SeqCst);
+                            warn!("Disconnected from {}, Peers: {}", peer_id, self.peer_count.load(Ordering::SeqCst));
                         }
                         SwarmEvent::Behaviour(BudlumBehaviourEvent::Ping(event)) => {
                         }

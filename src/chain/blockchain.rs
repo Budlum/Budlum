@@ -156,6 +156,17 @@ impl Blockchain {
     pub fn last_block(&self) -> &Block {
         self.chain.last().expect("Chain should never be empty")
     }
+    pub fn get_transaction_by_hash(&self, hash: &str) -> Option<Transaction> {
+        for block in &self.chain {
+            if let Some(tx) = block.transactions.iter().find(|t| t.hash == hash) {
+                return Some(tx.clone());
+            }
+        }
+        self.mempool.get(hash).cloned()
+    }
+    pub fn get_nonce(&self, address: &str) -> u64 {
+        self.state.get_nonce(address)
+    }
 
     pub fn get_validator_set_hash(&self) -> String {
         let active_validators = self.state.get_active_validators();

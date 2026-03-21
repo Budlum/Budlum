@@ -74,6 +74,10 @@ pub struct NodeConfig {
     pub validator_key_file: Option<String>,
     #[arg(long)]
     pub gen_key: Option<String>,
+    #[arg(long, default_value = "127.0.0.1")]
+    pub rpc_host: String,
+    #[arg(long, default_value = "8545")]
+    pub rpc_port: u16,
 }
 impl NodeConfig {
     pub fn load_validators(&self) -> Vec<String> {

@@ -2,7 +2,7 @@
 
 Bu bölüm, blok zincirinin en temel yapı taşı olan **BLOK** kavramını, kaynak koddaki her satırın neden yazıldığını açıklayarak öğretir.
 
-Kaynak Dosya: `src/block.rs`
+Kaynak Dosya: `src/core/block.rs`
 
 ---
 

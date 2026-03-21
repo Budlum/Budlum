@@ -43,9 +43,21 @@ Bilgisayarların ortak dili.
 
 ### 5. [Bölüm 5: Depolama ve Verim](ch05_storage.md)
 Verinin kalıcılığı.
--   [Veritabanı](ch05_01_storage.md): **LSM Tree** (Sled) ve Key-Value şeması.
--   [Mempool](ch05_02_mempool.md): **Ücret Piyasası** (Fee Market) ve işlem önceliklendirme.
--   [Snapshot](ch05_03_snapshots.md): **Pruning** (Budama) ve **Hızlı Senkronizasyon** (State Sync).
+-   [Veritabanı](ch05_01_storage.md): **RocksDB** tabanlı kalıcı depolama.
+-   [Mempool](ch05_02_mempool.md): **Ücret Piyasası** (Fee Market).
+-   [Snapshot](ch05_03_snapshots.md): **Pruning** (Budama).
+
+### 6. [Bölüm 6: JSON-RPC API](ch06_json_rpc.md)
+Dış dünya ile entegrasyon. **Budlum Standardı** (`bud_`) metotları ve kullanım rehberi.
+
+### 7. [Bölüm 7: Ağ Ayrımı](ch07_network_distinctions.md)
+**Mainnet, Testnet ve Devnet** yapılandırmaları. CLI tabanlı ağ seçimi ve izolasyon.
+
+### 8. [Bölüm 8: Kaos Mühendisliği](ch08_chaos_engineering.md)
+Ağ dayanıklılığı için **Kaos Testleri**, re-org koruması ve hata simülasyonları.
+
+### 9. [Bölüm 9: Dizin Yapısı](ch09_directory_structure.md)
+Yeni **Katmanlı Modüler Mimari** ve dosya düzeni.
 
 ---
 

@@ -59,17 +59,16 @@ graph TD
 
 | Module | Source File | Description |
 | :--- | :--- | :--- |
-| **Blockchain** | `src/blockchain.rs` | Orchestrates the chain, validation, and reorg logic. |
-| **Block** | `src/block.rs` | `Block` struct, hashing, `BlockHeader` and `state_root`. |
-| **Transaction** | `src/transaction.rs` | `Transaction` struct, signature verification, and replay protection. |
-| **Account** | `src/account.rs` | State transition logic (balance transfers, nonce increments). |
-| **Network** | `src/network/` | P2P stack, protocol messages, and peer reputation. |
-| **Consensus** | `src/consensus/` | Implementations of PoW, PoS, and PoA algorithms. |
-| **Storage** | `src/storage.rs` | Persistent storage interface using `sled`. |
-| **Snapshot** | `src/snapshot.rs` | State snapshotting and pruning for fast sync. |
-| **Mempool** | `src/mempool.rs` | Transaction pool with fee sorting, RBF, and anti-spam. |
-| **Genesis** | `src/genesis.rs` | Genesis block configuration and economic parameters. |
-| **Encoding** | `src/encoding.rs` | Deterministic encoding and protocol versioning. |
+| **CLI** | `src/cli/` | Command line argument parsing and node configuration. |
+| **Core** | `src/core/` | Fundamental types: `Block`, `Transaction`, `Account`, `ChainConfig`. |
+| **Chain** | `src/chain/` | Blockchain logic, genesis blocks, and state snapshots. |
+| **Network** | `src/network/` | P2P stack (libp2p), node discovery, and protocol logic. |
+| **RPC** | `src/rpc/` | JSON-RPC 2.0 implementation with `bud_` standard methods. |
+| **Consensus** | `src/consensus/` | Implementations of PoW, PoS, PoA, and Finality gadgets. |
+| **Storage** | `src/storage/` | Persistent database layer (RocksDB/DumbDB). |
+| **Execution** | `src/execution/` | State transition engine and block application. |
+| **Mempool** | `src/mempool/` | Validating transaction pool with fee-based prioritization. |
+| **Tests** | `src/tests/` | Comprehensive integration and **Chaos Engineering** suites. |
 
 ---
 
@@ -291,8 +290,10 @@ Usage: `cargo run -- [OPTIONS]`
 | Flag | Description | Default |
 | :--- | :--- | :--- |
 | `--consensus <TYPE>` | `pow` `pos` `poa` | `pow` |
-| `--chain-id <ID>` | Network Identifier | `1337` |
-| `--port <PORT>` | P2P Listen Port | `4001` |
+| `--network <NAME>` | `mainnet` `testnet` `devnet` | `devnet` |
+| `--rpc-host <ADDR>` | JSON-RPC listen address | `127.0.0.1` |
+| `--rpc-port <PORT>` | JSON-RPC listen port | `8545` |
+| `--port <PORT>` | P2P Listen Port | `4001` (Auto-adjusts per network) |
 | `--db-path <PATH>` | Database Directory | `./data/budlum.db` |
 | `--difficulty <N>` | Mining Difficulty (PoW) | `2` |
 | `--min-stake <AMT>` | Minimum Stake (PoS) | `1000` |
@@ -304,7 +305,7 @@ Usage: `cargo run -- [OPTIONS]`
 ## 🛠️ Development Guide
 
 ### Running Tests
-Budlum has extensive unit and integration tests (77 tests).
+Budlum has extensive unit, integration, and chaos tests (126 tests).
 ```bash
 cargo test
 ```

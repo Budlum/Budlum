@@ -28,3 +28,12 @@
     - [Veritabanı (Storage)](ch05_01_storage.md)
     - [İşlem Havuzu (Mempool)](ch05_02_mempool.md)
     - [Snapshot ve Budama](ch05_03_snapshots.md)
+
+- [Bölüm 6: JSON-RPC API](ch06_json_rpc.md)
+    - [Giriş ve Metotlar](ch06_json_rpc.md)
+
+- [Bölüm 7: Ağ Ayrımı (Mainnet/Testnet)](ch07_network_distinctions.md)
+
+- [Bölüm 8: Kaos Mühendisliği ve Testler](ch08_chaos_engineering.md)
+
+- [Bölüm 9: Dizin Yapısı ve Modülerlik](ch09_directory_structure.md)
