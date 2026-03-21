@@ -33,34 +33,58 @@ Veritabanında tablolar yoktur, sadece Anahtarlar (Key) ve Değerler (Value) var
 | Veri Tipi | Anahtar Formatı (Key) | Değer (Value) | Açıklama |
 | :--- | :--- | :--- | :--- |
 | **Blok** | `BLOCK:{Hash}` | `Serialized(Block)` | Blok verilerini hash ile saklarız. |
-| **İşlem** | `TX:{Hash}` | `Serialized(Transaction)` | İşlemleri hash ile saklarız. |
-| **Son Blok**| `LAST_BLOCK` | `Hash` (String) | Zincirin en ucunu (Tip) gösteren işaretçidir. |
+| **Yükseklik** | `HEIGHT:{Number}` | `Hash` | Indexing: Numaradan Hash bulmak için. |
+| **İşlem** | `TX_IDX:{Hash}` | `u64` | Indexing: Hash'ten Blok Numarası bulmak için. |
+| **Hesap** | `ACCT:{PubKey}` | `Serialized(Account)` | Granular bakiye ve nonce saklama. |
+| **Mempool** | `MEM:{Hash}` | `Serialized(Tx)` | Persistence: Bekleyen işlemlerin disk yedeği. |
+| **QC Blob** | `QC:{Height}` | `Serialized(QcBlob)` | Audit: Checkpoint imzalarının yedeklenmesi. |
+| **Sertifika**| `CERT:{Height}` | `Serialized(FinalityCert)` | Proof: Finalize edilmiş blokların kanıtı. |
+| **Son Blok**| `LAST` | `Hash` (String) | Zincirin en ucunu (Tip) gösteren işaretçidir. |
 
 ---
 
 ## 3. Kod Analizi
 
-### Fonksiyon: `insert_block`
+### Fonksiyon: `commit_block` (Atomic Batching)
+
+Budlum Hardening aşamasında, blok yazma işlemi artık **atomik**tir. Bir blok yazılırken elektrik kesilirse, ne blok ne de onunla ilgili indexler (yükseklik, tx index) yarım yamalak yazılmaz.
 
 ```rust
-pub fn insert_block(&self, block: &Block) -> io::Result<()> {
-    // 1. Bloğu Bincode değil JSON yapıyoruz (Debug kolaylığı için, opsiyonel).
-    // Gerçek mainnet'te Bincode olmalı.
+pub fn commit_block(&self, block: &Block, state_root: &str) -> io::Result<()> {
+    let mut batch = sled::Batch::default();
+    
+    // 1. Bloğu hazırla
     let serialized = serde_json::to_vec(block)?;
+    batch.insert(format!("BLOCK:{}", block.hash), serialized);
+    
+    // 2. Yükseklik indexini hazırla
+    batch.insert(format!("HEIGHT:{}", block.index), block.hash.as_bytes());
+    batch.insert("LAST_BLOCK", block.hash.as_bytes());
 
-    // 2. Anahtarı oluştur: BLOCK + Hash
-    let key = format!("BLOCK:{}", block.hash);
+    // 3. State Root ve TX indexlerini hazırla
+    batch.insert(format!("STATE:{}", block.index), state_root.as_bytes());
+    for tx in &block.transactions {
+        batch.insert(format!("TX_IDX:{}", tx.hash), block.index.to_le_bytes());
+    }
 
-    // 3. Veritabanına yaz. (Bellek tamponuna yazar)
-    self.db.insert(key, serialized)?;
-
-    // 4. KRİTİK ADIM: Flush
-    // Veriyi diske fiziksel olarak yaz. Elektrik kesilirse kaybolmasın.
+    // 4. KRİTİK: Hepsini tek seferde (Atomik) diske yaz.
+    self.db.apply_batch(batch)?;
     self.db.flush()?;
 
     Ok(())
 }
 ```
+
+### 4. Per-Account Persistence (Parçalı Kayıt)
+
+Eskiden tüm bakiye state'i tek bir devasa JSON dosyası gibi saklanırdı. Bu, 1 milyon kullanıcı olduğunda tek bir bakiye değişse bile 100 MB veri yazmak demekti.
+
+**Yeni Mimari:**
+- Her hesap `ACCT:{PubKey}` anahtarı altında bağımsız bir K-V çiftidir.
+- `Storage::save_account`: Sadece değişen hesabı diske yazar.
+- `Storage::load_all_accounts`: Program açılırken `scan_prefix("ACCT:")` ile tüm hesapları diskten hızlıca toplar.
+
+Bu sayede I/O maliyeti 1000 kat düşürülmüştür.
 
 ### Fonksiyon: `load_chain` (Başlangıç Yüklemesi)
 

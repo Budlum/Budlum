@@ -104,19 +104,21 @@ impl Transaction {
         )
     }
     pub fn genesis() -> Self {
-        Transaction {
-            from: "genesis".to_string(),
-            to: "genesis".to_string(),
+        let mut tx = Transaction {
+            from: "0".repeat(64),
+            to: "0".repeat(64),
             amount: 0,
             fee: 0,
             nonce: 0,
-            data: hex::decode("52414445").unwrap(),
+            data: b"BUDLUM_GENESIS_TX".to_vec(),
             timestamp: 0,
-            hash: "genesis".to_string(),
+            hash: String::new(),
             signature: None,
             chain_id: DEFAULT_CHAIN_ID,
             tx_type: TransactionType::Transfer,
-        }
+        };
+        tx.hash = tx.calculate_hash();
+        tx
     }
     pub fn signing_hash(&self) -> [u8; 32] {
         let mut hasher = Sha3_256::new();
@@ -141,24 +143,7 @@ impl Transaction {
         hasher.finalize().into()
     }
     pub fn calculate_hash(&self) -> String {
-        let type_byte = match self.tx_type {
-            TransactionType::Transfer => 0,
-            TransactionType::Stake => 1,
-            TransactionType::Unstake => 2,
-            TransactionType::Vote => 3,
-        };
-        let data = format!(
-            "{}{}{}{}{}{}{}{}",
-            self.from,
-            self.to,
-            self.amount,
-            self.fee,
-            self.nonce,
-            hex::encode(&self.data),
-            self.timestamp,
-            type_byte
-        );
-        calculate_hash(data.as_bytes())
+        hex::encode(self.signing_hash())
     }
     pub fn sign(&mut self, keypair: &KeyPair) {
         let expected_from = keypair.public_key_hex();
@@ -172,16 +157,10 @@ impl Transaction {
         let signing_hash = self.signing_hash();
         let signature = keypair.sign(&signing_hash);
         self.signature = Some(signature.to_vec());
-        println!(
-            "TX signed: {} -> {} ({} coins, type: {:?})",
-            &self.from[..8.min(self.from.len())],
-            &self.to[..8.min(self.to.len())],
-            self.amount,
-            self.tx_type
-        );
     }
     pub fn verify(&self) -> bool {
-        if self.from == "genesis" {
+        let zero_addr = "0".repeat(64);
+        if self.from == zero_addr && self.to == zero_addr && self.signature.is_none() {
             return true;
         }
         let signature = match &self.signature {
@@ -218,7 +197,8 @@ impl Transaction {
         if !self.verify() {
             return false;
         }
-        if self.from == "genesis" {
+        let zero_addr = "0".repeat(64);
+        if self.from == zero_addr {
             return true;
         }
         match self.tx_type {

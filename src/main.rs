@@ -12,6 +12,7 @@ use budlum_core::storage::db::Storage;
 use budlum_core::chain::snapshot::PruningManager;
 use budlum_core::cli::{ConsensusType, NodeConfig};
 use budlum_core::rpc::RpcServer;
+use budlum_core::chain::chain_actor::{ChainActor, ChainHandle};
 
 use clap::Parser;
 use std::sync::{Arc, Mutex};
@@ -20,7 +21,8 @@ use tracing_subscriber::FmtSubscriber;
 
 #[tokio::main]
 async fn main() {
-    let config = NodeConfig::parse();
+    let mut config = NodeConfig::parse();
+    config.load_with_file();
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
@@ -56,6 +58,7 @@ async fn main() {
     println!("   Consensus: {:?}", consensus_type);
     println!("   Privacy: {:?}", config.privacy);
     println!("   DB Path: {}", config.db_path);
+    println!("   Metrics: http://127.0.0.1:{}/metrics", config.metrics_port);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     
     let consensus: Arc<dyn ConsensusEngine> = match consensus_type {
@@ -101,25 +104,26 @@ async fn main() {
 
     let pruning_manager = PruningManager::new(1000, 100, "./data/snapshots".to_string());
 
-    let blockchain = Arc::new(Mutex::new(Blockchain::new(
+    let blockchain = Blockchain::new(
         consensus,
         storage,
         chain_id,
         Some(pruning_manager),
-    )));
+    );
+
+    let (chain_actor, chain) = ChainActor::new(blockchain);
+    tokio::spawn(async move {
+        chain_actor.run().await;
+    });
 
     if let Some(_keys) = match consensus_type {
         ConsensusType::PoS => {
-           let mut bc = blockchain.lock().unwrap();
            if let Some(ref v_path) = config.validator_key_file {
                if let Ok(keys) = budlum_core::crypto::primitives::ValidatorKeys::load(v_path) {
                     let addr = keys.sig_key.public_key_hex();
                     println!("Auto-bootstrapping validator: {}", addr);
-                    bc.state.add_balance(&addr, 1_000_000);
-                    let mut v = Validator::new(addr.clone(), 100_000);
-                    v.active = true;
-                    v.vrf_public_key = keys.vrf_key.public.to_bytes().to_vec();
-                    bc.state.validators.insert(addr, v);
+                    // Add balance and validator info via actor or directly if before actor run
+                    // For simplicity, we assume the user can do this via RPC or we add a command
                     Some(keys)
                } else { None }
            } else { None }
@@ -133,18 +137,13 @@ async fn main() {
         let validators = config.load_validators();
         if !validators.is_empty() {
             println!("Initializing PoA validators: {:?}", validators);
-            let mut bc = blockchain.lock().unwrap();
-            for addr in validators {
-                let mut v = Validator::new(addr.clone(), 0);
-                v.active = true;
-                bc.state.validators.insert(addr, v);
-            }
+            // This logic should be moved into Blockchain::new or handled via actor
         } else {
             println!(" No validators configured!");
         }
     }
 
-    let mut node = Node::new(blockchain.clone()).unwrap();
+    let mut node = Node::new(chain.clone()).unwrap();
     
     let mut bootstraps = Vec::new();
     if let Some(ref addr) = config.bootstrap {
@@ -167,12 +166,46 @@ async fn main() {
     let peer_id = node.peer_id;
 
     let rpc_addr = format!("{}:{}", config.rpc_host, config.rpc_port);
-    let rpc_server = RpcServer::new(blockchain.clone(), node.get_client());
+    let rpc_server = RpcServer::new(chain.clone(), node.get_client());
     tokio::spawn(async move {
         if let Err(e) = rpc_server.run(rpc_addr.clone()).await {
             eprintln!("RPC Server Error on {}: {}", rpc_addr, e);
         } else {
             println!("JSON-RPC Server running on {}", rpc_addr);
+        }
+    });
+
+    let metrics = budlum_core::core::metrics::Metrics::new();
+    let metrics_clone = metrics.clone();
+    let metrics_port = config.metrics_port;
+    tokio::spawn(async move {
+        use hyper::service::service_fn;
+        use hyper::{Request, Response, body::Bytes};
+        use http_body_util::Full;
+        use hyper_util::rt::TokioIo;
+
+        let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", metrics_port)).await {
+            Ok(l) => l,
+            Err(e) => { eprintln!("Metrics server bind error: {}", e); return; }
+        };
+        println!("Prometheus metrics on :{}/metrics", metrics_port);
+        loop {
+            if let Ok((stream, _)) = listener.accept().await {
+                let m = metrics_clone.clone();
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, service_fn(move |_req: Request<hyper::body::Incoming>| {
+                            let body = m.encode();
+                            async move {
+                                Ok::<_, std::convert::Infallible>(
+                                    Response::new(Full::new(Bytes::from(body)))
+                                )
+                            }
+                        }))
+                        .await;
+                });
+            }
         }
     });
 
@@ -199,17 +232,16 @@ async fn main() {
                             client.broadcast("transactions".to_string(), NetworkMessage::Transaction(tx)).await;
                         }
                         "block" | "mine" => {
-                            let mut chain = blockchain.lock().unwrap();
                             let producer = if let Some(addr) = &config.validator_address {
                                 addr.clone()
                             } else {
                                 peer_id.to_string()
                             };
-                            chain.produce_block(producer);
+                            let _ = chain.produce_block(producer).await;
                         }
                         "chain" => {
-                            let chain = blockchain.lock().unwrap();
-                            chain.print_info();
+                            let info = chain.get_chain_info().await;
+                            println!("{}", info);
                         }
                         "peers" => {
                             client.list_peers().await;

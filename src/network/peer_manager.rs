@@ -4,6 +4,9 @@ use std::time::{Duration, Instant};
 pub const INVALID_BLOCK_PENALTY: i32 = -10;
 pub const INVALID_TX_PENALTY: i32 = -5;
 pub const OVERSIZED_MESSAGE_PENALTY: i32 = -3;
+pub const TIMEOUT_PENALTY: i32 = -15;
+pub const SLOW_SYNC_PENALTY: i32 = -5;
+pub const INVALID_HANDSHAKE_PENALTY: i32 = -20;
 pub const GOOD_BEHAVIOR_REWARD: i32 = 1;
 pub const BAN_THRESHOLD: i32 = -100;
 pub const BAN_DURATION: Duration = Duration::from_secs(3600);
@@ -223,6 +226,38 @@ impl PeerManager {
             .filter(|(_, score)| score.is_banned())
             .map(|(id, _)| *id)
             .collect()
+    }
+    pub fn report_timeout(&mut self, peer_id: &PeerId) {
+        let score = self.get_or_create(peer_id);
+        score.score = (score.score + TIMEOUT_PENALTY).max(MIN_SCORE);
+        score.last_seen = Some(Instant::now());
+        if score.score <= BAN_THRESHOLD {
+            self.ban_peer(peer_id);
+        }
+    }
+    pub fn report_slow_sync(&mut self, peer_id: &PeerId) {
+        let score = self.get_or_create(peer_id);
+        score.score = (score.score + SLOW_SYNC_PENALTY).max(MIN_SCORE);
+        score.last_seen = Some(Instant::now());
+        if score.score <= BAN_THRESHOLD {
+            self.ban_peer(peer_id);
+        }
+    }
+    pub fn report_invalid_handshake(&mut self, peer_id: &PeerId) {
+        let score = self.get_or_create(peer_id);
+        score.score = (score.score + INVALID_HANDSHAKE_PENALTY).max(MIN_SCORE);
+        score.last_seen = Some(Instant::now());
+        if score.score <= BAN_THRESHOLD {
+            self.ban_peer(peer_id);
+        }
+    }
+    pub fn get_best_peers(&self, n: usize) -> Vec<PeerId> {
+        let mut scored: Vec<_> = self.peers
+            .iter()
+            .filter(|(_, s)| !s.is_banned())
+            .collect();
+        scored.sort_by(|a, b| b.1.score.cmp(&a.1.score));
+        scored.into_iter().take(n).map(|(id, _)| *id).collect()
     }
 }
 #[cfg(test)]

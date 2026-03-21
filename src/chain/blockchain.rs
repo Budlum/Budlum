@@ -25,6 +25,7 @@ pub struct Blockchain {
     pub pruning_manager: Option<PruningManager>,
     pub finalized_height: u64,
     pub finalized_hash: String,
+    pub base_fee: u64,
 }
 impl Blockchain {
     pub fn new(
@@ -109,16 +110,30 @@ impl Blockchain {
             }
         }
 
+        let mut mempool = Mempool::new(MempoolConfig::default());
+        if let Some(ref store) = storage {
+            if let Ok(txs) = store.load_mempool_txs() {
+                let count = txs.len();
+                for tx in txs {
+                    let _ = mempool.add_transaction(tx);
+                }
+                if count > 0 {
+                    println!("Restored {} transactions from mempool persistence", count);
+                }
+            }
+        }
+
         Blockchain {
             chain: chain_vec,
             consensus,
-            mempool: Mempool::new(MempoolConfig::default()),
+            mempool,
             storage,
             state,
             chain_id,
             pruning_manager,
             finalized_height: restored_finalized_height,
             finalized_hash: restored_finalized_hash,
+            base_fee: 1,
         }
     }
 
@@ -157,12 +172,42 @@ impl Blockchain {
         self.chain.last().expect("Chain should never be empty")
     }
     pub fn get_transaction_by_hash(&self, hash: &str) -> Option<Transaction> {
+        if let Some(ref store) = self.storage {
+            if let Ok(Some(height)) = store.get_tx_block_height(hash) {
+                if let Some(block) = self.chain.get(height as usize) {
+                    if let Some(tx) = block.transactions.iter().find(|t| t.hash == hash) {
+                        return Some(tx.clone());
+                    }
+                }
+            }
+        }
         for block in &self.chain {
             if let Some(tx) = block.transactions.iter().find(|t| t.hash == hash) {
                 return Some(tx.clone());
             }
         }
         self.mempool.get(hash).cloned()
+    }
+    pub fn get_transaction_receipt(&self, hash: &str) -> Option<serde_json::Value> {
+        if let Some(ref store) = self.storage {
+            if let Ok(Some(height)) = store.get_tx_block_height(hash) {
+                return Some(serde_json::json!({
+                    "transactionHash": hash,
+                    "blockNumber": format!("0x{:x}", height),
+                    "status": "0x1"
+                }));
+            }
+        }
+        for block in &self.chain {
+            if block.transactions.iter().any(|tx| tx.hash == hash) {
+                return Some(serde_json::json!({
+                    "transactionHash": hash,
+                    "blockNumber": format!("0x{:x}", block.index),
+                    "status": "0x1"
+                }));
+            }
+        }
+        None
     }
     pub fn get_nonce(&self, address: &str) -> u64 {
         self.state.get_nonce(address)
@@ -181,7 +226,7 @@ impl Blockchain {
             .collect();
         ValidatorSetSnapshot::compute_hash(&entries)
     }
-    pub fn produce_block(&mut self, producer_address: String) {
+    pub fn produce_block(&mut self, producer_address: String) -> Option<Block> {
         let index = self.chain.len() as u64;
         let previous_hash = self.chain.last().unwrap().hash.clone();
 
@@ -200,42 +245,19 @@ impl Blockchain {
         }
 
         let mut block = Block::new(index, previous_hash, valid_txs);
-        println!(
-            "Producing block {} with {} ({} txs)...",
-            index,
-            self.consensus.consensus_type(),
-            block.transactions.len()
-        );
-
         block.producer = Some(producer_address.clone());
 
-        let mut state_for_root = self.state.clone();
-        if let Err(e) = Executor::apply_block(&mut state_for_root, &block.transactions, block.producer.as_deref()) {
-            println!(
-                "Failed to apply block inside produce_block (state for root): {}",
-                e
-            );
-            return;
+        if let Err(e) = Executor::apply_block(&mut self.state, &block.transactions, block.producer.as_deref()) {
+            return None;
         }
-        block.state_root = state_for_root.calculate_state_root();
+        block.state_root = self.state.calculate_state_root();
 
         if let Err(e) = self.consensus.prepare_block(&mut block, &self.state) {
-            println!("Block preparation failed: {}", e);
-            return;
+            return None;
         }
 
-        println!("Block produced: {}", block.hash);
         if let Some(ref store) = self.storage {
-            let _ = store.insert_block(&block);
-            let _ = store.save_last_hash(&block.hash);
-            let _ = store.save_state_root(block.index, &block.state_root);
-            let _ = store.save_canonical_height(block.index);
-        }
-
-        if let Err(e) = Executor::apply_block(&mut self.state, &block.transactions, block.producer.as_deref())
-        {
-            println!("Failed to apply block to canonical state: {}", e);
-            return;
+            let _ = store.commit_block(&block, &block.state_root);
         }
 
         if block.index > 0 && block.index % EPOCH_LENGTH == 0 {
@@ -246,7 +268,19 @@ impl Blockchain {
 
         for tx in &block.transactions {
             self.mempool.remove_transaction(&tx.hash);
+            if let Some(ref store) = self.storage {
+                let _ = store.remove_mempool_tx(&tx.hash);
+            }
         }
+
+        let tx_count = block.transactions.len() as u64;
+        let target = 50u64;
+        if tx_count > target {
+            self.base_fee = self.base_fee.saturating_add(self.base_fee / 8);
+        } else if tx_count < target {
+            self.base_fee = self.base_fee.saturating_sub(self.base_fee / 8).max(1);
+        }
+        Some(block)
     }
     pub fn mine_pending_transactions(&mut self, miner_address: String) {
         self.produce_block(miner_address);
@@ -258,7 +292,7 @@ impl Blockchain {
                 self.chain_id, transaction.chain_id
             ));
         }
-        if transaction.from == "genesis" {
+        if transaction.from == "0".repeat(64) {
             return Err("Genesis transactions cannot be submitted to the mempool".into());
         }
         if !transaction.verify() {
@@ -269,8 +303,12 @@ impl Blockchain {
         }
 
         self.mempool
-            .add_transaction(transaction)
-            .map_err(|e| format!("Mempool error: {:?}", e))
+            .add_transaction(transaction.clone())
+            .map_err(|e| format!("Mempool error: {:?}", e))?;
+        if let Some(ref store) = self.storage {
+            let _ = store.save_mempool_tx(&transaction);
+        }
+        Ok(())
     }
 
     pub fn init_genesis_account(&mut self, address: &str) {
@@ -336,7 +374,7 @@ impl Blockchain {
                     i, block.chain_id, tx.chain_id
                 ));
             }
-            if block.index > 0 && tx.from == "genesis" {
+            if block.index > 0 && tx.from == "0".repeat(64) {
                 return Err(format!(
                     "Invalid transaction at index {}: 'genesis' transactions only allowed in genesis block", i
                 ));
@@ -367,10 +405,7 @@ impl Blockchain {
         }
 
         if let Some(ref store) = self.storage {
-            let _ = store.insert_block(&block);
-            let _ = store.save_last_hash(&block.hash);
-            let _ = store.save_state_root(block.index, &block.state_root);
-            let _ = store.save_canonical_height(block.index);
+            let _ = store.commit_block(&block, &block.state_root);
         }
 
         if let Some(evidences) = &block.slashing_evidence {
@@ -392,6 +427,9 @@ impl Blockchain {
 
         for tx in self.chain.last().unwrap().transactions.iter() {
             self.mempool.remove_transaction(&tx.hash);
+            if let Some(ref store) = self.storage {
+                let _ = store.remove_mempool_tx(&tx.hash);
+            }
         }
 
         if let Some(ref pruning_manager) = self.pruning_manager {
@@ -529,27 +567,29 @@ impl Blockchain {
 
         for tx in &self.mempool.get_sorted_transactions(1000) {
             if !chain_txs.contains(&tx.hash) {
-                if self.state.validate_transaction(tx).is_ok() {
-                    new_pending.push(tx.clone());
-                }
+                new_pending.push(tx.clone());
             }
         }
 
-        self.mempool = Mempool::new(MempoolConfig::default());
+        self.mempool = crate::mempool::pool::Mempool::new(crate::mempool::pool::MempoolConfig::default());
         for tx in new_pending {
             let _ = self.mempool.add_transaction(tx);
         }
 
         if let Some(ref store) = self.storage {
-            if let Some(last) = self.chain.last() {
-                let _ = store.save_last_hash(&last.hash);
-            }
             for block in &self.chain[fork_point..] {
                 let _ = store.insert_block(block);
+            }
+            if let Some(last) = self.chain.last() {
+                let _ = store.save_last_hash(&last.hash);
             }
         }
 
         Ok(true)
+    }
+
+    pub fn get_state_root(&self, height: u64) -> Option<String> {
+        self.storage.as_ref().and_then(|store| store.get_state_root(height).unwrap_or(None))
     }
 
     fn rebuild_state(chain: &[Block]) -> Result<AccountState, String> {
@@ -652,6 +692,7 @@ impl Clone for Blockchain {
             pruning_manager: self.pruning_manager.clone(),
             finalized_height: self.finalized_height,
             finalized_hash: self.finalized_hash.clone(),
+            base_fee: self.base_fee,
         }
     }
 }

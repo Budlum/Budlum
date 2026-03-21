@@ -1,10 +1,11 @@
 use serde::{Serialize, Deserialize};
 pub const PROTOCOL_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum, Default)]
 pub enum Network {
     Mainnet,
     Testnet,
+    #[default]
     Devnet,
 }
 

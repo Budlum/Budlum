@@ -115,9 +115,25 @@ Budlum, bu imzaları blok dışındaki `QcBlob` içinde Merkle ağacı yapısıy
 
 ---
 
+## 5. Budlum Hardening: Incremental State Merkle Tree
+
+Normal Merkle ağaçları basittir ama her değişimde tüm ağacın en baştan yapraklarını (leaves) dizip hashlemesini gerektirir. Budlum Hardening ile birlikte **State Merkle Tree** artık artımlı (incremental) çalışır.
+
+### Dirty Tracking ve Caching
+1. **Dirty Kontrolü:** Hesaptaki her değişim (`balance`, `nonce`) o hesabı "kirli" (dirty) olarak işaretler.
+2. **Yaprak Önbelleği:** Tüm yaprak hashleri bellekte (`cached_leaves`) saklanır.
+3. **Kısmi Güncelleme:** `calculate_state_root` çağrıldığında:
+   - Sadece *dirty* olan yaprakların hashleri yeniden hesaplanır.
+   - Önbellekteki karşılıkları güncellenir.
+   - Ağacın sadece o yapraktan Root'a giden dalı (branch) yeniden hesaplanır.
+
+Bu sayede, 1 milyon hesaplık bir ağaçta tek bir hesap değiştiğinde 1 milyon hash işlemi yapmak yerine sadece $\approx 20$ hash işlemi yapılarak yeni Root bulunur.
+
 ## Özet
 
 Merkle Ağaçları, Budlum projesinde sadece veri bütünlüğü değil, aynı zamanda **hız (Light Client)** ve **gelecek güvenliği (PQ Optimization)** sağlar.
-1.  **İşlemler:** `tx_root` ile kanıtlanır.
-2.  **Hesaplar:** `state_root` ile anlık bakiye doğrulanır.
+1.  **İşlemler:** `tx_root` ile kanıtlanır (Standart Merkle).
+2.  **Hesaplar:** `state_root` ile anlık bakiye doğrulanır. **Budlum Hardening** ile birlikte artık $O(\log N)$ maliyetli **Incremental Merkle Tree** yapısı kullanılır.
 3.  **PQ Güvenlik:** `QcBlob` kökü ile devasa imzalar yönetilebilir hale gelir.
+4.  **Hafif İstemciler:** Tüm state'i bilmeden saniyeler içinde bakiye kanıtı (Merkle Proof) yapabilirler.
+

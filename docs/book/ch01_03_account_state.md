@@ -60,11 +60,32 @@ pub struct AccountState {
     pub validators: HashMap<String, Validator>, // Tüm validatörler
     storage: Option<Storage>,                   // Disk bağlantısı
     pub epoch_index: u64,                       // Zaman dilimi sayacı
+    dirty_accounts: HashSet<String>,            // Değişen hesapların takibi
+    cached_leaves: Vec<[u8; 32]>,               // Merkle yaprağı önbelleği
 }
 ```
 
-**Neden HashMap?**
-Blockchain'de milyonlarca hesap olabilir. Bir hesabı bulmak için listeyi tek tek gezmek (O(N)) çok yavaştır. `HashMap` ile erişim süresi O(1)'dir yani anlıktır.
+**Neden Dirty Tracking?**
+Blockchain'de milyonlarca hesap olabilir. Her blokta tüm hesapları baştan hashlemek sistemi yavaşlatır. `dirty_accounts` set'i sayesinde sadece o blokta değişen hesaplar işaretlenir ve Merkle Trie sadece bu dalları günceller. Bu, **Incremental State Root** hesaplamasının kalbidir.
+
+---
+
+**Budlum Hardening** aşamasında, `state_root` hesaplaması artık **Incremental Merkle Trie** yapısıdır.
+
+**Kod (Özet):**
+```rust
+pub fn calculate_state_root(&mut self) -> String {
+    // 1. Sadece dirty_accounts içindeki hesaplar için yeni yaprakları (leaves) hesapla.
+    // 2. Önbellekteki (cached_leaves) eski değerleri güncelle.
+    // 3. Merkle ağacını yukarı doğru (Root'a kadar) sadece etkilenen dallar için yeniden hesapla.
+    // 4. Dirty listesini temizle.
+}
+```
+
+**Neden Incremental Merkle Trie?**
+1. **Düşük Gecikme:** Milyonlarca hesap olsa bile, bir hesabın değişmesi durumunda tüm state'in yeniden hashlenmesi gerekmez ($O(\log N)$ karmaşıklık).
+2. **Disk Dostu:** Sadece değişen hesaplar diske yazılır (**Per-Account Persistence**). Eskiden tüm state koca bir JSON blob'u iken, artık her hesap `ACCT:{pubkey}` anahtarıyla ayrı ayrı kaydedilir.
+3. **Merkle Proofs:** Hafif istemciler (Light Clients), tüm hesap verisini indirmeden sadece Merkle yolunu (Path) ve Root'u kullanarak bir hesabın bakiyesini kriptografik olarak doğrulayabilir.
 
 ---
 

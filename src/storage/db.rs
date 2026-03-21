@@ -1,4 +1,6 @@
 use crate::core::block::Block;
+use crate::core::account::Account;
+use crate::core::transaction::Transaction;
 use sled::Db;
 use std::str::from_utf8;
 #[derive(Clone, Debug)]
@@ -13,10 +15,39 @@ impl Storage {
     pub fn insert_block(&self, block: &Block) -> std::io::Result<()> {
         let key = block.hash.clone();
         let val = serde_json::to_vec(block)?;
-        self.db.insert(key, val)?;
         let height_key = format!("HEIGHT:{}", block.index);
-        self.db
-            .insert(height_key.as_bytes(), block.hash.as_bytes())?;
+        let mut batch = sled::Batch::default();
+        batch.insert(key.as_bytes(), val.as_slice());
+        batch.insert(height_key.as_bytes(), block.hash.as_bytes());
+        self.db.apply_batch(batch)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    pub fn commit_block(&self, block: &Block, state_root: &str) -> std::io::Result<()> {
+        let mut batch = sled::Batch::default();
+        
+        let block_bytes = serde_json::to_vec(block)?;
+        batch.insert(block.hash.as_bytes(), block_bytes.as_slice());
+        
+    
+        let height_key = format!("HEIGHT:{}", block.index);
+        batch.insert(height_key.as_bytes(), block.hash.as_bytes());
+        
+
+        batch.insert(b"LAST", block.hash.as_bytes());
+        
+        let state_key = format!("STATE_ROOT:{}", block.index);
+        batch.insert(state_key.as_bytes(), state_root.as_bytes());
+
+        batch.insert(b"CANONICAL_HEIGHT", block.index.to_string().as_bytes());
+        
+        for tx in &block.transactions {
+            let tx_idx_key = format!("TX_IDX:{}", tx.hash);
+            batch.insert(tx_idx_key.as_bytes(), block.index.to_string().as_bytes());
+        }
+        
+        self.db.apply_batch(batch)?;
         self.db.flush()?;
         Ok(())
     }
@@ -52,14 +83,13 @@ impl Storage {
     pub fn delete_block(&self, height: u64) -> std::io::Result<()> {
         let key = format!("HEIGHT:{}", height);
         if let Some(hash_val) = self.db.get(key.as_bytes())? {
-            self.db.remove(&hash_val)?;
-            self.db.remove(key.as_bytes())?;
-            let state_root_key = format!("STATE_ROOT:{}", height);
-            self.db.remove(state_root_key.as_bytes())?;
-            let cert_key = format!("FINALITY_CERT:{}", height);
-            self.db.remove(cert_key.as_bytes())?;
-            let qc_key = format!("QC_BLOB:{}", height);
-            self.db.remove(qc_key.as_bytes())?;
+            let mut batch = sled::Batch::default();
+            batch.remove(&hash_val);
+            batch.remove(key.as_bytes());
+            batch.remove(format!("STATE_ROOT:{}", height).as_bytes());
+            batch.remove(format!("FINALITY_CERT:{}", height).as_bytes());
+            batch.remove(format!("QC_BLOB:{}", height).as_bytes());
+            self.db.apply_batch(batch)?;
             self.db.flush()?;
         }
         Ok(())
@@ -162,5 +192,61 @@ impl Storage {
     }
     pub fn db(&self) -> &Db {
         &self.db
+    }
+    pub fn save_tx_index(&self, tx_hash: &str, block_height: u64) -> std::io::Result<()> {
+        let key = format!("TX_IDX:{}", tx_hash);
+        self.db.insert(key.as_bytes(), block_height.to_string().as_bytes())?;
+        Ok(())
+    }
+    pub fn get_tx_block_height(&self, tx_hash: &str) -> std::io::Result<Option<u64>> {
+        let key = format!("TX_IDX:{}", tx_hash);
+        if let Some(val) = self.db.get(key.as_bytes())? {
+            let s = from_utf8(&val)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            Ok(s.parse().ok())
+        } else {
+            Ok(None)
+        }
+    }
+    pub fn save_account(&self, pubkey: &str, account: &Account) -> std::io::Result<()> {
+        let key = format!("ACCT:{}", pubkey);
+        let val = serde_json::to_vec(account)?;
+        self.db.insert(key.as_bytes(), val)?;
+        Ok(())
+    }
+    pub fn load_all_accounts(&self) -> std::io::Result<std::collections::HashMap<String, Account>> {
+        let mut accounts = std::collections::HashMap::new();
+        for item in self.db.scan_prefix(b"ACCT:") {
+            let (key, val) = item?;
+            let key_str = from_utf8(&key)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let pubkey = key_str.strip_prefix("ACCT:").unwrap_or(key_str).to_string();
+            let account: Account = serde_json::from_slice(&val)?;
+            accounts.insert(pubkey, account);
+        }
+        Ok(accounts)
+    }
+    pub fn save_mempool_tx(&self, tx: &Transaction) -> std::io::Result<()> {
+        let key = format!("MEMPOOL:{}", tx.hash);
+        let val = serde_json::to_vec(tx)?;
+        self.db.insert(key.as_bytes(), val)?;
+        Ok(())
+    }
+    pub fn remove_mempool_tx(&self, tx_hash: &str) -> std::io::Result<()> {
+        let key = format!("MEMPOOL:{}", tx_hash);
+        self.db.remove(key.as_bytes())?;
+        Ok(())
+    }
+    pub fn load_mempool_txs(&self) -> std::io::Result<Vec<Transaction>> {
+        let mut txs = Vec::new();
+        for item in self.db.scan_prefix(b"MEMPOOL:") {
+            let (_key, val) = item?;
+            let tx: Transaction = serde_json::from_slice(&val)?;
+            txs.push(tx);
+        }
+        Ok(txs)
+    }
+    pub fn flush_batch(&self) -> std::io::Result<usize> {
+        Ok(self.db.flush()?)
     }
 }

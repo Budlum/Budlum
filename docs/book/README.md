@@ -7,10 +7,12 @@ Bu kitap, **Budlum Blockchain** projesinin yaşayan teknik dokümantasyonudur. A
 Amacımız, sadece "Bu kod ne işe yarar?" sorusuna değil, **"Bu kodu neden böyle tasarladık?", "Hangi probleme çözüm ürettik?"** ve **"Alternatifleri nelerdi?"** sorularına cevap vermektir.
 
 Kod tabanımız **Rust** ile yazılmıştır ve modern teknolojileri kullanır:
--   **Kriptografi:** Ed25519 (Eliptik Eğri İmzaları)
--   **Ağ:** Libp2p (Gossipsub, Kademlia DHT)
+-   **Kriptografi:** Ed25519 ve BLS (Finalite), Merkle Patricia Trie (Hesap Durumu)
+-   **Ağ:** Libp2p (Request-Response Sync, Gossipsub, Kademlia DHT)
 -   **Veritabanı:** Sled (Gömülü Key-Value Store)
--   **Konsensüs:** Pluggable (Tak-Çıkar) PoW ve PoS Motorları
+-   **Konsensüs:** Pluggable PoW, PoS ve Otomatik Finalite Oylama
+-   **Gözlemlenebilirlik:** Prometheus Metrikleri (Grafana uyumlu)
+-   **Yönetim:** TOML tabanlı esnek konfigürasyon sistemi
 
 ---
 

@@ -42,11 +42,12 @@ pub struct BudlumBehaviour {
 **Kod:**
 ```rust
 pub struct Node {
-    pub swarm: Swarm<BudlumBehaviour>, // Ağ Motoru
-    pub blockchain: Arc<Mutex<Blockchain>>, // Zincir Verisi (Paylaşımlı)
-    pub peer_manager: Arc<Mutex<PeerManager>>, // Eş Yönetimi
-    pub peer_count: Arc<AtomicUsize>, // Bağlı Eş Sayısı (Gerçek Zamanlı)
+    swarm: Swarm<BudlumBehaviour>, // Ağ Motoru
     command_rx: mpsc::Receiver<NodeCommand>, // İçerden gelen emirler
+    command_tx: mpsc::Sender<NodeCommand>, // Emir gönderme kanalı
+    pub peer_id: PeerId,
+    pub chain: ChainHandle, // Zincir Aktörü ile iletişim (Async)
+    pub peer_manager: Arc<Mutex<PeerManager>>, // Eş Yönetimi
     // ...
 }
 ```
@@ -59,13 +60,13 @@ Dış modüllerin (örn: RPC Sunucusu) Düğüm ile güvenli bir şekilde konuş
 pub struct NodeClient {
     sender: mpsc::Sender<NodeCommand>,
     pub peer_id: PeerId,
-    pub peer_count: Arc<AtomicUsize>,
 }
 ```
 
-**Tasarım Kararı: `Arc<Mutex<Blockchain>>`**
--   `Arc` (Atomic Reference Counting): Blockchain verisi RAM'de tek bir yerde durur, ama hem `Node` hem `Miner` hem `API` ona erişebilir. Veri kopyalanmaz, referans paylaşılır.
--   `Mutex` (Mutual Exclusion): Aynı anda sadece bir kişi yazabilir. Veri bütünlüğünü (Data Race) engeller.
+**Tasarım Kararı: Actor Model (ChainActor & ChainHandle)**
+-   **Lockless Design:** Eskiden kullanılan `Arc<Mutex<Blockchain>>` yerine artık **Actor Model** kullanılmaktadır. 
+-   **ChainActor:** Zincir verisinin (Blockchain, State, Mempool) tek sahibidir. Kendi thread'inde çalışır ve gelen mesajları (ChainCommand) sırayla işler.
+-   **ChainHandle:** Diğer modüllerin (Node, RPC) zincire erişmek için kullandığı asenkron kumandadır. Bu sayede ağ trafiği işlenirken veritabanı kilitlenmesi (lock contention) yaşanmaz.
 
 ---
 
@@ -100,17 +101,33 @@ pub async fn run(&mut self) {
                     self.handle_command(cmd).await;
                 }
             }
+
+            // DURUM 4: Arka Plan Görevleri
+            _ = finality_interval.tick() => {
+                // Her 30 saniyede bir Checkpoint yüksekliğinde oylama başlat.
+            }
         }
     }
 }
 ```
 
 **Analiz: `tokio::select!`**
-Bu makro, Go dilindeki `select` gibidir. Birden fazla asenkron işlemden hangisi **önce** gerçekleşirse onu çalıştırır.
--   Eğer ağdan veri geldiyse, onu işler.
--   Eğer ağ sessizse ama 60 saniye dolduysa, çöp toplayıcı (GC) görevlerini tetikler.
--   Eğer ağ sessizse ama kullanıcı "Blok üret" dediyse, onu işler.
--   Hiçbir şey yoksa, işlemciyi uyutur (Idle). Enerji tasarrufu sağlar.
+Bu makro, Go dilindeki `select` gibidir. Budlum'da artık daha zengin bir olay döngüsü vardır:
+-   **Maintenance:** TTL süresi dolan işlemleri siler.
+-   **Finality:** Periyodik olarak checkpoint oylaması (Prevote) yapar.
+-   **Metrics:** Prometheus üzerinden düğüm sağlığını dışarı sunar.
+
+---
+
+## 3. Çatal Seçimi (Fork-Choice) ve Reorg
+
+Budlum **Hardening** ile birlikte artık daha akıllı bir blok işleme mantığına sahiptir. Bir blok geldiğinde 3 senaryo işletilir:
+
+1. **Sıralı Blok (Normal):** Gelen bloğun indeksi, bizim zincir uzunluğumuza eşitse direkt doğrulanır ve eklenir.
+2. **Çatal (Fork):** Gelen bloğun indeksi bizimkinden küçükse ama hash farklıysa, ağda bir bölünme olduğu anlaşılır.
+    - `try_reorg` fonksiyonu tetiklenir.
+    - Eğer gelen çatalın toplam zorluğu (veya uzunluğu) bizimkinden fazlaysa, eski state geri sarılır (Revert) ve yeni çatala geçilir.
+3. **Senkronizasyon (Sync Request):** Eğer gelen blok çok ilerideyse (bizde aradaki bloklar yoksa), otomatik olarak `GetHeaders` isteği atılarak senkronizasyon başlatılır.
 
 ---
 

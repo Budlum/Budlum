@@ -31,6 +31,18 @@ Prevote çoğunluğu sağlandığında, validatörler ikinci bir onay oyu verir:
 
 ---
 
+## 3. Otomatik Oylama Döngüsü
+
+**Hardening** kapsamında, validatörlerin manuel müdahalesine gerek kalmadan arka planda çalışan bir oylama mekanizması eklenmiştir:
+
+- **Interval:** Her 30 saniyede bir tetiklenir.
+- **Kontrol:** Eğer mevcut blok yüksekliği bir checkpoint ise ve henüz oy verilmemişse, otomatik olarak bir `Prevote` mesajı yayımlanır.
+- **Ağ Duyurusu:** Oylar `blocks` Gossipsub kanalı üzerinden tüm ağa yayılır.
+
+Bu sayede ağ, konsensüs sağlandığı sürece kendi kendine ilerlemeye (liveness) devam eder.
+
+---
+
 ## 3. Veri Yapısı: `FinalityCert`
 
 Oylamalar tamamlandığında, `FinalityAggregator` tüm imzaları birleştirerek tek bir sertifika oluşturur.

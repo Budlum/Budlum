@@ -1,6 +1,6 @@
 # Bölüm 5.2: İşlem Havuzu (Mempool) Mekaniği
 
-Bu bölüm, ağa gelen işlemlerin bloklara girmeden önce beklediği "Bekleme Odası" olan Mempool'u, ücret piyasasını (Fee Market) ve sıralama algoritmalarını analiz eder.
+Bu bölüm, ağa gelen işlemlerin bloklara girmeden önce beklediği "Bekleme Odası" olan Mempool'u, ücret piyasasını (Fee Market), sıralama algoritmalarını ve işlemlerin ağda nasıl yayıldığını (Gossip) analiz eder.
 
 Kaynak Dosya: `src/mempool.rs`
 ---
@@ -137,3 +137,28 @@ pub fn cleanup_expired(&mut self) -> usize {
 ```
 
 Bu periyodik temizleyici sayesinde ağ, kendi hafızasını (Mempool'u) otomatik ve sistemli olarak sürekli temizler.
+
+## 5. Mempool Persistence (Disk Yedeği)
+
+Normalde Mempool sadece RAM'dedir. Node kapandığında içindeki tüm bekleyen işlemler silinir. Budlum Hardening ile birlikte artık **Mempool Persistence** devrededir.
+
+### Mekanizma:
+1. **Save-on-Arrival:** Bir işlem Mempool'a eklendiğinde aynı anda veritabanına da (`MEM:{hash}`) yazılır.
+2. **Remove-on-Mined:** İşlem bir bloğa girdiğinde diskten de temizlenir.
+3. **Startup Recovery:** Node açılırken `Blockchain::new()` fonksiyonu diskteki tüm `MEM:` önekli işlemleri tarar ve Mempool'u otomatik olarak doldurur.
+
+Bu sayede beklenmedik kapanmalarda kullanıcı işlemleri ağda kaybolmaz.
+
+---
+
+## 6. İşlem Yayılımı (Transaction Gossip)
+
+Bir işlem sadece tek bir node'da kalmaz. Tüm ağın bu işlemden haberdar olması gerekir ki, herhangi bir madenci onu bloğuna alabilsin.
+
+**Mekanizma:**
+1. **RPC Alımı:** Kullanıcı `bud_sendRawTransaction` ile bir işlem gönderir.
+2. **Lokal Kayıt:** Node işlemi kendi Mempool'una ekler.
+3. **Yayın (Broadcast):** İşlem geçerliyse, Node bunu `transactions` Gossipsub kanalına fırlatır.
+4. **Zincirleme Etki:** Bu mesajı alan diğer nodelar da işlemi doğrular ve kendi komşularına iletir.
+
+Bu sayede saniyeler içinde bir işlem dünyanın öbür ucundaki bir düğümün Mempool'una ulaşmış olur.

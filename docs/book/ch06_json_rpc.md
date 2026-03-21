@@ -8,13 +8,46 @@ Kaynaklar:
 
 ## 1. Çalıştırma
 
-RPC sunucusu varsayılan olarak `127.0.0.1:8545` adresinde dinler. CLI üzerinden değiştirilebilir:
-
 ```bash
 cargo run -- --rpc-host 0.0.0.0 --rpc-port 9999
 ```
 
-## 2. Desteklenen Metotlar (`bud_` Prefixi)
+### Konfigürasyon Dosyası (TOML)
+
+Komut satırı argümanları yerine `budlum.toml` dosyası kullanılarak daha karmaşık ayarlar yapılabilir:
+
+```bash
+cargo run -- --config ./budlum.toml
+```
+
+**Örnek `budlum.toml`:**
+```toml
+db_path = "./data/mainnet.db"
+rpc_host = "127.0.0.1"
+rpc_port = 8545
+metrics_port = 9090
+bootstrap = "/ip4/1.2.3.4/tcp/4001/p2p/..."
+```
+
+---
+
+## 2. Gözlemlenebilirlik: Prometheus Metrikleri
+
+Düğümün sağlığını ve performansını izlemek için `/metrics` endpoint'i üzerinden gerçek zamanlı veriler sunulur.
+
+- **Varsayılan Port:** `9090`
+- **Erişim:** `http://127.0.0.1:9090/metrics`
+
+**Sunulan Metrikler:**
+- `budlum_chain_height`: Güncel blok yüksekliği.
+- `budlum_peer_count`: Bağlı eş (peer) sayısı.
+- `budlum_mempool_size`: Havuzdaki bekleyen işlem sayısı.
+- `budlum_reorgs_total`: Gerçekleşen toplam reorg sayısı.
+- `budlum_finalized_height`: En son finalize edilmiş blok.
+
+---
+
+## 3. Desteklenen Metotlar (`bud_` Prefixi)
 
 Tüm metotlar `bud_` ön eki ile başlar. Bu, ağa özgü metotları standart olanlardan ayırmamızı sağlar.
 
@@ -27,9 +60,9 @@ Tüm metotlar `bud_` ön eki ile başlar. Bu, ağa özgü metotları standart ol
 | `bud_getBalance` | `[addr: string]`| Verilen adresin bakiyesini döner. |
 | `bud_getNonce` | `[addr: string]`| Adresin işlem sayısını (nonce) döner. |
 | `bud_sendRawTransaction`| `[tx: object]` | İmzalanmış işlemi ağa gönderir. |
-| `bud_getTransactionByHash`| `[hash: string]`| İşlem detaylarını döner. |
-| `bud_getTransactionReceipt`| `[hash: string]`| İşlemin işlenme sonucunu (fişini) döner. |
-| `bud_gasPrice` | `[]` | Önerilen işlem ücretini döner. |
+| `bud_getTransactionByHash`| `[hash: string]`| İşlem detaylarını döner. (O(1) İndeksli) |
+| `bud_getTransactionReceipt`| `[hash: string]`| İşlemin işlenme sonucunu (fişini) döner. (O(1) İndeksli) |
+| `bud_gasPrice` | `[]` | Ağdaki güncel `base_fee` değerini döner. |
 | `bud_estimateGas` | `[tx: object]` | Tahmini gas tüketimini döner. |
 | `bud_syncing` | `[]` | Düğümün senkronizasyon durumunu döner. |
 | `bud_netVersion` | `[]` | Ağ versiyonunu (Network ID) döner. |

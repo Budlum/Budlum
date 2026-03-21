@@ -64,7 +64,31 @@ pub struct Transaction {
 
 ---
 
-## 2. Algoritmalar: Güvenlik Nasıl Sağlanır?
+## 2. Dinamik Ücret Piyasası (Dynamic Fee Market)
+
+Budlum Hardening aşamasında, sabit ücret yerine **EIP-1559 benzeri** dinamik bir `base_fee` mekanizması getirilmiştir.
+
+### Mekanizma:
+- **Base Fee:** Her blok için geçerli olan minimum ücrettir.
+- **Dinamik Ayar:** Her bloktan sonra ağdaki yoğunluğa (işlem sayısına) göre `base_fee` otomatik güncellenir.
+  - Eğer blokta 50'den (Hedef) fazla işlem varsa: `base_fee` bir sonraki blok için **%12.5 artar**.
+  - Eğer blokta 50'den az işlem varsa: `base_fee` bir sonraki blok için **%12.5 azalır** (minimum 1).
+- **Spam Koruması:** Ağ saldırı altındayken ücretler hızla yükselerek saldırganın maliyetini katlar.
+
+---
+
+## 3. İşlem İndeksleme (TX Indexing)
+
+Geçmiş bir işlemin hangi blokta olduğunu bulmak eskiden tüm zinciri taramayı gerektirirdi ($O(N)$).
+
+**Yeni Mimari:**
+- Her blok yazıldığında, içindeki işlemler `TX_IDX:{hash}` anahtarıyla veritabanına kaydedilir.
+- Değer olarak işlemin bulunduğu **Blok Numarası** saklanır.
+- Bu sayede `get_transaction_by_hash` ve `get_transaction_receipt` RPC çağrıları **O(1) (milisaniyeler içinde)** yanıt döner.
+
+---
+
+## 4. Algoritmalar: Güvenlik Nasıl Sağlanır?
 
 ### 2.1 Çekirdek Kriptografi: Katı İmza Doğrulaması
 

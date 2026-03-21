@@ -24,6 +24,7 @@ libp2p = { version = "0.54", features = [
     "mdns",
     "gossipsub",
     "kad",
+    "request-response",
 ] }
 futures = "0.3"
 tracing = "0.1"
@@ -46,7 +47,17 @@ bitvec = "1.0.1"
 
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+prometheus = "0.13"
+toml = "0.8"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+async-trait = "0.1"
 
 [build-dependencies]
 prost-build = "0.14.3"
+
+[dev-dependencies]
+tempfile = "3.10"
+
 

@@ -32,30 +32,34 @@ pub struct PeerScore {
 -   `score` (`i32`): Negatif olabileceği için `i32` kullanıldı. Başlangıç puanı 0'dır (Nötr).
 -   `handshaked` (`bool`): **Handshake Gating** (Kapı Tutucu) mantığıdır. Bu değer `true` olmadan eşin attığı işlem veya blok paketleri açılmadan çöpe atılır (DoS Koruması).
 -   `banned_until`: `Option` tipindedir. Eğer `None` ise yasaklı değil demektir. Eğer zaman damgası varsa ve o tarih gelecekteyse, o eşten gelen her şey **çöpe atılır** (Drop).
--   `rate_tokens` & `rate_last_refill`: "Token-Bucket" algoritmasının ana değişkenleri. Her bir peer'ın belirli bir mesaj kotası (örn. saniyede 5) vardır.
-
-### Sabitler (Constants): Oyunun Kuralları
+-   `rate_tokens` & `rate_last_refill`: "Token-Bucket" algorit### Sabitler (Constants): Oyunun Kuralları
 
 ```rust
-const BAN_THRESHOLD: i32 = -100;     // Bu puana düşen banlanır.
+pub const MAX_PEERS: usize = 50;      // Maksimum eşleşme sınırı.
+pub const BAN_THRESHOLD: i32 = -100;     // Bu puana düşen banlanır.
 const STARTING_SCORE: i32 = 0;       // Yeni gelenin puanı.
 const INVALID_BLOCK_PENALTY: i32 = -20; // Büyük suç.
 const INVALID_TX_PENALTY: i32 = -5;     // Küçük suç.
+const TIMEOUT_PENALTY: i32 = -15;       // Yavaşlık/Bağlantı kopması.
+const SLOW_SYNC_PENALTY: i32 = -5;      // Veriyi geç gönderme.
+const INVALID_HANDSHAKE_PENALTY: i32 = -20; // Yanlış chain_id/protokol.
 const GOOD_BEHAVIOR_REWARD: i32 = 1;    // Ödül (Zor kazanılır).
-
-// Rate Limiting Sabitleri
-const RATE_LIMIT_CAPACITY: f64 = 20.0;    // Maksimum birikebilecek jeton (Burst)
-const RATE_LIMIT_REFILL_RATE: f64 = 5.0;  // Saniyede yenilenen jeton sayısı
 ```
 
 **Neden Bu Değerler?**
+-   **Resource Limits:** `MAX_PEERS` 50 olarak belirlenmiştir. Bu, node'un binlerce bağlantı altında ezilmesini (Source Exhaustion) engeller.
 -   Bir Node'un banlanması için 5 tane geçersiz blok (`5 * -20 = -100`) yollaması gerekir. Bu, anlık internet kopuklukları veya yazılım hataları (bug) yüzünden dürüst node'ların yanlışlıkla banlanmasını önler (Tolerans Marjı).
 -   Ancak puan kazanmak zordur (+1). Güven, damla damla kazanılır, kova kova kaybedilir.
--   Spam/Flood saldırısına karşı bir saniyede en fazla 5 mesaj işlenir. Burst kapasitesi (anlık yoğunluk) 20 mesajdır. Bu limiti aşan mesajlar yoksayılır ve hatta gönderici puan kaybeder.
 
 ---
 
 ## 2. Fonksiyonlar ve Matematik
+
+### DHT Bootstrapping & Discovery
+Budlum, ağda yalnız kalmamak için her 5 dakikada bir **Kademlia DHT Bootstrap** işlemi yapar. Bu, node'un ağ topolojisini taze tutmasını sağlar.
+
+### Aktif İtibar Filtreleme (Active Filtering)
+`Node`, her dış bağlantı isteğinde önce `PeerManager`'a danışır. Eğer eşin puanı çok düşükse veya zaten yasaklıysa, bağlantı el sıkışması (handshake) bile yapılmadan reddedilir.
 
 ### Fonksiyon: `check_rate_limit` (Spam Koruması)
 

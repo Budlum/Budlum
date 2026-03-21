@@ -1,8 +1,9 @@
 use crate::core::chain_config::Network;
 use clap::Parser;
 use std::path::Path;
-#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum, Default)]
 pub enum ConsensusType {
+    #[default]
     #[value(name = "pow")]
     PoW,
     #[value(name = "pos")]
@@ -19,8 +20,9 @@ impl std::fmt::Display for ConsensusType {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum, Default)]
 pub enum PrivacyLevel {
+    #[default]
     #[value(name = "none")]
     None,
     #[value(name = "stealth")]
@@ -78,8 +80,89 @@ pub struct NodeConfig {
     pub rpc_host: String,
     #[arg(long, default_value = "8545")]
     pub rpc_port: u16,
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long, default_value = "9090")]
+    pub metrics_port: u16,
+    #[arg(long, default_value = "validators.json")]
+    pub validators_file_cli: Option<String>,
 }
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            network: Network::Devnet,
+            consensus: None,
+            difficulty: 2,
+            min_stake: 1000,
+            privacy: PrivacyLevel::None,
+            ring_size: 11,
+            port: None,
+            bootstrap: None,
+            db_path: "./data/budlum.db".to_string(),
+            validators_file: "./validators.json".to_string(),
+            validator_address: None,
+            dial: None,
+            chain_id: None,
+            validator_key_file: None,
+            gen_key: None,
+            rpc_host: "127.0.0.1".to_string(),
+            rpc_port: 8545,
+            config: None,
+            metrics_port: 9090,
+            validators_file_cli: None,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct FileConfig {
+    pub network: Option<String>,
+    pub consensus: Option<String>,
+    pub difficulty: Option<usize>,
+    pub min_stake: Option<u64>,
+    pub port: Option<u16>,
+    pub db_path: Option<String>,
+    pub rpc_host: Option<String>,
+    pub rpc_port: Option<u16>,
+    pub metrics_port: Option<u16>,
+    pub bootstrap: Option<String>,
+    pub validator_key_file: Option<String>,
+    pub validator_address: Option<String>,
+}
+
 impl NodeConfig {
+    pub fn load_with_file(&mut self) {
+        if let Some(ref path) = self.config {
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    match toml::from_str::<FileConfig>(&content) {
+                        Ok(fc) => {
+                            if self.port.is_none() { self.port = fc.port; }
+                            if self.bootstrap.is_none() { self.bootstrap = fc.bootstrap; }
+                            if self.validator_key_file.is_none() { self.validator_key_file = fc.validator_key_file; }
+                            if self.validator_address.is_none() { self.validator_address = fc.validator_address; }
+                            if let Some(ref db) = fc.db_path {
+                                if self.db_path == "./data/budlum.db" || self.db_path.is_empty() { self.db_path = db.clone(); }
+                            }
+                            if let Some(ref host) = fc.rpc_host {
+                                if self.rpc_host == "127.0.0.1" || self.rpc_host.is_empty() { self.rpc_host = host.clone(); }
+                            }
+                            if let Some(rp) = fc.rpc_port {
+                                if self.rpc_port == 8545 { self.rpc_port = rp; }
+                            }
+                            if let Some(mp) = fc.metrics_port {
+                                if self.metrics_port == 9090 { self.metrics_port = mp; }
+                            }
+                            println!("Loaded config from: {}", path);
+                        }
+                        Err(e) => println!("Failed to parse config file: {}", e),
+                    }
+                }
+                Err(e) => println!("Failed to read config file: {}", e),
+            }
+        }
+    }
     pub fn load_validators(&self) -> Vec<String> {
         let path = Path::new(&self.validators_file);
         if !path.exists() {

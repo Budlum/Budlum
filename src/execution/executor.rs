@@ -6,7 +6,7 @@ pub struct Executor;
 
 impl Executor {
     pub fn apply_transaction(state: &mut AccountState, tx: &Transaction) -> Result<(), String> {
-        if tx.from == "genesis" {
+        if tx.from == "0".repeat(64) {
             return Ok(());
         }
 
@@ -42,7 +42,6 @@ impl Executor {
                 } else {
                     state.add_validator(tx.from.clone(), stake_amount);
                 }
-                println!("Stake added: {} now has {}", tx.from, stake_amount);
             }
             TransactionType::Unstake => {
                 let sender_start_balance = state.get_balance(&tx.from);
@@ -58,12 +57,6 @@ impl Executor {
                     if validator.stake == 0 {
                         validator.active = false;
                     }
-                    println!(
-                        "Unstake queued: {} amount {} releases at epoch {}",
-                        tx.from,
-                        tx.amount,
-                        state.epoch_index + crate::core::account::UNBONDING_EPOCHS
-                    );
                 } else {
                     return Err("Not a validator".into());
                 }
@@ -82,8 +75,6 @@ impl Executor {
                 let sender = state.get_or_create(&tx.from);
                 sender.balance -= tx.fee;
                 sender.nonce += 1;
-
-                println!("Vote TX processed from {}", tx.from);
             }
         }
 
@@ -97,7 +88,7 @@ impl Executor {
     ) -> Result<(), String> {
         let mut total_fees: u64 = 0;
         for tx in transactions {
-            if tx.from == "genesis" {
+            if tx.from == "0".repeat(64) {
                 continue;
             }
             if let Err(e) = Self::apply_transaction(state, tx) {
@@ -109,11 +100,6 @@ impl Executor {
             if total_fees > 0 {
                 let producer_account = state.get_or_create(producer);
                 producer_account.balance += total_fees;
-                println!(
-                    "Block producer {} received {} in fees",
-                    &producer[..16.min(producer.len())],
-                    total_fees
-                );
             }
         }
         Ok(())

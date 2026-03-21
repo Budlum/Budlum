@@ -67,13 +67,13 @@ impl GenesisConfig {
             signature: None,
             chain_id: self.chain_id,
             slashing_evidence: None,
-            state_root: String::new(),
-            tx_root: String::new(),
+            state_root: "0".repeat(64),
+            tx_root: "0".repeat(64),
             epoch: 0,
             slot: 0,
             vrf_output: Vec::new(),
             vrf_proof: Vec::new(),
-            validator_set_hash: String::new(),
+            validator_set_hash: "0".repeat(64),
         };
 
         block.tx_root = block.calculate_tx_root();

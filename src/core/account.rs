@@ -2,7 +2,7 @@ use crate::consensus::pos::SlashingEvidence;
 use crate::storage::db::Storage;
 use crate::core::transaction::{Transaction, TransactionType};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 pub const MIN_TX_FEE: u64 = 1;
 pub const GENESIS_BALANCE: u64 = 1_000_000_000;
 pub const UNBONDING_EPOCHS: u64 = 7;
@@ -84,6 +84,9 @@ pub struct AccountState {
     storage: Option<Storage>,
     pub epoch_index: u64,
     pub last_epoch_time: u64,
+    dirty_accounts: HashSet<String>,
+    cached_leaves: Vec<[u8; 32]>,
+    cached_keys: Vec<String>,
 }
 impl AccountState {
     pub fn new() -> Self {
@@ -94,6 +97,9 @@ impl AccountState {
             storage: None,
             epoch_index: 0,
             last_epoch_time: 0,
+            dirty_accounts: HashSet::new(),
+            cached_leaves: Vec::new(),
+            cached_keys: Vec::new(),
         }
     }
     pub fn with_storage(storage: Storage) -> Self {
@@ -104,6 +110,9 @@ impl AccountState {
             storage: Some(storage),
             epoch_index: 0,
             last_epoch_time: 0,
+            dirty_accounts: HashSet::new(),
+            cached_leaves: Vec::new(),
+            cached_keys: Vec::new(),
         };
         if let Err(e) = state.load_from_storage() {
             println!("Could not load account state: {}", e);
@@ -183,10 +192,11 @@ impl AccountState {
             self.accounts
                 .insert(public_key.to_string(), Account::new(public_key.to_string()));
         }
+        self.dirty_accounts.insert(public_key.to_string());
         self.accounts.get_mut(public_key).unwrap()
     }
     pub fn validate_transaction(&self, tx: &Transaction) -> Result<(), String> {
-        if tx.from == "genesis" {
+        if tx.from == "0".repeat(64) {
             return Ok(());
         }
         if !tx.verify() {
@@ -311,18 +321,18 @@ impl AccountState {
     pub fn add_balance(&mut self, public_key: &str, amount: u64) {
         let account = self.get_or_create(public_key);
         account.balance += amount;
+        self.dirty_accounts.insert(public_key.to_string());
     }
     pub fn save_to_storage(&self) -> Result<(), String> {
         let storage = match &self.storage {
             Some(s) => s,
             None => return Ok(()),
         };
-        let data = serde_json::to_vec(&self.accounts)
-            .map_err(|e| format!("Serialization error: {}", e))?;
-        storage
-            .db()
-            .insert("ACCOUNT_STATE", data)
-            .map_err(|e| format!("Storage error: {}", e))?;
+        for (pubkey, account) in &self.accounts {
+            storage
+                .save_account(pubkey, account)
+                .map_err(|e| format!("Storage error: {}", e))?;
+        }
         storage
             .db()
             .flush()
@@ -334,11 +344,21 @@ impl AccountState {
             Some(s) => s,
             None => return Ok(()),
         };
-        if let Ok(Some(data)) = storage.db().get("ACCOUNT_STATE") {
-            let accounts: HashMap<String, Account> = serde_json::from_slice(&data)
-                .map_err(|e| format!("Deserialization error: {}", e))?;
-            self.accounts = accounts;
-            println!("Loaded {} accounts from storage", self.accounts.len());
+        match storage.load_all_accounts() {
+            Ok(accounts) => {
+                println!("Loaded {} accounts from storage", accounts.len());
+                self.accounts = accounts;
+            }
+            Err(e) => {
+                if let Ok(Some(data)) = storage.db().get("ACCOUNT_STATE") {
+                    let accounts: HashMap<String, Account> = serde_json::from_slice(&data)
+                        .map_err(|e| format!("Deserialization error: {}", e))?;
+                    self.accounts = accounts;
+                    println!("Loaded {} accounts from legacy blob", self.accounts.len());
+                } else {
+                    println!("Could not load accounts: {}", e);
+                }
+            }
         }
         Ok(())
     }
@@ -370,22 +390,74 @@ impl AccountState {
             .collect()
     }
 
-    pub fn calculate_state_root(&self) -> String {
+    pub fn calculate_state_root(&mut self) -> String {
         use sha2::{Digest, Sha256};
+
+        if self.accounts.is_empty() {
+            return "0".repeat(64);
+        }
 
         let mut sorted_accounts: Vec<_> = self.accounts.iter().collect();
         sorted_accounts.sort_by(|a, b| a.0.cmp(b.0));
 
-        let mut hasher = Sha256::new();
-        hasher.update(b"BDLM_STATE_V1");
+        let keys_changed = self.cached_keys.len() != sorted_accounts.len()
+            || self.cached_keys.iter().zip(sorted_accounts.iter()).any(|(k, (sk, _))| k != *sk);
 
-        for (pubkey, account) in sorted_accounts {
-            hasher.update(pubkey.as_bytes());
-            hasher.update(account.balance.to_le_bytes());
-            hasher.update(account.nonce.to_le_bytes());
+        if keys_changed || self.cached_leaves.is_empty() {
+            self.cached_keys = sorted_accounts.iter().map(|(k, _)| (*k).clone()).collect();
+            self.cached_leaves = sorted_accounts
+                .iter()
+                .map(|(pubkey, account)| {
+                    let mut h = Sha256::new();
+                    h.update(b"BDLM_LEAF_V2");
+                    h.update(pubkey.as_bytes());
+                    h.update(account.balance.to_le_bytes());
+                    h.update(account.nonce.to_le_bytes());
+                    h.finalize().into()
+                })
+                .collect();
+        } else {
+            for dirty_key in &self.dirty_accounts {
+                if let Some(pos) = self.cached_keys.iter().position(|k| k == dirty_key) {
+                    if let Some(account) = self.accounts.get(dirty_key) {
+                        let mut h = Sha256::new();
+                        h.update(b"BDLM_LEAF_V2");
+                        h.update(dirty_key.as_bytes());
+                        h.update(account.balance.to_le_bytes());
+                        h.update(account.nonce.to_le_bytes());
+                        self.cached_leaves[pos] = h.finalize().into();
+                    }
+                }
+            }
         }
 
-        hex::encode(hasher.finalize())
+        self.dirty_accounts.clear();
+
+        let mut level = self.cached_leaves.clone();
+        while level.len() > 1 {
+            let mut next_level = Vec::new();
+            let mut i = 0;
+            while i < level.len() {
+                let left = &level[i];
+                let right = if i + 1 < level.len() {
+                    &level[i + 1]
+                } else {
+                    left
+                };
+                let mut h = Sha256::new();
+                h.update(b"BDLM_NODE_V2");
+                h.update(left);
+                h.update(right);
+                next_level.push(h.finalize().into());
+                i += 2;
+            }
+            level = next_level;
+        }
+
+        hex::encode(level[0])
+    }
+    pub fn clear_dirty(&mut self) {
+        self.dirty_accounts.clear();
     }
 }
 impl Default for AccountState {

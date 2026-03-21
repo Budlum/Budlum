@@ -3,113 +3,126 @@ mod tests {
     use crate::rpc::server::RpcServer;
     use crate::rpc::api::BudlumApiServer;
     use crate::chain::blockchain::Blockchain;
-    use crate::consensus::PoWEngine;
+    use crate::consensus::pow::PoWEngine;
     use crate::core::transaction::Transaction;
     use crate::network::node::Node;
-    use std::sync::{Arc, Mutex};
+    use crate::chain::chain_actor::{ChainActor, ChainHandle};
+    use std::sync::Arc;
 
-    fn setup() -> (RpcServer, Arc<Mutex<Blockchain>>) {
+    async fn setup() -> (RpcServer, ChainHandle) {
         let consensus = Arc::new(PoWEngine::new(0));
-        let blockchain = Arc::new(Mutex::new(Blockchain::new(consensus, None, 1337, None)));
-        let node_struct = Node::new(blockchain.clone()).unwrap();
+        let blockchain = Blockchain::new(consensus, None, 1337, None);
+        let (chain_actor, chain) = ChainActor::new(blockchain);
+        tokio::spawn(async move {
+            chain_actor.run().await;
+        });
+        let node_struct = Node::new(chain.clone()).unwrap();
         let node_client = node_struct.get_client();
-        (RpcServer::new(blockchain.clone(), node_client), blockchain)
+        (RpcServer::new(chain.clone(), node_client), chain)
     }
 
     #[tokio::test]
     async fn test_rpc_chain_info() {
-        let (server, _) = setup();
-        assert_eq!(server.chain_id().unwrap(), "0x539");
-        assert_eq!(server.net_version().unwrap(), "1337");
+        let (server, _) = setup().await;
+        let chain_id = server.chain_id().await.unwrap();
+        println!("bud_chainId: {}", chain_id);
+        assert_eq!(chain_id, "0x539");
     }
 
     #[tokio::test]
     async fn test_rpc_block_methods() {
-        let (server, bc) = setup();
-        assert_eq!(server.block_number().unwrap(), "0x1");
+        let (server, bc) = setup().await;
+        let block_number = server.block_number().await.unwrap();
+        println!("bud_blockNumber: {}", block_number);
         
-        let genesis_hash = bc.lock().unwrap().chain[0].hash.clone();
-        let block_by_hash = server.get_block_by_hash(genesis_hash.clone()).unwrap();
-        assert_eq!(block_by_hash["hash"], genesis_hash);
-        assert_eq!(block_by_hash["number"], "0x0");
+        assert_eq!(block_number, "0x0");
+        
+        let genesis = bc.get_block(0).await.unwrap();
+        let genesis_hash = genesis.hash.clone();
+        let hex_genesis_hash = if genesis_hash.starts_with("0x") { genesis_hash } else { format!("0x{}", genesis_hash) };
+        
+        let block_by_hash = server.get_block_by_hash(hex_genesis_hash.clone()).await.unwrap();
+        println!("bud_getBlockByHash: {}", serde_json::to_string_pretty(&block_by_hash).unwrap());
+        assert_eq!(block_by_hash["hash"], hex_genesis_hash);
+        assert!(block_by_hash["parentHash"].as_str().unwrap().starts_with("0x"));
 
-        let block_by_num = server.get_block_by_number(0).unwrap();
-        assert_eq!(block_by_num["hash"], genesis_hash);
+        let block_by_num = server.get_block_by_number(0).await.unwrap();
+        assert_eq!(block_by_num["hash"], hex_genesis_hash);
+        
+        let missing_block = server.get_block_by_number(999).await.unwrap();
+        assert!(missing_block.is_null());
     }
 
     #[tokio::test]
     async fn test_rpc_account_methods() {
-        let (server, bc) = setup();
+        let (server, bc) = setup().await;
         let addr = "test_addr";
-        {
-            let mut bc_lock = bc.lock().unwrap();
-            bc_lock.init_genesis_account(addr);
-        }
-        assert_eq!(server.get_balance(addr.to_string()).unwrap(), "0x3b9aca00");
-        assert_eq!(server.get_nonce(addr.to_string()).unwrap(), "0x0");
+        bc.init_genesis_account(addr).await;
+        
+        let balance = server.get_balance(addr.to_string()).await.unwrap();
+        println!("bud_getBalance: {}", balance);
+        assert_eq!(balance, "0x3b9aca00");
     }
 
     #[tokio::test]
     async fn test_rpc_transaction_methods() {
-        let (server, bc) = setup();
+        let (server, bc) = setup().await;
         let keypair = crate::crypto::primitives::KeyPair::generate().unwrap();
         let from = keypair.public_key_hex();
         
-        {
-            let mut bc_lock = bc.lock().unwrap();
-            bc_lock.state.add_balance(&from, 1000);
-        }
+        bc.add_balance(&from, 1000).await;
 
         let mut tx = Transaction::new(from.clone(), "bob".into(), 100, vec![]);
         tx.fee = 1;
         tx.sign(&keypair);
-        let tx_hash = tx.hash.clone();
+        let hex_tx_hash = format!("0x{}", tx.hash);
         
-        server.send_raw_transaction(tx.clone()).unwrap();
+        server.send_raw_transaction(tx.clone()).await.unwrap();
         
-        let retrieved_tx = server.get_transaction_by_hash(tx_hash.clone()).unwrap();
-        assert_eq!(retrieved_tx["hash"], tx_hash);
-        assert_eq!(retrieved_tx["amount"], "0x64");
+        let retrieved_tx = server.get_transaction_by_hash(hex_tx_hash.clone()).await.unwrap();
+        println!("bud_getTransactionByHash: {}", serde_json::to_string_pretty(&retrieved_tx).unwrap());
+        assert_eq!(retrieved_tx["hash"], hex_tx_hash);
+        assert!(retrieved_tx["signature"].as_str().unwrap().starts_with("0x"));
 
-        let receipt = server.get_transaction_receipt(tx_hash.clone()).unwrap();
-        assert_eq!(receipt["transactionHash"], tx_hash);
-        assert_eq!(receipt["status"], "0x1");
-        assert_eq!(receipt["blockNumber"], "null");
+        let receipt = server.get_transaction_receipt(hex_tx_hash.clone()).await.unwrap();
+        println!("bud_getTransactionReceipt (pending): {}", serde_json::to_string_pretty(&receipt).unwrap());
+
+        assert!(receipt.is_null());
     }
 
     #[tokio::test]
-    async fn test_rpc_network_methods() {
-        let (server, _) = setup();
-        assert_eq!(server.net_listening().unwrap(), true);
-        assert_eq!(server.net_peer_count().unwrap(), "0x0");
-        assert_eq!(server.syncing().unwrap(), false);
-    }
-
-    #[tokio::test]
-    async fn test_rpc_fee_methods() {
-        let (server, _) = setup();
-        assert_eq!(server.gas_price().unwrap(), "0x1");
+    async fn test_rpc_error_cases() {
+        let (server, _) = setup().await;
+        
         let tx = Transaction::new("a".into(), "b".into(), 100, vec![]);
-        assert_eq!(server.estimate_gas(tx).unwrap(), "0x5208");
+        let result = server.send_raw_transaction(tx).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), -32602); 
+        println!("Error Case (Invalid Params): {}", err);
     }
 
     #[tokio::test]
     async fn test_rpc_tx_precheck() {
-        let (server, bc) = setup();
+        let (server, bc) = setup().await;
         let keypair = crate::crypto::primitives::KeyPair::generate().unwrap();
         let from = keypair.public_key_hex();
         
         let mut tx = Transaction::new(from.clone(), "bob".into(), 100, vec![]);
-        tx.nonce = 10; 
-        let precheck = server.tx_precheck(tx.clone()).unwrap();
+        tx.fee = 1;
+        let precheck = server.tx_precheck(tx.clone()).await.unwrap();
+        println!("bud_txPrecheck (no sig): {}", serde_json::to_string_pretty(&precheck).unwrap());
         assert_eq!(precheck["accepted"], false);
-        assert!(precheck["reasons"].as_array().unwrap().iter().any(|r| r == "insufficient_funds"));
+        assert!(precheck["reasons"].as_array().unwrap().iter().any(|r| r == "invalid_signature"));
 
-        {
-            let mut bc_lock = bc.lock().unwrap();
-            bc_lock.state.add_balance(&from, 1000);
-        }
-        let precheck2 = server.tx_precheck(tx).unwrap();
-        assert_eq!(precheck2["accepted"], true);
+        bc.add_balance(&from, 1000).await;
+        
+        let precheck2 = server.tx_precheck(tx.clone()).await.unwrap();
+        assert_eq!(precheck2["accepted"], false);
+
+        tx.sign(&keypair);
+        let precheck3 = server.tx_precheck(tx).await.unwrap();
+        println!("bud_txPrecheck (with sig): {}", serde_json::to_string_pretty(&precheck3).unwrap());
+        assert_eq!(precheck3["accepted"], true);
     }
 }

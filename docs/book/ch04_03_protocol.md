@@ -29,7 +29,18 @@ Ağdaki tüm iletişim bir enum (numaralandırılmış yapı) üzerinden geçer.
 
 ## GossipSub ile Yayın Yapma (Publish)
 
-Budlum Core iletişimi **GossipSub** üzerinden yürütür. Doğrudan tek bir node'a mesaj göndermek yerine (TCP Direct Stream harici), belli konu başlıklarına (örneğin "blocks" veya "transactions") mesaj yayımlanır. Kütüphane optimalliği sayesinde bu mesaj saniyeler içinde ağdaki tüm düğümlere dedikodu ("gossip") yöntemiyle ulaşır.
+Budlum Core iletişimi **GossipSub** üzerinden yürütür. Ancak her veri Gossip ile yayılmaz:
+- **Konu Başlıkları (Topics):** "blocks" ve "transactions" gibi veriler tüm ağa duyurulur.
+- **Limitler:** GossipSub saniyeler içinde ulaşır ama yüksek bant genişliği harcar.
+
+## Request-Response Senkronizasyonu
+
+**Production Hardening** aşamasında, büyük veri transferleri (geçmiş blokları indirme) GossipSub üzerinden değil, doğrudan birebir (Peer-to-Peer) **Request-Response** protokolü ile yapılır.
+
+- **Protokol Kimliği:** `/budlum/sync/1.0.0`
+- **SyncCodec:** Veriyi `length-prefixed` (uzunluk ön ekli) şekilde serileştiren ve akış (stream) üzerinden güvenli aktaran özel bir yapı.
+- **Aktör Entegrasyonu:** `Node` asenkron döngüsü, gelen istekleri `ChainActor`'a iletir; böylece blok ve headerlar kilitlenme (lock) olmadan yüksek hızda servis edilir.
+- **Neden?** GossipSub "herkese bağırır". Senkronizasyonda ise sadece bir kişiye "bana X ile Y arasındaki blokları ver" deriz. Bu ağ trafiğini %90 azaltırken, senkronizasyon hızını 5-10 kat artırır.
 
 ## Serileştirme (Serialization)
 

@@ -10,7 +10,7 @@ The architecture emphasizes **security**, **modularity**, and **readability**, m
 
 - [Architecture Overview](#architecture-overview)
 - [Quick Start](#quick-start)
-- [Mainnet Hardening Features](#mainnet-hardening-features)
+- [Mainnet Hardening (Production Ready)](#mainnet-hardening-features)
 - [Core Components Deep Dive](#core-components-deep-dive)
     - [1. Data Structures](#1-data-structures)
     - [2. Consensus Engines](#2-consensus-engines)
@@ -32,11 +32,13 @@ graph TD
     User(("User")) --> CLI["CLI / API Layer"]
     CLI --> Node["Node Service"]
     
-    subgraph "Core Blockchain Logic"
-        Node --> Chain["Blockchain Manager"]
-        Chain --> State["Account State (Balances/Nonces)"]
-        Chain --> Mempool["Pending Transactions"]
-        Chain --> Store["Storage (Sled DB)"]
+    subgraph "Core Blockchain Actor"
+        Node --> ChainHandle["ChainHandle (Async)"]
+        ChainHandle --> ChainActor["ChainActor (Exclusive Owner)"]
+        ChainActor --> Blockchain["Blockchain State"]
+        Blockchain --> State["Account State"]
+        Blockchain --> Mempool["Pending Transactions"]
+        Blockchain --> Store["Persistent Storage"]
     end
 
     subgraph "Consensus Layer (Hybrid)"
@@ -49,9 +51,10 @@ graph TD
 
     subgraph "Networking Layer (libp2p)"
         Node --> Swarm["P2P Swarm"]
-        Swarm --> Gossip["GossipSub (Block/TX Propagation)"]
-        Swarm --> Sync["Snap-Sync Engine"]
-        Swarm --> PeerMgr["Granular Rate Limiting"]
+        Swarm --> Gossip["GossipSub (Broadcast)"]
+        Swarm --> Sync["Req-Resp Sync (P2P)"]
+        Sync --> Codec["SyncCodec (Length-Prefixed)"]
+        Swarm --> PeerMgr["Granular Reputation Manager"]
     end
 ```
 
@@ -61,7 +64,7 @@ graph TD
 | :--- | :--- | :--- |
 | **CLI** | `src/cli/` | Command line argument parsing and node configuration. |
 | **Core** | `src/core/` | Fundamental types: `Block`, `Transaction`, `Account`, `ChainConfig`. |
-| **Chain** | `src/chain/` | Blockchain logic, genesis blocks, and state snapshots. |
+| **Chain** | `src/chain/` | Blockchain logic, `ChainActor` (exclusive state owner), and snapshots. |
 | **Network** | `src/network/` | P2P stack (libp2p), node discovery, and protocol logic. |
 | **RPC** | `src/rpc/` | JSON-RPC 2.0 implementation with `bud_` standard methods. |
 | **Consensus** | `src/consensus/` | Implementations of PoW, PoS, PoA, and Finality gadgets. |
@@ -104,24 +107,38 @@ cargo build --release
 
 ---
 
-## 🛡️ Mainnet Hardening Features
+### 🔴 Performance & Scalability
+- **Incremental Merkle State Root**: Replaced full-state hashing ($O(N)$) with a **Dirty-Tracking Incremental Trie**. Only modified account paths are re-computed, enabling sub-millisecond state roots even with millions of accounts.
+- **Per-Account State Persistence**: Migrated from single-blob JSON storage to granular, key-value based account persistence (`ACCT:{pubkey}`). This eliminates the I/O bottleneck of serializing the entire state on every block.
+- **Atomic Batched Storage I/O**: Integrated `sled::Batch` for block insertions and deletions. All indices (Height, StateRoot, TX Index) are updated atomically, preventing database corruption during hardware failures.
+- **Mempool Persistence**: Pending transactions are now persisted to disk. The node automatically restores the mempool on restart, preventing transaction loss during reboots.
+- **O(1) Transaction Indexing**: Added a global transaction index (`TX_IDX:{hash}`). Transaction lookups and receipt queries are now constant-time, regardless of chain length.
+- **Actor-Based Concurrency**: Migrated from `Arc<Mutex<Blockchain>>` to a lock-free **Actor Model**. The `ChainActor` exclusively manages state, eliminating lock contention between the Networking, RPC, and Mining loops.
+- **Request-Response Synchronization**: Replaced high-overhead Gossip broadcasts for block sync with a robust **libp2p Request-Response protocol**. Every node queries headers and blocks point-to-point, ensuring faster and more predictable chain convergence.
+- **High-Performance Benchmarking**: Integrated a dedicated `bench_performance` tool capable of measuring real-world TPS under heavy load, identifying and eliminating bottlenecks in hashing and state transition paths.
 
-The Budlum blockchain has undergone massive security sweeping and optimization phases, making it ready for production environments.
+### 🟠 Security & Network Stability
+- **Dynamic Fee Market (EIP-1559 Style)**: Implemented a proportional `base_fee` mechanism. Fees automatically adjust (±12.5%) based on block congestion, providing native protection against pennyspam DoS.
+- **Granular Peer Reputation Scoring**: The `PeerManager` now tracks and penalizes "soft" failures:
+    - **Timeout**: -15 score
+    - **Slow Sync**: -5 score
+    - **Invalid Handshake**: -20 score
+- **Verifiable Random Functions (VRF)**: Proposer selection in PoS is cryptographically hidden and unbiased, preventing strategic DoS attacks on upcoming leaders.
 
-- **Granular Token-Bucket Rate Limiting**: The Peer Manager assigns dedicated burst capacities for Votes (Finality) and Blobs (QC), strictly dropping messages and punishing peers that attempt to flood consensus-heavy traffic.
-- **VRF-Based Leader Selection (PoS)**: Replaced RANDAO with **Verifiable Random Functions**. Leaders derive lottery outcomes and proofs from their private keys and slots, making elections immune to bias and providing DoS resistance via hidden leadership.
-- **Strict Network Isolation & Handshake Gating**: Nodes executing handshakes enforce `chain_id` checks immediately. Furthermore, the networking layer explicitly drops un-handshaked packets (i.e., unsolicited block or transaction floods) before allocation.
-- **Genesis Spoofing Ban**: Any transaction arriving into the mempool, or network block >0 proposing a transaction acting as `from: "genesis"`, is strictly rejected prior to propagation.
-- **Universal Transaction Validation**: Signatures are evaluated at every touchpoint before advancing into execution arrays. The block processing loop mandates intrinsic `tx.chain_id == block.chain_id` verifications.
-- **Strict State Determinism**: Account block applications (`apply_block`) execute in a rigid boundary, actively propagating nested transaction failures to reject the entire network block payload. Node startups will intentionally execute a secure "hard crash" exit upon intercepting disk-level state corruption.
-- **Deterministic Serialization**: Migrated from `serde_json` to `bincode` for state root hashing and block slashing evidence to guarantee deterministic byte mappings matching `BlockHeader` hashes. Integrated `prost`-based Protobuf schemas for all P2P payloads.
-- **Panic Vector Eradication**: Mutex locks spanning heavy traffic surfaces (`Arc<Mutex<Blockchain>>` and `PeerManager`) are routed through graceful `.unwrap_or_else` boundaries to terminate connections instead of propagating poisoned lock panics across the async runtime.
-- **Background Maintenance Workers**: Features automated background asynchronous loops ticking via `tokio::time::interval`, running Mempool Garbage Collection (TTL-based expiration), Peer Manager expired ban cleanup, and continuous Kademlia DHT peer discovery (bootstrap loops) to ensure memory health.
-- **BLS Finality Layer**: A two-phase voting protocol (Prevote/Precommit) provides deterministic finality. Once 2/3 of validators produce a `FinalityCert`, the block is immutable, and the fork-choice rule strictly forbids reorgs past finalized checkpoints.
-- **Optimistic QC & PQ Attestation**: Integrated **Dilithium** (NIST-standard Post-Quantum) signatures for attestation. Signatures are bundled into Merkle tree `QcBlob` artifacts, verifiable via compact **Fraud Proofs** without bloating the main chain.
-- **Finality-Aware Disk Pruning**: The pruning engine respects finalized checkpoints. Sled DB purges block data only beneath the finalized height, ensuring historical integrity for all confirmed states.
-- **Robust Network Handshake**: Handshakes now exchange `validator_set_hash` and `supported_schemes` (BLS, Dilithium), isolating protocol-incompatible nodes immediately.
-- **Deterministic Serialization**: Migrated to `prost`-based Protobuf schemas for P2P payloads. Bincode is used for sensitive consensus artifacts (Slashing, VRF) to guarantee bit-exact hashing across heterogeneous architectures.
+### 🟡 Operational & UX
+- **TOML Configuration Support**: Nodes can now be fully configured via `budlum.toml`, allowing complex network and validator tuning without massive CLI flags.
+- **Prometheus Metrics Standard**: Native exporter for block time, peer count, mempool size, and reorg depth, enabling high-availability monitoring.
+- **Chaos Engineering & Benchmarking**: 
+    - **`chaos.rs`**: Simulates network partitions, floods, and state corruption.
+    - **`bench_performance.rs`**: Measures peak TPS by bypassing network I/O.
+    - **Run Benchmark**: `cargo test bench_high_tps -- --nocapture`
+
+### 🟢 Production Hardening (Mainnet Ready)
+- **Atomic Persistence**: Every block commit uses `sled::Batch` to ensure atomicity across block data, indices, and state roots.
+- **Network Guardrails**: 
+    - **`MAX_PEERS` (50)**: Strict limit to prevent resource exhaustion.
+    - **Active Banning**: Integrated reputation system with 1-hour automated bans for malicious peers.
+    - **DHT Self-Healing**: Periodic 5-minute Kademlia bootstrapping to maintain network health.
 
 ---
 

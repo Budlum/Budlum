@@ -9,15 +9,21 @@ src/
 ├── main.rs                 # Uygulama giriş noktası (CLI & Service Runner)
 ├── lib.rs                  # Modüllerin public dışa aktarımı
 ├── cli/                    # CLI komutları ve argüman yönetimi
-├── core/                   # Temel veri yapıları (Block, Tx, Account, Config)
-├── chain/                  # Zincir mantığı (Blockchain, Genesis, Snapshots)
-├── network/                # P2P altyapısı (Node, PeerManager, Protocol)
+├── core/                   # Temel veri yapıları (Block, Tx, Account, Config, Metrics)
+├── chain/                  # Zincir mantığı (Blockchain, Actor, Genesis, Snapshots)
+│   └── chain_actor.rs       # Zincir durumunu yöneten Actor ve Handle tanımları
+├── network/                # P2P altyapısı (Node, PeerManager, Protocol, SyncCodec)
+│   └── sync_codec.rs        # P2P senkronizasyon için özel veri kodlayıcı
 ├── rpc/                    # JSON-RPC sunucusu ve API tanımları
 ├── storage/                # Veritabanı (RocksDB/DumbDB) katmanı
 ├── execution/              # İşlem yürütme (Executor) ve State geçişleri
 ├── consensus/              # Konsensüs algoritmaları (PoW, PoA, PoS, Finality)
 ├── mempool/                # İşlem havuzu (Mempool) yönetimi
-└── tests/                  # Entegrasyon ve Kaos testleri
+└── tests/                  # Doğrulama, Kaos ve Performans testleri
+    ├── integration.rs      # Uçtan uca sistem testleri
+    ├── chaos.rs            # Ağ bölünmesi ve hata simülasyonları
+    ├── hardening.rs        # Güvenlik ve kaynak sınırı testleri
+    └── bench_performance.rs # High-TPS performans ölçüm aracı
 ```
 
 ## 2. Modülerlik Kuralları
