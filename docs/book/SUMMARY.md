@@ -37,3 +37,4 @@
 - [Bölüm 8: Kaos Mühendisliği ve Testler](ch08_chaos_engineering.md)
 
 - [Bölüm 9: Dizin Yapısı ve Modülerlik](ch09_directory_structure.md)
+- [Bölüm 10: Benchmark Sonuçları (Performance)](ch10_benchmark_results.md)

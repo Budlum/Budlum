@@ -107,38 +107,23 @@ cargo build --release
 
 ---
 
-### 🔴 Performance & Scalability
-- **Incremental Merkle State Root**: Replaced full-state hashing ($O(N)$) with a **Dirty-Tracking Incremental Trie**. Only modified account paths are re-computed, enabling sub-millisecond state roots even with millions of accounts.
-- **Per-Account State Persistence**: Migrated from single-blob JSON storage to granular, key-value based account persistence (`ACCT:{pubkey}`). This eliminates the I/O bottleneck of serializing the entire state on every block.
-- **Atomic Batched Storage I/O**: Integrated `sled::Batch` for block insertions and deletions. All indices (Height, StateRoot, TX Index) are updated atomically, preventing database corruption during hardware failures.
-- **Mempool Persistence**: Pending transactions are now persisted to disk. The node automatically restores the mempool on restart, preventing transaction loss during reboots.
-- **O(1) Transaction Indexing**: Added a global transaction index (`TX_IDX:{hash}`). Transaction lookups and receipt queries are now constant-time, regardless of chain length.
-- **Actor-Based Concurrency**: Migrated from `Arc<Mutex<Blockchain>>` to a lock-free **Actor Model**. The `ChainActor` exclusively manages state, eliminating lock contention between the Networking, RPC, and Mining loops.
-- **Request-Response Synchronization**: Replaced high-overhead Gossip broadcasts for block sync with a robust **libp2p Request-Response protocol**. Every node queries headers and blocks point-to-point, ensuring faster and more predictable chain convergence.
-- **High-Performance Benchmarking**: Integrated a dedicated `bench_performance` tool capable of measuring real-world TPS under heavy load, identifying and eliminating bottlenecks in hashing and state transition paths.
-
-### 🟠 Security & Network Stability
-- **Dynamic Fee Market (EIP-1559 Style)**: Implemented a proportional `base_fee` mechanism. Fees automatically adjust (±12.5%) based on block congestion, providing native protection against pennyspam DoS.
-- **Granular Peer Reputation Scoring**: The `PeerManager` now tracks and penalizes "soft" failures:
-    - **Timeout**: -15 score
-    - **Slow Sync**: -5 score
-    - **Invalid Handshake**: -20 score
-- **Verifiable Random Functions (VRF)**: Proposer selection in PoS is cryptographically hidden and unbiased, preventing strategic DoS attacks on upcoming leaders.
-
-### 🟡 Operational & UX
-- **TOML Configuration Support**: Nodes can now be fully configured via `budlum.toml`, allowing complex network and validator tuning without massive CLI flags.
-- **Prometheus Metrics Standard**: Native exporter for block time, peer count, mempool size, and reorg depth, enabling high-availability monitoring.
-- **Chaos Engineering & Benchmarking**: 
-    - **`chaos.rs`**: Simulates network partitions, floods, and state corruption.
-    - **`bench_performance.rs`**: Measures peak TPS by bypassing network I/O.
-    - **Run Benchmark**: `cargo test bench_high_tps -- --nocapture`
-
 ### 🟢 Production Hardening (Mainnet Ready)
-- **Atomic Persistence**: Every block commit uses `sled::Batch` to ensure atomicity across block data, indices, and state roots.
-- **Network Guardrails**: 
-    - **`MAX_PEERS` (50)**: Strict limit to prevent resource exhaustion.
-    - **Active Banning**: Integrated reputation system with 1-hour automated bans for malicious peers.
-    - **DHT Self-Healing**: Periodic 5-minute Kademlia bootstrapping to maintain network health.
+
+Budlum Core is now secured with **Phase 1 & 2 Hardening** measures, making it resistant to non-determinism, state loss, and spam:
+
+-   **Deterministic Economics**: All reward and slashing calculations use **Saturating Fixed-Point Math** (`u64`). This ensures 100% identical state roots across different CPU architectures and prevents overflows.
+-   **Deterministic Slot-Timestamps**: Block timestamps are derived from `genesis_time + (index * SLOT_MS)`.
+-   **Atomic Persistence & State Resilience**:
+    *   Consensus state (seen blocks, checkpoints, seeds) is persisted to `sled`.
+    *   Mempool transactions are persisted to disk to survive reboots.
+    *   **Unwrap Audit**: 50+ potential panic points were replaced with robust error handling for 24/7 uptime.
+-   **Merkle Tree Security (Incremental & Optimized)**:
+    *   **Domain Separation**: Uses `0x00` prefixes for leaves and `0x01` for internal nodes.
+    *   **Incremental Updates**: State root calculation is $O(\log N)$ using a cached Merkle Tree and dirty-account tracking.
+-   **Binary Optimization**:
+    *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
+    *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.
+-   **RPC Hardening**: Strict input validation for transaction sizes, signatures, and payload limits (2MB).
 
 ---
 
@@ -160,10 +145,10 @@ A block contains a header and a body of transactions.
 
 #### Transaction (`src/transaction.rs`)
 A state-changing directive signed by a wallet.
-- **`from`/`to`**: Ed25519 Public Keys (Hex).
+- **`from`/`to`**: 32-byte binary `Address` (Type-safe, memory-efficient).
 - **`nonce`**: Sequence number. Must strictly increment (0, 1, 2...) for valid processing.
-- **`signature`**: Signs `hash(from, to, amount, fee, nonce, data, chain_id)`.
-- **Atomic Execution**: If any transaction fails cryptographic checks (or has invalid bounds for timestamp +15 seconds past server time), the execution fails.
+- **`signature`**: Signs `hash(from, to, amount, fee, nonce, data, timestamp, chain_id)` using Ed25519.
+- **Atomic Execution**: If any transaction fails cryptographic checks or safe-math bounds, the execution fails and the block is rejected.
 
 ---
 
@@ -322,9 +307,9 @@ Usage: `cargo run -- [OPTIONS]`
 ## 🛠️ Development Guide
 
 ### Running Tests
-Budlum has extensive unit, integration, and chaos tests (126 tests).
+Budlum has extensive unit, integration, and chaos tests (**131 tests**).
 ```bash
-cargo test
+nix develop --command cargo test
 ```
 
 **Key Test Suites:**

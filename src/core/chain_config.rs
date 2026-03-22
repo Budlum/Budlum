@@ -55,10 +55,11 @@ impl std::fmt::Display for Network {
 
 pub const EPOCH_LEN: u64 = 100;
 pub const SLOT_MS: u64 = 1000;
-pub const FINALITY_CHECKPOINT_INTERVAL: u64 = 100;
+pub const FINALITY_CHECKPOINT_INTERVAL: u64 = 10;
 pub const FINALITY_QUORUM_NUMERATOR: u64 = 2;
 pub const FINALITY_QUORUM_DENOMINATOR: u64 = 3;
-pub const VRF_BASE_PROB: f64 = 1.0;
+pub const FIXED_POINT_SCALE: u64 = 1_000_000;
+pub const VRF_BASE_PROB: u64 = FIXED_POINT_SCALE;
 pub const QC_BLOB_TTL_EPOCHS: u64 = 10;
 pub const MAX_QC_BLOB_BYTES: usize = 1_048_576;
 pub const MAX_VOTES_PER_MSG: usize = 128;

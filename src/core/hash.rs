@@ -1,17 +1,21 @@
 use sha2::{Digest, Sha256};
 pub fn calculate_hash(data: &[u8]) -> String {
+    hex::encode(calculate_hash_bytes(data))
+}
+pub fn calculate_hash_bytes(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    let result = hasher.finalize();
-    hex::encode(result)
+    hasher.finalize().into()
 }
 pub fn hash_fields(fields: &[&[u8]]) -> String {
+    hex::encode(hash_fields_bytes(fields))
+}
+pub fn hash_fields_bytes(fields: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for field in fields {
         hasher.update(field);
     }
-    let result = hasher.finalize();
-    hex::encode(result)
+    hasher.finalize().into()
 }
 #[cfg(test)]
 mod tests {

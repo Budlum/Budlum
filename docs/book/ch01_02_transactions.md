@@ -34,14 +34,14 @@ Eğer bu Tipler olmasaydı, Stake etmek için "Burn Adresi"ne para yollamak gibi
 **Kod:**
 ```rust
 pub struct Transaction {
-    pub from: String,       // Gönderen (Public Key)
-    pub to: String,         // Alıcı (Public Key)
+    pub from: Address,      // Gönderen (32-byte binary)
+    pub to: Address,        // Alıcı (32-byte binary)
     pub amount: u64,        // Miktar
     pub fee: u64,           // İşlem Ücreti (Gas Fee)
     pub nonce: u64,         // Sıra Numarası (Anti-Replay)
     pub data: Vec<u8>,      // Ek Veri (Memo / Smart Contract Call)
-    pub timestamp: u128,    // Zaman damgası (Daraltılmış güvenlik alanı)
-    pub hash: String,       // İşlem ID (TxID)
+    pub timestamp: u128,    // Zaman damgası
+    pub hash: String,       // İşlem ID (Hex String)
     pub signature: Option<Vec<u8>>, // Dijital İmza (Zorunlu)
     pub chain_id: u64,      // Ağ ID (Chain Isolation)
     pub tx_type: TransactionType, // Tip
@@ -52,8 +52,8 @@ pub struct Transaction {
 
 | Alan Adı | Veri Tipi | Neden Bu Tipi Seçtik? | Ne İşe Yarar & Neden Gerekli? |
 | :--- | :--- | :--- | :--- |
-| `from` | `String` | 64-char Hex String. | **Gönderen.** Kimin bakiyesinden düşülecek? Aynı zamanda imza doğrulamasında kullanılan Public Key'dir. |
-| `to` | `String` | Hex String. | **Alıcı.** Para kime gidecek? Stake işlemlerinde boş olabilir (kendine stake). |
+| `from` | `Address` | 32-byte binary. | **Gönderen.** Kimin bakiyesinden düşülecek? Aynı zamanda imza doğrulamasında kullanılan Public Key'dir. |
+| `to` | `Address` | 32-byte binary. | **Alıcı.** Para kime gidecek? Stake işlemlerinde boş olabilir (kendine stake). |
 | `amount` | `u64` | `u64` | **Miktar.** Transfer edilecek değer. Kuruş (decimal) sorunlarıyla uğraşmamak için genellikle en küçük birim (Raw/Wei gibi) cinsinden tutulur. |
 | `fee` | `u64` | `u64` | **Rüşvet / Ücret.** Madencilerin/Validatörlerin bu işlemi bloğa koyması için ödenen teşviktir. Aynı zamanda Spam saldırılarını (milyonlarca bedava işlem) engeller. |
 | `nonce` | `u64` | Sıralı sayı. | **Anti-Replay Sayacı.** EN KRİTİK ALANLARDAN BİRİ. Alice Bob'a 10 coin yolladı. Bob bu işlemi ağa tekrar tekrar "replay" edip Alice'i soymasın diye var. Bir nonce sadece **BİR KERE** kullanılır. |
@@ -117,16 +117,17 @@ pub fn signing_hash(&self) -> [u8; 32] {
     // 1. Domain Separation Tag: Karışıklığı önle.
     hasher.update(b"BDLM_TX_V2"); 
     
-    // 2. Kritik alanları ekle.
+    // 2. Kritik alanları ekle (Binary Optimization).
     hasher.update(self.from.as_bytes());
     hasher.update(self.to.as_bytes());
     hasher.update(self.amount.to_le_bytes());
     hasher.update(self.fee.to_le_bytes());
-    hasher.update(self.nonce.to_le_bytes()); // <--- Nonce burada çok önemli!
+    hasher.update(self.nonce.to_le_bytes());
     hasher.update(&self.data);
-    hasher.update(self.chain_id.to_le_bytes()); // <--- Chain ID burada!
+    hasher.update(self.timestamp.to_le_bytes());
+    hasher.update(self.chain_id.to_le_bytes());
     
-    // 3. İmzayı EKLEME! (signature hariç her şeyi hashle)
+    // 3. İmzayı EKLEME!
     hasher.finalize().into()
 }
 ```

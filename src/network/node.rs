@@ -267,8 +267,13 @@ impl Node {
                 }
                 _ = banning_interval.tick() => {
                     let banned_peers = {
-                        let pm = self.peer_manager.lock().unwrap();
-                        pm.get_banned_peers()
+                        match self.peer_manager.lock() {
+                            Ok(pm) => pm.get_banned_peers(),
+                            Err(e) => {
+                                tracing::error!("PeerManager lock poisoned in banning task: {}", e);
+                                Vec::new()
+                            }
+                        }
                     };
                     for peer_id in banned_peers {
                         warn!("Proactively disconnecting banned peer: {}", peer_id);
@@ -345,16 +350,17 @@ impl Node {
                             }
 
                             if self.chain.get_height().await == 0 {
-                                let last_block = self.chain.get_block(0).await.unwrap();
-                                let locator = vec![last_block.hash];
-                                info!("New connection, requesting headers...");
-                                let topic = gossipsub::IdentTopic::new("blocks");
-                                let msg = NetworkMessage::GetHeaders {
-                                    locator,
-                                    limit: 2000,
-                                };
-                                if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, msg.to_bytes()) {
-                                    warn!("Failed to request headers: {}", e);
+                                if let Some(last_block) = self.chain.get_block(0).await {
+                                    let locator = vec![last_block.hash];
+                                    info!("New connection, requesting headers...");
+                                    let topic = gossipsub::IdentTopic::new("blocks");
+                                    let msg = NetworkMessage::GetHeaders {
+                                        locator,
+                                        limit: 2000,
+                                    };
+                                    if let Err(e) = self.swarm.behaviour_mut().gossipsub.publish(topic, msg.to_bytes()) {
+                                        warn!("Failed to request headers: {}", e);
+                                    }
                                 }
                             }
                         }
@@ -389,13 +395,15 @@ impl Node {
                             message,
                         })) => {
 
-                            if self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).is_banned(&peer_id) {
-                                warn!("Ignoring message from banned peer {}", peer_id);
-                                continue;
+                            if let Ok(pm) = self.peer_manager.lock() {
+                                if pm.is_banned(&peer_id) {
+                                    warn!("Ignoring message from banned peer {}", peer_id);
+                                    continue;
+                                }
                             }
 
-                            if !self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).check_rate_limit(&peer_id) {
-                                warn!("Rate limit exceeded for peer {}", peer_id);
+                            if !self.peer_manager.lock().map(|mut pm| pm.check_rate_limit(&peer_id)).unwrap_or(false) {
+                                warn!("Rate limit exceeded or lock error for peer {}", peer_id);
                                 continue;
                             }
 
@@ -407,10 +415,16 @@ impl Node {
                                         NetworkMessage::Handshake { .. } | NetworkMessage::HandshakeAck { .. }
                                     );
 
-                                    if !is_handshake_msg && !self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).is_handshaked(&peer_id) {
+                                    let is_handshaked = self.peer_manager.lock()
+                                        .map(|pm| pm.is_handshaked(&peer_id))
+                                        .unwrap_or(false);
+
+                                    if !is_handshake_msg && !is_handshaked {
                                         warn!("Peer {} sent {:?} before completing handshake, dropping.", peer_id, msg);
 
-                                        self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_invalid_tx(&peer_id);
+                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                            pm.report_invalid_tx(&peer_id);
+                                        }
                                         continue;
                                     }
 
@@ -427,11 +441,15 @@ impl Node {
                                             match self.chain.validate_and_add_block(block.clone()).await {
                                                 Ok(_) => {
                                                     info!("Added block #{} to local chain", block.index);
-                                                    self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_good_behavior(&peer_id);
+                                                    if let Ok(mut pm) = self.peer_manager.lock() {
+                                                        pm.report_good_behavior(&peer_id);
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     warn!("Block validation failed: {}", e);
-                                                    self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_invalid_block(&peer_id);
+                                                    if let Ok(mut pm) = self.peer_manager.lock() {
+                                                        pm.report_invalid_block(&peer_id);
+                                                    }
                                                 }
                                             }
                                         } else if block.index <= our_height {
@@ -457,18 +475,24 @@ impl Node {
                                     NetworkMessage::Transaction(tx) => {
                                         if let Err(e) = NetworkMessage::validate_tx_size(&tx) {
                                             warn!("Received oversized transaction from {}: {:?}", peer_id, e);
-                                            self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_oversized_message(&peer_id);
+                                            if let Ok(mut pm) = self.peer_manager.lock() {
+                                                pm.report_oversized_message(&peer_id);
+                                            }
                                             continue;
                                         }
-                                        info!("TX: {}->{} Amount: {}",
-                                            &tx.from[..8], &tx.to[..8], tx.amount);
+                                        info!("Broadcasted tx: {} from: {} to: {} amount: {}", 
+                            &tx.hash[..8], tx.from, tx.to, tx.amount);
                                         match self.chain.add_transaction(tx).await {
                                             Ok(_) => {
-                                                self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_good_behavior(&peer_id);
+                                                if let Ok(mut pm) = self.peer_manager.lock() {
+                                                    pm.report_good_behavior(&peer_id);
+                                                }
                                             }
                                             Err(e) => {
                                                 warn!("Failed to add transaction: {}", e);
-                                                self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_invalid_tx(&peer_id);
+                                                if let Ok(mut pm) = self.peer_manager.lock() {
+                                                    pm.report_invalid_tx(&peer_id);
+                                                }
                                             }
                                         }
                                     }
@@ -498,17 +522,21 @@ impl Node {
 
                                     NetworkMessage::Headers(headers) => {
                                         if headers.len() > crate::network::protocol::MAX_HEADERS_PER_REQUEST as usize {
-                                            self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_invalid_block(&peer_id);
+                                            if let Ok(mut pm) = self.peer_manager.lock() {
+                                                pm.report_invalid_block(&peer_id);
+                                            }
                                             continue;
                                         }
-                                        if !headers.is_empty() {
+                                        if let Some(last_header) = headers.last() {
                                             let from = headers[0].index;
-                                            let to = headers.last().unwrap().index;
+                                            let to = last_header.index;
                                             let req = NetworkMessage::GetBlocksRange { from, to };
                                             let topic = gossipsub::IdentTopic::new("blocks");
                                             let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, req.to_bytes());
                                         }
-                                        self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_good_behavior(&peer_id);
+                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                            pm.report_good_behavior(&peer_id);
+                                        }
                                     }
 
                                     NetworkMessage::GetBlocksRange { from, to } => {
@@ -536,14 +564,14 @@ impl Node {
 
                                     NetworkMessage::Blocks(blocks) => {
                                         if blocks.len() > crate::network::protocol::MAX_CHAIN_SYNC_BLOCKS {
-                                            self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_invalid_block(&peer_id);
+                                            if let Ok(mut pm) = self.peer_manager.lock() {
+                                                pm.report_invalid_block(&peer_id);
+                                            }
                                             continue;
                                         }
                                         if !blocks.is_empty() {
                                             let start_idx = blocks[0].index;
-                                            let our_height = self.chain.get_height().await;
                                             let our_block_at_start = self.chain.get_block(start_idx).await;
-
                                             if let Some(our_b) = our_block_at_start {
                                                 if our_b.hash != blocks[0].hash {
                                                     // This is a fork/reorg case
@@ -566,10 +594,12 @@ impl Node {
                                                 }
                                             }
                                         }
-                                        self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_good_behavior(&peer_id);
+                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                            pm.report_good_behavior(&peer_id);
+                                        }
                                     }
 
-                                    NetworkMessage::NewTip { height, hash } => {
+                                    NetworkMessage::NewTip { height, hash: _ } => {
                                         let our_height = self.chain.get_height().await;
                                         if height > our_height {
                                             let locator = self.chain.get_locator().await;
@@ -685,8 +715,11 @@ impl Node {
                                     }
 
                                     NetworkMessage::Prevote { epoch, checkpoint_height, checkpoint_hash, voter_id, .. } => {
-                                        if !self.peer_manager.lock().unwrap().check_vote_rate_limit(&peer_id) {
-                                            warn!("Peer {} exceeded vote rate limit. Ignoring Prevote.", peer_id);
+                                        let rate_limit_ok = self.peer_manager.lock()
+                                            .map(|mut pm| pm.check_vote_rate_limit(&peer_id))
+                                            .unwrap_or(false);
+                                        if !rate_limit_ok {
+                                            warn!("Peer {} exceeded vote rate limit or lock error. Ignoring Prevote.", peer_id);
                                             continue;
                                         }
                                         info!("Prevote from {}: epoch={}, height={}, hash={}..., voter={}",
@@ -694,8 +727,11 @@ impl Node {
                                     }
 
                                     NetworkMessage::Precommit { epoch, checkpoint_height, checkpoint_hash, voter_id, .. } => {
-                                        if !self.peer_manager.lock().unwrap().check_vote_rate_limit(&peer_id) {
-                                            warn!("Peer {} exceeded vote rate limit. Ignoring Precommit.", peer_id);
+                                        let rate_limit_ok = self.peer_manager.lock()
+                                            .map(|mut pm| pm.check_vote_rate_limit(&peer_id))
+                                            .unwrap_or(false);
+                                        if !rate_limit_ok {
+                                            warn!("Peer {} exceeded vote rate limit or lock error. Ignoring Precommit.", peer_id);
                                             continue;
                                         }
                                         info!("Precommit from {}: epoch={}, height={}, hash={}..., voter={}",
@@ -703,8 +739,11 @@ impl Node {
                                     }
 
                                     NetworkMessage::FinalityCert { epoch, checkpoint_height, checkpoint_hash, agg_sig_bls, bitmap, set_hash } => {
-                                        if !self.peer_manager.lock().unwrap().check_vote_rate_limit(&peer_id) {
-                                            warn!("Peer {} exceeded vote rate limit. Ignoring FinalityCert.", peer_id);
+                                        let rate_limit_ok = self.peer_manager.lock()
+                                            .map(|mut pm| pm.check_vote_rate_limit(&peer_id))
+                                            .unwrap_or(false);
+                                        if !rate_limit_ok {
+                                            warn!("Peer {} exceeded vote rate limit or lock error. Ignoring FinalityCert.", peer_id);
                                             continue;
                                         }
                                         info!("FinalityCert from {}: epoch={}, height={}, hash={}...",
@@ -721,17 +760,24 @@ impl Node {
 
                                         match self.chain.handle_finality_cert(cert).await {
                                             Ok(_) => {
-                                                self.peer_manager.lock().unwrap().report_good_behavior(&peer_id);
+                                                if let Ok(mut pm) = self.peer_manager.lock() {
+                                                    pm.report_good_behavior(&peer_id);
+                                                }
                                             }
                                             Err(e) => {
                                                 warn!("Failed to apply FinalityCert from {}: {}", peer_id, e);
-                                                self.peer_manager.lock().unwrap().report_bad_behavior(&peer_id);
+                                                if let Ok(mut pm) = self.peer_manager.lock() {
+                                                    pm.report_bad_behavior(&peer_id);
+                                                }
                                             }
                                         }
                                     }
 
                                     NetworkMessage::GetQcBlob { epoch, checkpoint_height } => {
-                                        if !self.peer_manager.lock().unwrap().check_rate_limit(&peer_id) {
+                                        let rate_limit_ok = self.peer_manager.lock()
+                                            .map(|mut pm| pm.check_rate_limit(&peer_id))
+                                            .unwrap_or(false);
+                                        if !rate_limit_ok {
                                             continue;
                                         }
                                         info!("GetQcBlob from {}: epoch={}, height={}", peer_id, epoch, checkpoint_height);
@@ -750,15 +796,20 @@ impl Node {
                                     }
 
                                     NetworkMessage::QcBlobResponse { epoch, checkpoint_height, found, .. } => {
-                                        if !self.peer_manager.lock().unwrap().check_blob_rate_limit(&peer_id) {
-                                            warn!("Peer {} exceeded blob rate limit. Ignoring QcBlobResponse.", peer_id);
+                                        let rate_limit_ok = self.peer_manager.lock()
+                                            .map(|mut pm| pm.check_blob_rate_limit(&peer_id))
+                                            .unwrap_or(false);
+                                        if !rate_limit_ok {
+                                            warn!("Peer {} exceeded blob rate limit or lock error. Ignoring QcBlobResponse.", peer_id);
                                             continue;
                                         }
                                         info!("QcBlobResponse from {}: epoch={}, height={}, found={}",
                                             peer_id, epoch, checkpoint_height, found);
 
                                         if found {
-                                            self.peer_manager.lock().unwrap().report_good_behavior(&peer_id);
+                                            if let Ok(mut pm) = self.peer_manager.lock() {
+                                                pm.report_good_behavior(&peer_id);
+                                            }
                                         }
                                     }
                                 }

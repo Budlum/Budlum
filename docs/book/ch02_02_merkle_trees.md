@@ -32,47 +32,41 @@ Kök hash, altındaki milyonlarca yaprağın (Leaf) kriptografik özetidir.
 
 ## 2. Kod Analizi (`calculate_tx_root`)
 
-Kodumuzda `src/block.rs` içinde `calculate_tx_root` fonksiyonu bu işlemi yapar.
+Kodumuzda `src/block.rs` içinde `calculate_tx_root` fonksiyonu bu işlemi yapar. **Önemli:** Budlum, "Second Preimage Attack" riskini önlemek için **Domain Separation** kullanır.
 
 ```rust
 pub fn calculate_tx_root(&self) -> String {
-    // 1. Yaprakları Hazırla: Her işlemin kendi hash'ini al.
-    let mut tx_hashes: Vec<String> = self.transactions
+    // 1. Yaprakları Hazırla: Her işlemin hash'ini al ve 0x00 öneki ekle.
+    let mut current_level: Vec<[u8; 32]> = self.transactions
         .iter()
-        .map(|tx| tx.hash.clone())
+        .map(|tx| {
+            let mut hasher = Sha3_256::new();
+            hasher.update(&[0x00]); // LEAF_PREFIX
+            hasher.update(tx.signing_hash()); // Binary Hash (No Hex)
+            hasher.finalize().into()
+        })
         .collect();
 
-    // 2. Boş Blok Kontrolü
-    if tx_hashes.is_empty() {
-        return "0".repeat(64); // Standart boş kök.
-    }
-
+    // 2. Boş Blok Kontrolü...
+    
     // 3. Ağacı yukarı doğru ör.
-    while tx_hashes.len() > 1 {
+    while current_level.len() > 1 {
         let mut next_level = Vec::new();
-        
-        // Chunk(2): Listeyi ikişerli gruplara ayır. [A, B], [C, D]...
-        for chunk in tx_hashes.chunks(2) {
+        for chunk in current_level.chunks(2) {
             let left = &chunk[0];
-            
-            // Eğer sayı tekse (eşsiz kaldıysa), son elemanı kopyala (A, B, C -> C+C).
-            // Bitcoin de böyle yapar.
             let right = if chunk.len() > 1 { &chunk[1] } else { left };
 
-            // 4. İkisini birleştir ve hashle.
-            // H(Left + Right)
-            let combined = format!("{}{}", left, right);
-            let new_hash = hex::encode(hash(combined)); // SHA3-256
-            
-            next_level.push(new_hash);
+            // 4. İkisini birleştir ve 0x01 öneki ile hashle.
+            let mut hasher = Sha3_256::new();
+            hasher.update(&[0x01]); // INTERNAL_PREFIX
+            hasher.update(left);
+            hasher.update(right);
+            next_level.push(hasher.finalize().into());
         }
-        
-        // Bir üst kata çık.
-        tx_hashes = next_level;
+        current_level = next_level;
     }
 
-    // 4. Piramidin tepesi (Root).
-    tx_hashes[0].clone()
+    hex::encode(current_level[0])
 }
 ```
 
@@ -120,12 +114,12 @@ Budlum, bu imzaları blok dışındaki `QcBlob` içinde Merkle ağacı yapısıy
 Normal Merkle ağaçları basittir ama her değişimde tüm ağacın en baştan yapraklarını (leaves) dizip hashlemesini gerektirir. Budlum Hardening ile birlikte **State Merkle Tree** artık artımlı (incremental) çalışır.
 
 ### Dirty Tracking ve Caching
-1. **Dirty Kontrolü:** Hesaptaki her değişim (`balance`, `nonce`) o hesabı "kirli" (dirty) olarak işaretler.
+1. **Dirty Kontrolü:** Hesaptaki her değişim (`balance`, `nonce`) o hesabı "kirli" (dirty) olarak işaretler (`dirty_accounts`).
 2. **Yaprak Önbelleği:** Tüm yaprak hashleri bellekte (`cached_leaves`) saklanır.
 3. **Kısmi Güncelleme:** `calculate_state_root` çağrıldığında:
    - Sadece *dirty* olan yaprakların hashleri yeniden hesaplanır.
    - Önbellekteki karşılıkları güncellenir.
-   - Ağacın sadece o yapraktan Root'a giden dalı (branch) yeniden hesaplanır.
+   - Ağacın sadece o yapraktan Root'a giden dalı (branch) yeniden hesaplanır ($O(\log N)$).
 
 Bu sayede, 1 milyon hesaplık bir ağaçta tek bir hesap değiştiğinde 1 milyon hash işlemi yapmak yerine sadece $\approx 20$ hash işlemi yapılarak yeni Root bulunur.
 

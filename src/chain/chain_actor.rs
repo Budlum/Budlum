@@ -1,5 +1,6 @@
 use crate::chain::blockchain::Blockchain;
 use crate::core::block::Block;
+use crate::core::address::Address;
 use crate::core::transaction::Transaction;
 use crate::chain::finality::FinalityCert;
 use tokio::sync::{mpsc, oneshot};
@@ -10,10 +11,10 @@ pub enum ChainCommand {
     GetHeight(oneshot::Sender<u64>),
     GetBlock(u64, oneshot::Sender<Option<Block>>),
     GetBlockByHash(String, oneshot::Sender<Option<Block>>),
-    GetBalance(String, oneshot::Sender<u64>),
-    GetNonce(String, oneshot::Sender<u64>),
+    GetBalance(Address, oneshot::Sender<u64>),
+    GetNonce(Address, oneshot::Sender<u64>),
     AddTransaction(Transaction, oneshot::Sender<Result<(), String>>),
-    ProduceBlock(String, oneshot::Sender<Option<Block>>),
+    ProduceBlock(Address, oneshot::Sender<Option<Block>>),
     ValidateAndAddBlock(Block, oneshot::Sender<Result<(), String>>),
     GetTransactionByHash(String, oneshot::Sender<Option<Transaction>>),
     GetTxReceipt(String, oneshot::Sender<Option<serde_json::Value>>),
@@ -30,8 +31,8 @@ pub enum ChainCommand {
     GetQcBlob(u64, oneshot::Sender<Option<crate::consensus::qc::QcBlob>>),
     GetFinalityCert(u64, oneshot::Sender<Option<crate::chain::finality::FinalityCert>>),
     GetStateRoot(u64, oneshot::Sender<Option<String>>),
-    AddBalance(String, u64),
-    InitGenesis(String),
+    AddBalance(Address, u64, oneshot::Sender<()>),
+    InitGenesis(Address, oneshot::Sender<()>),
 }
 
 #[derive(Clone)]
@@ -62,15 +63,15 @@ impl ChainHandle {
         rx.await.unwrap_or(None)
     }
 
-    pub async fn get_balance(&self, addr: &str) -> u64 {
+    pub async fn get_balance(&self, addr: &Address) -> u64 {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::GetBalance(addr.to_string(), tx)).await;
+        let _ = self.tx.send(ChainCommand::GetBalance(*addr, tx)).await;
         rx.await.unwrap_or(0)
     }
 
-    pub async fn get_nonce(&self, addr: &str) -> u64 {
+    pub async fn get_nonce(&self, addr: &Address) -> u64 {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::GetNonce(addr.to_string(), tx)).await;
+        let _ = self.tx.send(ChainCommand::GetNonce(*addr, tx)).await;
         rx.await.unwrap_or(0)
     }
 
@@ -80,7 +81,7 @@ impl ChainHandle {
         res_rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
-    pub async fn produce_block(&self, producer: String) -> Option<Block> {
+    pub async fn produce_block(&self, producer: Address) -> Option<Block> {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(ChainCommand::ProduceBlock(producer, tx)).await;
         rx.await.unwrap_or(None)
@@ -182,12 +183,16 @@ impl ChainHandle {
         rx.await.unwrap_or(None)
     }
 
-    pub async fn add_balance(&self, address: &str, amount: u64) {
-        let _ = self.tx.send(ChainCommand::AddBalance(address.to_string(), amount)).await;
+    pub async fn add_balance(&self, address: &Address, amount: u64) {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::AddBalance(*address, amount, tx)).await;
+        let _ = rx.await;
     }
 
-    pub async fn init_genesis_account(&self, address: &str) {
-        let _ = self.tx.send(ChainCommand::InitGenesis(address.to_string())).await;
+    pub async fn init_genesis_account(&self, address: &Address) {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::InitGenesis(*address, tx)).await;
+        let _ = rx.await;
     }
 }
 
@@ -302,11 +307,13 @@ impl ChainActor {
                     let res = self.blockchain.get_state_root(height);
                     let _ = tx.send(res);
                 }
-                ChainCommand::AddBalance(addr, amount) => {
+                ChainCommand::AddBalance(addr, amount, tx) => {
                     self.blockchain.state.add_balance(&addr, amount);
+                    let _ = tx.send(());
                 }
-                ChainCommand::InitGenesis(addr) => {
+                ChainCommand::InitGenesis(addr, tx) => {
                     self.blockchain.init_genesis_account(&addr);
+                    let _ = tx.send(());
                 }
             }
         }

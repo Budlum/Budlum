@@ -114,6 +114,7 @@ pub fn create_version_message() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::address::Address;
 
     #[test]
     fn test_protocol_version() {
@@ -137,7 +138,9 @@ mod tests {
 
     #[test]
     fn test_tx_encoding_deterministic() {
-        let tx = Transaction::new("alice".to_string(), "bob".to_string(), 100, vec![1, 2, 3]);
+        let alice = Address::from_hex(&"01".repeat(32)).unwrap();
+        let bob = Address::from_hex(&"02".repeat(32)).unwrap();
+        let tx = Transaction::new(alice, bob, 100, vec![1, 2, 3]);
         let enc1 = encode_transaction(&tx);
         let enc2 = encode_transaction(&tx);
         assert_eq!(enc1, enc2);
@@ -150,7 +153,7 @@ mod tests {
             timestamp: 12345,
             previous_hash: "abc".to_string(),
             hash: "def".to_string(),
-            producer: Some("miner".to_string()),
+            producer: Some(Address::from_hex(&"03".repeat(32)).unwrap()),
             chain_id: 1337,
             state_root: "root".to_string(),
             tx_root: "tx_root".to_string(),

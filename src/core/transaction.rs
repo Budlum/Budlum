@@ -1,4 +1,5 @@
 use crate::crypto::primitives::{verify_signature, KeyPair};
+use crate::core::address::Address;
 use crate::core::hash::calculate_hash;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
@@ -15,8 +16,8 @@ pub enum TransactionType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Transaction {
-    pub from: String,
-    pub to: String,
+    pub from: Address,
+    pub to: Address,
     pub amount: u64,
     pub fee: u64,
     pub nonce: u64,
@@ -28,7 +29,7 @@ pub struct Transaction {
     pub tx_type: TransactionType,
 }
 impl Transaction {
-    pub fn new(from: String, to: String, amount: u64, data: Vec<u8>) -> Self {
+    pub fn new(from: Address, to: Address, amount: u64, data: Vec<u8>) -> Self {
         Self::new_with_chain_id(
             from,
             to,
@@ -41,10 +42,10 @@ impl Transaction {
         )
     }
 
-    pub fn new_stake(from: String, amount: u64, nonce: u64) -> Self {
+    pub fn new_stake(from: Address, amount: u64, nonce: u64) -> Self {
         Self::new_with_chain_id(
             from,
-            String::new(),
+            Address::zero(),
             amount,
             0,
             nonce,
@@ -55,8 +56,8 @@ impl Transaction {
     }
 
     pub fn new_with_chain_id(
-        from: String,
-        to: String,
+        from: Address,
+        to: Address,
         amount: u64,
         fee: u64,
         nonce: u64,
@@ -85,8 +86,8 @@ impl Transaction {
         tx
     }
     pub fn new_with_fee(
-        from: String,
-        to: String,
+        from: Address,
+        to: Address,
         amount: u64,
         fee: u64,
         nonce: u64,
@@ -105,8 +106,8 @@ impl Transaction {
     }
     pub fn genesis() -> Self {
         let mut tx = Transaction {
-            from: "0".repeat(64),
-            to: "0".repeat(64),
+            from: Address::zero(),
+            to: Address::zero(),
             amount: 0,
             fee: 0,
             nonce: 0,
@@ -146,12 +147,12 @@ impl Transaction {
         hex::encode(self.signing_hash())
     }
     pub fn sign(&mut self, keypair: &KeyPair) {
-        let expected_from = keypair.public_key_hex();
+        let expected_from = Address::from(keypair.public_key_bytes());
         if self.from != expected_from {
             println!(
                 "Warning: TX.from ({}) doesn't match keypair pubkey ({})",
-                &self.from[..16.min(self.from.len())],
-                &expected_from[..16]
+                self.from,
+                expected_from
             );
         }
         let signing_hash = self.signing_hash();
@@ -159,8 +160,7 @@ impl Transaction {
         self.signature = Some(signature.to_vec());
     }
     pub fn verify(&self) -> bool {
-        let zero_addr = "0".repeat(64);
-        if self.from == zero_addr && self.to == zero_addr && self.signature.is_none() {
+        if self.from == Address::zero() && self.to == Address::zero() && self.signature.is_none() {
             return true;
         }
         let signature = match &self.signature {
@@ -170,22 +170,9 @@ impl Transaction {
                 return false;
             }
         };
-        let public_key = match hex::decode(&self.from) {
-            Ok(pk) => pk,
-            Err(e) => {
-                println!("Invalid from address (not valid hex): {}", e);
-                return false;
-            }
-        };
-        if public_key.len() != 32 {
-            println!(
-                "Invalid public key length: expected 32, got {}",
-                public_key.len()
-            );
-            return false;
-        }
+        let public_key = &self.from.0;
         let signing_hash = self.signing_hash();
-        match verify_signature(&signing_hash, signature, &public_key) {
+        match verify_signature(&signing_hash, signature, public_key) {
             Ok(()) => true,
             Err(e) => {
                 println!("TX signature verification failed: {}", e);
@@ -197,13 +184,12 @@ impl Transaction {
         if !self.verify() {
             return false;
         }
-        let zero_addr = "0".repeat(64);
-        if self.from == zero_addr {
+        if self.from == Address::zero() {
             return true;
         }
         match self.tx_type {
             TransactionType::Transfer => {
-                if self.to.is_empty() {
+                if self.to == Address::zero() {
                     println!("Transfer TX has empty 'to' address");
                     return false;
                 }
@@ -231,14 +217,16 @@ mod tests {
     use super::*;
     #[test]
     fn test_transaction_creation() {
-        let tx = Transaction::new("alice".into(), "bob".into(), 100, vec![]);
+        let recipient = Address::from([1u8; 32]);
+        let tx = Transaction::new(Address::zero(), recipient, 100, vec![]);
         assert_eq!(tx.amount, 100);
         assert_eq!(tx.tx_type, TransactionType::Transfer);
         assert!(tx.signature.is_none());
     }
     #[test]
     fn test_transaction_with_fee() {
-        let tx = Transaction::new_with_fee("alice".into(), "bob".into(), 100, 5, 1, vec![]);
+        let recipient = Address::from([1u8; 32]);
+        let tx = Transaction::new_with_fee(Address::zero(), recipient, 100, 5, 1, vec![]);
         assert_eq!(tx.fee, 5);
         assert_eq!(tx.nonce, 1);
         assert_eq!(tx.total_cost(), 105);
@@ -251,16 +239,18 @@ mod tests {
     }
     #[test]
     fn test_stake_transaction() {
-        let tx = Transaction::new_stake("alice".into(), 500, 1);
+        let tx = Transaction::new_stake(Address::zero(), 500, 1);
         assert_eq!(tx.amount, 500);
         assert_eq!(tx.tx_type, TransactionType::Stake);
     }
     #[test]
     fn test_sign_and_verify() {
         let keypair = KeyPair::generate().unwrap();
+        let alice = Address::from(keypair.public_key_bytes());
+        let recipient = Address::from([1u8; 32]);
         let mut tx = Transaction::new_with_fee(
-            keypair.public_key_hex(),
-            "recipient".into(),
+            alice,
+            recipient,
             50,
             1,
             0,

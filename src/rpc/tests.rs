@@ -5,6 +5,7 @@ mod tests {
     use crate::chain::blockchain::Blockchain;
     use crate::consensus::pow::PoWEngine;
     use crate::core::transaction::Transaction;
+    use crate::core::address::Address;
     use crate::network::node::Node;
     use crate::chain::chain_actor::{ChainActor, ChainHandle};
     use std::sync::Arc;
@@ -56,8 +57,8 @@ mod tests {
     #[tokio::test]
     async fn test_rpc_account_methods() {
         let (server, bc) = setup().await;
-        let addr = "test_addr";
-        bc.init_genesis_account(addr).await;
+        let addr = Address::from_hex(&"01".repeat(32)).unwrap();
+        bc.init_genesis_account(&addr).await;
         
         let balance = server.get_balance(addr.to_string()).await.unwrap();
         println!("bud_getBalance: {}", balance);
@@ -68,11 +69,12 @@ mod tests {
     async fn test_rpc_transaction_methods() {
         let (server, bc) = setup().await;
         let keypair = crate::crypto::primitives::KeyPair::generate().unwrap();
-        let from = keypair.public_key_hex();
+        let from = Address::from(keypair.public_key_bytes());
         
         bc.add_balance(&from, 1000).await;
 
-        let mut tx = Transaction::new(from.clone(), "bob".into(), 100, vec![]);
+        let bob = Address::from_hex(&"02".repeat(32)).unwrap();
+        let mut tx = Transaction::new(from.clone(), bob, 100, vec![]);
         tx.fee = 1;
         tx.sign(&keypair);
         let hex_tx_hash = format!("0x{}", tx.hash);
@@ -85,16 +87,23 @@ mod tests {
         assert!(retrieved_tx["signature"].as_str().unwrap().starts_with("0x"));
 
         let receipt = server.get_transaction_receipt(hex_tx_hash.clone()).await.unwrap();
+        error_to_json_result(server.get_transaction_receipt(hex_tx_hash.clone()).await);
         println!("bud_getTransactionReceipt (pending): {}", serde_json::to_string_pretty(&receipt).unwrap());
 
         assert!(receipt.is_null());
+    }
+
+    fn error_to_json_result<T>(res: Result<T, jsonrpsee::types::error::ErrorObjectOwned>) {
+        let _ = res;
     }
 
     #[tokio::test]
     async fn test_rpc_error_cases() {
         let (server, _) = setup().await;
         
-        let tx = Transaction::new("a".into(), "b".into(), 100, vec![]);
+        let alice = Address::zero();
+        let bob = Address::zero();
+        let tx = Transaction::new(alice, bob, 100, vec![]);
         let result = server.send_raw_transaction(tx).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -106,9 +115,10 @@ mod tests {
     async fn test_rpc_tx_precheck() {
         let (server, bc) = setup().await;
         let keypair = crate::crypto::primitives::KeyPair::generate().unwrap();
-        let from = keypair.public_key_hex();
+        let from = Address::from(keypair.public_key_bytes());
         
-        let mut tx = Transaction::new(from.clone(), "bob".into(), 100, vec![]);
+        let bob = Address::from_hex(&"02".repeat(32)).unwrap();
+        let mut tx = Transaction::new(from.clone(), bob, 100, vec![]);
         tx.fee = 1;
         let precheck = server.tx_precheck(tx.clone()).await.unwrap();
         println!("bud_txPrecheck (no sig): {}", serde_json::to_string_pretty(&precheck).unwrap());

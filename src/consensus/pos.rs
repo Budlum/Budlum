@@ -1,5 +1,6 @@
 use super::{ConsensusEngine, ConsensusError};
 use crate::core::account::AccountState;
+use crate::core::address::Address;
 use crate::core::block::Block;
 use hex;
 use sha3::{Digest, Sha3_256};
@@ -10,20 +11,21 @@ pub struct PoSConfig {
     pub min_stake: u64,
     pub slot_duration: u64,
     pub epoch_length: u64,
-    pub annual_reward_rate: f64,
-    pub slashing_penalty: f64,
-    pub double_sign_penalty: f64,
+    pub annual_reward_rate: u64,
+    pub slashing_penalty: u64,
+    pub double_sign_penalty: u64,
     pub unbonding_epochs: u64,
 }
 impl Default for PoSConfig {
     fn default() -> Self {
+        use crate::core::chain_config::FIXED_POINT_SCALE;
         PoSConfig {
             min_stake: 1000,
             slot_duration: 6,
             epoch_length: 32,
-            annual_reward_rate: 0.05,
-            slashing_penalty: 0.10,
-            double_sign_penalty: 0.50,
+            annual_reward_rate: (0.05 * FIXED_POINT_SCALE as f64) as u64,
+            slashing_penalty: (0.10 * FIXED_POINT_SCALE as f64) as u64,
+            double_sign_penalty: (0.50 * FIXED_POINT_SCALE as f64) as u64,
             unbonding_epochs: crate::core::account::UNBONDING_EPOCHS,
         }
     }
@@ -56,7 +58,7 @@ impl SlashingEvidence {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub block_index: u64,
     pub block_hash: String,
@@ -68,7 +70,7 @@ use std::sync::RwLock;
 
 pub struct PoSEngine {
     pub config: PoSConfig,
-    seen_blocks: RwLock<HashMap<(String, u64), (BlockHeader, Vec<u8>)>>,
+    seen_blocks: RwLock<HashMap<(Address, u64), (BlockHeader, Vec<u8>)>>,
     pub slashing_evidence: RwLock<Vec<SlashingEvidence>>,
     checkpoints: RwLock<Vec<Checkpoint>>,
     validator_keys: Option<ValidatorKeys>,
@@ -125,16 +127,22 @@ impl PoSEngine {
             .map_err(|_| ConsensusError("Failed to acquire read lock on checkpoints".into()))
     }
 
-    pub fn add_checkpoint(&self, block: &Block) -> Result<(), ConsensusError> {
+    pub fn add_checkpoint(&self, block: &Block, storage: Option<&crate::storage::db::Storage>) -> Result<(), ConsensusError> {
+        let checkpoint = Checkpoint {
+            block_index: block.index,
+            block_hash: block.hash.clone(),
+            timestamp: block.timestamp,
+        };
+        
         let mut checkpoints = self
             .checkpoints
             .write()
             .map_err(|_| ConsensusError("Failed to acquire write lock on checkpoints".into()))?;
-        checkpoints.push(Checkpoint {
-            block_index: block.index,
-            block_hash: block.hash.clone(),
-            timestamp: block.timestamp,
-        });
+        checkpoints.push(checkpoint.clone());
+        
+        if let Some(store) = storage {
+            let _ = store.save_checkpoint(&checkpoint);
+        }
         Ok(())
     }
     pub fn is_before_checkpoint(&self, block: &Block) -> bool {
@@ -152,27 +160,40 @@ impl PoSEngine {
         slot: u64,
         validator_set_hash: &str,
     ) -> [u8; 32] {
-        let prev_seed = self.epoch_seed.read().unwrap_or_else(|e| e.into_inner());
+        let prev_seed = match self.epoch_seed.read() {
+            Ok(guard) => *guard,
+            Err(e) => {
+                tracing::error!("Epoch seed lock poisoned: {}", e);
+                [0u8; 32]
+            }
+        };
         let mut hasher = Sha3_256::new();
         hasher.update(chain_id.to_le_bytes());
         hasher.update(epoch.to_le_bytes());
         hasher.update(slot.to_le_bytes());
-        hasher.update(*prev_seed);
+        hasher.update(prev_seed);
         hasher.update(validator_set_hash.as_bytes());
         hasher.finalize().into()
     }
 
     pub fn calculate_vrf_threshold(&self, stake: u64, total_stake: u64) -> u64 {
+        use crate::core::chain_config::{FIXED_POINT_SCALE, VRF_BASE_PROB};
         if total_stake == 0 || stake == 0 {
             return 0;
         }
-        let prob = (stake as f64 / total_stake as f64) * crate::core::chain_config::VRF_BASE_PROB;
-        if prob >= 1.0 {
+        
+        // threshold = (stake * VRF_BASE_PROB * u64::MAX) / (total_stake * FIXED_POINT_SCALE)
+        let base_threshold = (stake as u128).saturating_mul(u64::MAX as u128) / total_stake as u128;
+
+        let threshold = (base_threshold.saturating_mul(VRF_BASE_PROB as u128)) / FIXED_POINT_SCALE as u128;
+        
+        if threshold >= u64::MAX as u128 {
             u64::MAX
         } else {
-            (prob * (u64::MAX as f64)) as u64
+            threshold as u64
         }
     }
+
 
     pub fn check_vrf_threshold(&self, vrf_output: &[u8], threshold: u64) -> bool {
         let mut hasher = Sha3_256::new();
@@ -181,16 +202,22 @@ impl PoSEngine {
         let y = u64::from_le_bytes(hash[0..8].try_into().unwrap_or([0; 8]));
         y < threshold
     }
-    pub fn is_validator(&self, pubkey: &str, state: &AccountState) -> bool {
+    pub fn is_validator(&self, pubkey: &Address, state: &AccountState) -> bool {
         state.get_validator(pubkey).map_or(false, |v| {
             v.active && !v.slashed && v.stake >= self.config.min_stake
         })
     }
     #[allow(dead_code)]
     fn calculate_reward(&self, validator_stake: u64) -> u64 {
+        use crate::core::chain_config::FIXED_POINT_SCALE;
         let slots_per_year = 365 * 24 * 60 * 60 / self.config.slot_duration;
-        let reward = (validator_stake as f64 * self.config.annual_reward_rate
-            / slots_per_year as f64) as u64;
+        if slots_per_year == 0 { return 1; }
+        
+        // reward = (stake * rate) / (slots_per_year * SCALE)
+        let numerator = validator_stake as u128 * self.config.annual_reward_rate as u128;
+        let denominator = slots_per_year as u128 * FIXED_POINT_SCALE as u128;
+        
+        let reward = (numerator / denominator) as u64;
         reward.max(1)
     }
 
@@ -283,7 +310,7 @@ impl ConsensusEngine for PoSEngine {
 
         if !active_validators.is_empty() {
             if let Some(keys) = &self.validator_keys {
-                let pubkey = keys.sig_key.public_key_hex();
+                let pubkey = Address::from(keys.sig_key.public_key_bytes());
 
                 if let Some(validator) = state.get_validator(&pubkey) {
                     if validator.active
@@ -438,7 +465,7 @@ impl ConsensusEngine for PoSEngine {
             println!(
                 "PoS: Block {} validated (producer: {}, stake: {})",
                 block.index,
-                &producer[..16.min(producer.len())],
+                producer,
                 validator.stake
             );
         } else {
@@ -477,7 +504,7 @@ impl ConsensusEngine for PoSEngine {
         (last_checkpoint_height as u128) * 1000 + chain.len() as u128
     }
 
-    fn record_block(&self, block: &Block) -> Result<(), ConsensusError> {
+    fn record_block(&self, block: &Block, storage: Option<&crate::storage::db::Storage>) -> Result<(), ConsensusError> {
         let producer = block
             .producer
             .as_ref()
@@ -486,17 +513,21 @@ impl ConsensusEngine for PoSEngine {
         let signature = block.signature.clone().unwrap_or_default();
         let key = (producer.clone(), header.index);
 
+        if let Some(store) = storage {
+            let _ = store.save_seen_block(&header, &signature);
+        }
+        
         let block_hash_bytes =
             hex::decode(&block.hash).unwrap_or_else(|_| block.hash.as_bytes().to_vec());
         let mut block_contrib = Sha3_256::new();
         block_contrib.update(&block_hash_bytes);
         let contribution: [u8; 32] = block_contrib.finalize().into();
         if let Ok(mut seed) = self.epoch_seed.write() {
-            for (i, byte) in seed.iter_mut().enumerate() {
+             for (i, byte) in seed.iter_mut().enumerate() {
                 *byte ^= contribution[i];
             }
         }
-
+        
         let mut seen_blocks = self
             .seen_blocks
             .write()
@@ -526,7 +557,21 @@ impl ConsensusEngine for PoSEngine {
                 if let Ok(mut seed) = self.epoch_seed.write() {
                     *seed = [0u8; 32];
                 }
-                let _ = self.add_checkpoint(block);
+                let _ = self.add_checkpoint(block, storage);
+            }
+        }
+        Ok(())
+    }
+    
+    fn load_state(&self, storage: &crate::storage::db::Storage) -> Result<(), ConsensusError> {
+        if let Ok(seen) = storage.load_all_seen_blocks() {
+            if let Ok(mut guard) = self.seen_blocks.write() {
+                *guard = seen;
+            }
+        }
+        if let Ok(cps) = storage.load_checkpoints() {
+            if let Ok(mut guard) = self.checkpoints.write() {
+                *guard = cps;
             }
         }
         Ok(())
@@ -537,11 +582,13 @@ mod tests {
     use super::*;
     use crate::core::account::AccountState;
     use crate::crypto::primitives::{KeyPair, ValidatorKeys};
+    use crate::core::address::Address;
     use crate::core::transaction::Transaction;
     use crate::execution::executor::Executor;
 
     fn create_stake_tx(keypair: &KeyPair, amount: u64, nonce: u64) -> Transaction {
-        let mut tx = Transaction::new_stake(keypair.public_key_hex(), amount, nonce);
+        let from = Address::from(keypair.public_key_bytes());
+        let mut tx = Transaction::new_stake(from, amount, nonce);
         tx.sign(keypair);
         tx
     }
@@ -550,7 +597,8 @@ mod tests {
     fn test_validator_threshold() {
         let mut state = AccountState::new();
         let alice = ValidatorKeys::generate().unwrap();
-        state.add_balance(&alice.sig_key.public_key_hex(), 2000);
+        let alice_addr = Address::from(alice.sig_key.public_key_bytes());
+        state.add_balance(&alice_addr, 2000);
 
         let tx = create_stake_tx(&alice.sig_key, 1000, 1);
         Executor::apply_transaction(&mut state, &tx).unwrap();
@@ -564,24 +612,25 @@ mod tests {
     fn test_double_sign_detection() {
         let engine = PoSEngine::new(PoSConfig::default(), None);
         let alice = KeyPair::generate().unwrap();
+        let alice_addr = Address::from(alice.public_key_bytes());
 
         let mut block1 = Block::new(10, "prev".into(), vec![]);
-        block1.producer = Some(alice.public_key_hex());
+        block1.producer = Some(alice_addr);
         block1.hash = "hash1".to_string();
         block1.sign(&alice);
 
         let mut block2 = Block::new(10, "prev".into(), vec![]);
         block2.timestamp += 1000;
-        block2.producer = Some(alice.public_key_hex());
+        block2.producer = Some(alice_addr);
         block2.hash = "hash2".to_string();
         block2.sign(&alice);
 
-        engine.record_block(&block1).unwrap();
-        engine.record_block(&block2).unwrap();
+        engine.record_block(&block1, None).unwrap();
+        engine.record_block(&block2, None).unwrap();
 
         assert_eq!(engine.slashing_evidence.read().unwrap().len(), 1);
         let evidence = engine.slashing_evidence.read().unwrap()[0].clone();
-        assert_eq!(evidence.header1.index, 10);
+        assert_eq!(evidence.header1.index, 10u64);
         assert!(engine.verify_evidence(&evidence));
     }
 
@@ -589,7 +638,8 @@ mod tests {
     fn test_minimum_stake() {
         let mut state = AccountState::new();
         let alice = KeyPair::generate().unwrap();
-        state.add_balance(&alice.public_key_hex(), 2000);
+        let alice_addr = Address::from(alice.public_key_bytes());
+        state.add_balance(&alice_addr, 2000);
 
         let config = PoSConfig {
             min_stake: 1000,
@@ -600,11 +650,11 @@ mod tests {
         let tx = create_stake_tx(&alice, 500, 1);
         Executor::apply_transaction(&mut state, &tx).unwrap();
 
-        assert!(!engine.is_validator(&alice.public_key_hex(), &state));
+        assert!(!engine.is_validator(&alice_addr, &state));
 
         let tx2 = create_stake_tx(&alice, 500, 2);
         Executor::apply_transaction(&mut state, &tx2).unwrap();
 
-        assert!(engine.is_validator(&alice.public_key_hex(), &state));
+        assert!(engine.is_validator(&alice_addr, &state));
     }
 }

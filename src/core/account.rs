@@ -1,33 +1,35 @@
-use crate::consensus::pos::SlashingEvidence;
+use crate::core::address::Address;
 use crate::storage::db::Storage;
 use crate::core::transaction::{Transaction, TransactionType};
+use crate::consensus::pos::SlashingEvidence;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 pub const MIN_TX_FEE: u64 = 1;
 pub const GENESIS_BALANCE: u64 = 1_000_000_000;
 pub const UNBONDING_EPOCHS: u64 = 7;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnbondingEntry {
-    pub address: String,
+    pub address: Address,
     pub amount: u64,
     pub release_epoch: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
-    pub public_key: String,
+    pub public_key: Address,
     pub balance: u64,
     pub nonce: u64,
 }
 impl Account {
-    pub fn new(public_key: String) -> Self {
+    pub fn new(public_key: Address) -> Self {
         Account {
             public_key,
             balance: 0,
             nonce: 0,
         }
     }
-    pub fn with_balance(public_key: String, balance: u64) -> Self {
+    pub fn with_balance(public_key: Address, balance: u64) -> Self {
         Account {
             public_key,
             balance,
@@ -37,7 +39,7 @@ impl Account {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Validator {
-    pub address: String,
+    pub address: Address,
     pub stake: u64,
     pub active: bool,
     pub slashed: bool,
@@ -50,7 +52,7 @@ pub struct Validator {
 }
 
 impl Validator {
-    pub fn new(address: String, stake: u64) -> Self {
+    pub fn new(address: Address, stake: u64) -> Self {
         Validator {
             address,
             stake,
@@ -71,89 +73,70 @@ impl Validator {
             self.stake
         }
     }
-    pub fn is_eligible(&self, current_block: u64) -> bool {
-        self.active && !self.slashed && (!self.jailed || current_block >= self.jail_until)
+    pub fn is_eligible(&self, current_epoch: u64) -> bool {
+        self.active && !self.slashed && (!self.jailed || current_epoch >= self.jail_until)
     }
 }
 
 #[derive(Clone)]
 pub struct AccountState {
-    pub accounts: HashMap<String, Account>,
-    pub validators: HashMap<String, Validator>,
+    pub accounts: BTreeMap<Address, Account>,
+    pub validators: BTreeMap<Address, Validator>,
     pub unbonding_queue: Vec<UnbondingEntry>,
     storage: Option<Storage>,
     pub epoch_index: u64,
     pub last_epoch_time: u64,
-    dirty_accounts: HashSet<String>,
+    dirty_accounts: HashSet<Address>,
+    keys_dirty: bool,
     cached_leaves: Vec<[u8; 32]>,
-    cached_keys: Vec<String>,
+    cached_keys: Vec<Address>,
+    cached_tree: Vec<Vec<[u8; 32]>>,
 }
 impl AccountState {
     pub fn new() -> Self {
         AccountState {
-            accounts: HashMap::new(),
-            validators: HashMap::new(),
+            accounts: BTreeMap::new(),
+            validators: BTreeMap::new(),
             unbonding_queue: Vec::new(),
             storage: None,
             epoch_index: 0,
             last_epoch_time: 0,
             dirty_accounts: HashSet::new(),
+            keys_dirty: true,
             cached_leaves: Vec::new(),
             cached_keys: Vec::new(),
+            cached_tree: Vec::new(),
         }
     }
     pub fn with_storage(storage: Storage) -> Self {
         let mut state = AccountState {
-            accounts: HashMap::new(),
-            validators: HashMap::new(),
+            accounts: BTreeMap::new(),
+            validators: BTreeMap::new(),
             unbonding_queue: Vec::new(),
             storage: Some(storage),
             epoch_index: 0,
             last_epoch_time: 0,
             dirty_accounts: HashSet::new(),
+            keys_dirty: true,
             cached_leaves: Vec::new(),
             cached_keys: Vec::new(),
+            cached_tree: Vec::new(),
         };
         if let Err(e) = state.load_from_storage() {
-            println!("Could not load account state: {}", e);
+            tracing::error!("Could not load account state: {}", e);
         }
         state
     }
-    pub fn state_root(&self) -> String {
-        #[derive(Serialize)]
-        struct CanonicalStateV1<'a> {
-            version: u8,
-            accounts: std::collections::BTreeMap<&'a String, &'a Account>,
-            validators: std::collections::BTreeMap<&'a String, &'a Validator>,
-            unbonding_queue: &'a Vec<UnbondingEntry>,
-            epoch_index: u64,
-            last_epoch_time: u64,
-        }
-
-        let canonical = CanonicalStateV1 {
-            version: 1,
-            accounts: self.accounts.iter().collect(),
-            validators: self.validators.iter().collect(),
-            unbonding_queue: &self.unbonding_queue,
-            epoch_index: self.epoch_index,
-            last_epoch_time: self.last_epoch_time,
-        };
-
-        let bytes = bincode::serialize(&canonical).unwrap_or_default();
-
-        let mut prefix_bytes = b"BDLM_STATE_V1".to_vec();
-        prefix_bytes.extend(bytes);
-
-        crate::core::hash::calculate_hash(&prefix_bytes)
+    pub fn init_genesis(&mut self, genesis_pubkey: &Address) {
+        let account = Account::with_balance(*genesis_pubkey, GENESIS_BALANCE);
+        self.accounts.insert(*genesis_pubkey, account);
+        self.keys_dirty = true;
+        tracing::info!("Genesis account created: {} coins", GENESIS_BALANCE);
     }
-    pub fn init_genesis(&mut self, genesis_pubkey: &str) {
-        let account = Account::with_balance(genesis_pubkey.to_string(), GENESIS_BALANCE);
-        self.accounts.insert(genesis_pubkey.to_string(), account);
-        println!("Genesis account created: {} coins", GENESIS_BALANCE);
-    }
-    pub fn add_validator(&mut self, address: String, stake: u64) {
-        let validator = Validator::new(address.clone(), stake);
+    pub fn add_validator(&mut self, address: Address, stake: u64) {
+        let validator = Validator::new(address, stake);
         self.validators.insert(address, validator);
+        self.keys_dirty = true;
     }
     pub fn get_total_stake(&self) -> u64 {
         self.validators
@@ -171,32 +154,36 @@ impl AccountState {
         validators.sort_by(|a, b| a.address.cmp(&b.address));
         validators
     }
-    pub fn get_validator(&self, address: &str) -> Option<&Validator> {
+    pub fn get_validator(&self, address: &Address) -> Option<&Validator> {
         self.validators.get(address)
     }
-    pub fn get_validator_mut(&mut self, address: &str) -> Option<&mut Validator> {
+    pub fn get_validator_mut(&mut self, address: &Address) -> Option<&mut Validator> {
         self.validators.get_mut(address)
     }
 
-    pub fn get_balance(&self, public_key: &str) -> u64 {
+    pub fn get_balance(&self, public_key: &Address) -> u64 {
         self.accounts
             .get(public_key)
             .map(|a| a.balance)
             .unwrap_or(0)
     }
-    pub fn get_nonce(&self, public_key: &str) -> u64 {
+    pub fn get_nonce(&self, public_key: &Address) -> u64 {
         self.accounts.get(public_key).map(|a| a.nonce).unwrap_or(0)
     }
-    pub fn get_or_create(&mut self, public_key: &str) -> &mut Account {
+    pub fn get_or_create(&mut self, public_key: &Address) -> &mut Account {
         if !self.accounts.contains_key(public_key) {
             self.accounts
-                .insert(public_key.to_string(), Account::new(public_key.to_string()));
+                .insert(*public_key, Account::new(*public_key));
+            self.keys_dirty = true;
         }
-        self.dirty_accounts.insert(public_key.to_string());
+        self.mark_dirty(public_key);
         self.accounts.get_mut(public_key).unwrap()
     }
+    pub fn mark_dirty(&mut self, public_key: &Address) {
+        self.dirty_accounts.insert(*public_key);
+    }
     pub fn validate_transaction(&self, tx: &Transaction) -> Result<(), String> {
-        if tx.from == "0".repeat(64) {
+        if tx.from == Address::zero() {
             return Ok(());
         }
         if !tx.verify() {
@@ -223,7 +210,7 @@ impl AccountState {
 
         match tx.tx_type {
             TransactionType::Transfer => {
-                if tx.to.is_empty() {
+                if tx.to == Address::zero() {
                     return Err("Transfer missing 'to' address".into());
                 }
             }
@@ -254,23 +241,22 @@ impl AccountState {
         Ok(())
     }
 
-    pub fn apply_slashing(&mut self, evidences: &[SlashingEvidence], slash_ratio: f64) {
+    pub fn apply_slashing(&mut self, evidences: &[SlashingEvidence], slash_ratio_fixed: u64) {
+        use crate::core::chain_config::FIXED_POINT_SCALE;
         for evidence in evidences {
             if let Some(producer) = &evidence.header1.producer {
                 if let Some(validator) = self.validators.get_mut(producer) {
                     if !validator.slashed {
-                        let penalty = (validator.stake as f64 * slash_ratio) as u64;
+                        let penalty = ((validator.stake as u128 * slash_ratio_fixed as u128) / FIXED_POINT_SCALE as u128) as u64;
                         validator.stake = validator.stake.saturating_sub(penalty);
                         validator.slashed = true;
                         validator.active = false;
-                        let jail_duration = 3600 * 24;
-
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        validator.jail_until = now + jail_duration;
-                        println!("Slashed validator {} for {} stake", producer, penalty);
+                        
+                        let jail_epochs = 7; 
+                        validator.jail_until = self.epoch_index.saturating_add(jail_epochs);
+                        
+                        tracing::info!("Slashed validator {} for {} stake (Jailed until epoch {})", 
+                            producer, penalty, validator.jail_until);
                     }
                 }
             }
@@ -279,10 +265,10 @@ impl AccountState {
 
     pub fn process_unbonding(&mut self) {
         let current_epoch = self.epoch_index;
-        let mut released: Vec<(String, u64)> = Vec::new();
+        let mut released: Vec<(Address, u64)> = Vec::new();
         self.unbonding_queue.retain(|entry| {
             if entry.release_epoch <= current_epoch {
-                released.push((entry.address.clone(), entry.amount));
+                released.push((entry.address, entry.amount));
                 false
             } else {
                 true
@@ -290,19 +276,19 @@ impl AccountState {
         });
         for (addr, amount) in released {
             let account = self.get_or_create(&addr);
-            account.balance += amount;
-            println!(
+            account.balance = account.balance.saturating_add(amount);
+            tracing::info!(
                 "Unbonding released: {} received {} coins",
-                &addr[..16.min(addr.len())],
+                addr,
                 amount
             );
         }
     }
 
     pub fn advance_epoch(&mut self, current_timestamp: u128) {
-        self.epoch_index += 1;
+        self.epoch_index = self.epoch_index.saturating_add(1);
         self.last_epoch_time = current_timestamp as u64;
-        println!("Epoch advanced to {}", self.epoch_index);
+        tracing::info!("Epoch advanced to {}", self.epoch_index);
 
         self.process_unbonding();
 
@@ -310,7 +296,7 @@ impl AccountState {
 
         for (addr, validator) in self.validators.iter_mut() {
             if validator.jailed && validator.jail_until <= current_time_sec {
-                println!("Validator {} released from jail", addr);
+                tracing::info!("Validator {} released from jail", addr);
                 validator.jailed = false;
                 if validator.stake > 0 {
                     validator.active = true;
@@ -318,10 +304,10 @@ impl AccountState {
             }
         }
     }
-    pub fn add_balance(&mut self, public_key: &str, amount: u64) {
+    pub fn add_balance(&mut self, public_key: &Address, amount: u64) {
         let account = self.get_or_create(public_key);
-        account.balance += amount;
-        self.dirty_accounts.insert(public_key.to_string());
+        account.balance = account.balance.saturating_add(amount);
+        self.dirty_accounts.insert(*public_key);
     }
     pub fn save_to_storage(&self) -> Result<(), String> {
         let storage = match &self.storage {
@@ -346,17 +332,19 @@ impl AccountState {
         };
         match storage.load_all_accounts() {
             Ok(accounts) => {
-                println!("Loaded {} accounts from storage", accounts.len());
-                self.accounts = accounts;
+                tracing::info!("Loaded {} accounts from storage", accounts.len());
+                self.accounts = accounts.into_iter().collect();
+                self.keys_dirty = true;
             }
             Err(e) => {
                 if let Ok(Some(data)) = storage.db().get("ACCOUNT_STATE") {
-                    let accounts: HashMap<String, Account> = serde_json::from_slice(&data)
+                    let accounts: HashMap<Address, Account> = serde_json::from_slice(&data)
                         .map_err(|e| format!("Deserialization error: {}", e))?;
-                    self.accounts = accounts;
-                    println!("Loaded {} accounts from legacy blob", self.accounts.len());
+                    self.accounts = accounts.into_iter().collect();
+                    self.keys_dirty = true;
+                    tracing::info!("Loaded {} accounts from legacy blob", self.accounts.len());
                 } else {
-                    println!("Could not load accounts: {}", e);
+                    tracing::error!("Could not load accounts: {}", e);
                 }
             }
         }
@@ -371,22 +359,22 @@ impl AccountState {
         for (pubkey, account) in &self.accounts {
             println!(
                 "  {}...  balance: {}, nonce: {}",
-                &pubkey[..16.min(pubkey.len())],
+                pubkey,
                 account.balance,
                 account.nonce
             );
         }
     }
-    pub fn get_all_balances(&self) -> HashMap<String, u64> {
+    pub fn get_all_balances(&self) -> HashMap<Address, u64> {
         self.accounts
             .iter()
-            .map(|(k, v)| (k.clone(), v.balance))
+            .map(|(k, v)| (*k, v.balance))
             .collect()
     }
-    pub fn get_all_nonces(&self) -> HashMap<String, u64> {
+    pub fn get_all_nonces(&self) -> HashMap<Address, u64> {
         self.accounts
             .iter()
-            .map(|(k, v)| (k.clone(), v.nonce))
+            .map(|(k, v)| (*k, v.nonce))
             .collect()
     }
 
@@ -397,64 +385,93 @@ impl AccountState {
             return "0".repeat(64);
         }
 
-        let mut sorted_accounts: Vec<_> = self.accounts.iter().collect();
-        sorted_accounts.sort_by(|a, b| a.0.cmp(b.0));
-
-        let keys_changed = self.cached_keys.len() != sorted_accounts.len()
-            || self.cached_keys.iter().zip(sorted_accounts.iter()).any(|(k, (sk, _))| k != *sk);
-
-        if keys_changed || self.cached_leaves.is_empty() {
-            self.cached_keys = sorted_accounts.iter().map(|(k, _)| (*k).clone()).collect();
-            self.cached_leaves = sorted_accounts
-                .iter()
+        if self.keys_dirty || self.cached_tree.is_empty() {
+            self.cached_keys = self.accounts.keys().cloned().collect();
+            
+            self.cached_leaves = self.accounts
+                .par_iter()
                 .map(|(pubkey, account)| {
                     let mut h = Sha256::new();
-                    h.update(b"BDLM_LEAF_V2");
-                    h.update(pubkey.as_bytes());
+                    h.update(&[0x00]);
+                    h.update(pubkey.0);
                     h.update(account.balance.to_le_bytes());
                     h.update(account.nonce.to_le_bytes());
                     h.finalize().into()
                 })
                 .collect();
+            
+            self.cached_tree = Vec::new();
+            let mut level = self.cached_leaves.clone();
+            self.cached_tree.push(level.clone());
+            
+            while level.len() > 1 {
+                let next_level: Vec<[u8; 32]> = level
+                    .par_chunks(2)
+                    .map(|chunk| {
+                        let left = &chunk[0];
+                        let right = if chunk.len() > 1 { &chunk[1] } else { left };
+                        let mut h = Sha256::new();
+                        h.update(&[0x01]);
+                        h.update(left);
+                        h.update(right);
+                        h.finalize().into()
+                    })
+                    .collect();
+                level = next_level;
+                self.cached_tree.push(level.clone());
+            }
+            self.keys_dirty = false;
         } else {
+            let mut affected_indices: HashSet<usize> = HashSet::new();
+
             for dirty_key in &self.dirty_accounts {
-                if let Some(pos) = self.cached_keys.iter().position(|k| k == dirty_key) {
+                if let Ok(pos) = self.cached_keys.binary_search(dirty_key) {
                     if let Some(account) = self.accounts.get(dirty_key) {
                         let mut h = Sha256::new();
-                        h.update(b"BDLM_LEAF_V2");
-                        h.update(dirty_key.as_bytes());
+                        h.update(&[0x00]);
+                        h.update(dirty_key.0);
                         h.update(account.balance.to_le_bytes());
                         h.update(account.nonce.to_le_bytes());
                         self.cached_leaves[pos] = h.finalize().into();
+                        affected_indices.insert(pos);
                     }
                 }
+            }
+            
+            self.cached_tree[0] = self.cached_leaves.clone();
+            
+            for level_idx in 0..self.cached_tree.len() - 1 {
+                if affected_indices.is_empty() { break; }
+                
+                let mut next_affected = HashSet::new();
+                
+                let mut parent_to_children: HashMap<usize, (usize, usize)> = HashMap::new();
+                for &idx in &affected_indices {
+                    let parent_idx = idx / 2;
+                    let left_idx = parent_idx * 2;
+                    let right_idx = if left_idx + 1 < self.cached_tree[level_idx].len() { 
+                        left_idx + 1 
+                    } else { 
+                        left_idx 
+                    };
+                    parent_to_children.insert(parent_idx, (left_idx, right_idx));
+                }
+
+                for (parent_idx, (left_idx, right_idx)) in parent_to_children {
+                    let mut h = Sha256::new();
+                    h.update(&[0x01]);
+                    h.update(&self.cached_tree[level_idx][left_idx]);
+                    h.update(&self.cached_tree[level_idx][right_idx]);
+                    
+                    self.cached_tree[level_idx + 1][parent_idx] = h.finalize().into();
+                    next_affected.insert(parent_idx);
+                }
+                affected_indices = next_affected;
             }
         }
 
         self.dirty_accounts.clear();
-
-        let mut level = self.cached_leaves.clone();
-        while level.len() > 1 {
-            let mut next_level = Vec::new();
-            let mut i = 0;
-            while i < level.len() {
-                let left = &level[i];
-                let right = if i + 1 < level.len() {
-                    &level[i + 1]
-                } else {
-                    left
-                };
-                let mut h = Sha256::new();
-                h.update(b"BDLM_NODE_V2");
-                h.update(left);
-                h.update(right);
-                next_level.push(h.finalize().into());
-                i += 2;
-            }
-            level = next_level;
-        }
-
-        hex::encode(level[0])
+        hex::encode(self.cached_tree.last().unwrap()[0])
     }
     pub fn clear_dirty(&mut self) {
         self.dirty_accounts.clear();
@@ -471,89 +488,105 @@ mod tests {
     use crate::crypto::primitives::KeyPair;
     #[test]
     fn test_new_account() {
-        let account = Account::new("pubkey123".into());
+        let account = Account::new(Address::zero());
         assert_eq!(account.balance, 0);
         assert_eq!(account.nonce, 0);
     }
     #[test]
     fn test_account_with_balance() {
-        let account = Account::with_balance("pubkey123".into(), 1000);
+        let account = Account::with_balance(Address::zero(), 1000);
         assert_eq!(account.balance, 1000);
     }
     #[test]
     fn test_account_state_balance() {
         let mut state = AccountState::new();
-        state.add_balance("alice", 500);
-        assert_eq!(state.get_balance("alice"), 500);
-        assert_eq!(state.get_balance("bob"), 0);
+        let mut alice_bytes = [0u8; 32];
+        alice_bytes[0] = 1;
+        let alice = Address::from(alice_bytes);
+        state.add_balance(&alice, 500);
+        assert_eq!(state.get_balance(&alice), 500);
+        
+        let mut bob_bytes = [0u8; 32];
+        bob_bytes[0] = 2;
+        let bob = Address::from(bob_bytes);
+        assert_eq!(state.get_balance(&bob), 0);
     }
     #[test]
     fn test_transfer() {
-        let alice = KeyPair::generate().unwrap();
-        let bob = KeyPair::generate().unwrap();
+        let alice_kp = KeyPair::generate().unwrap();
+        let bob_kp = KeyPair::generate().unwrap();
+        let alice = Address::from(alice_kp.public_key_bytes());
+        let bob = Address::from(bob_kp.public_key_bytes());
         let mut state = AccountState::new();
-        state.add_balance(&alice.public_key_hex(), 1000);
+        state.add_balance(&alice, 1000);
         let mut tx = Transaction::new_with_fee(
-            alice.public_key_hex(),
-            bob.public_key_hex(),
+            alice,
+            bob,
             100,
             5,
             0,
             vec![],
         );
-        tx.sign(&alice);
+        tx.sign(&alice_kp);
         assert!(state.validate_transaction(&tx).is_ok());
         crate::execution::executor::Executor::apply_transaction(&mut state, &tx).unwrap();
-        assert_eq!(state.get_balance(&alice.public_key_hex()), 895);
-        assert_eq!(state.get_balance(&bob.public_key_hex()), 100);
-        assert_eq!(state.get_nonce(&alice.public_key_hex()), 1);
+        assert_eq!(state.get_balance(&alice), 895);
+        assert_eq!(state.get_balance(&bob), 100);
+        assert_eq!(state.get_nonce(&alice), 1);
     }
     #[test]
     fn test_insufficient_balance() {
-        let alice = KeyPair::generate().unwrap();
+        let alice_kp = KeyPair::generate().unwrap();
+        let alice = Address::from(alice_kp.public_key_bytes());
         let mut state = AccountState::new();
-        state.add_balance(&alice.public_key_hex(), 50);
+        state.add_balance(&alice, 50);
         let mut tx =
-            Transaction::new_with_fee(alice.public_key_hex(), "bob".into(), 100, 1, 0, vec![]);
-        tx.sign(&alice);
+            Transaction::new_with_fee(alice, Address::zero(), 100, 1, 0, vec![]);
+        tx.sign(&alice_kp);
         assert!(state.validate_transaction(&tx).is_err());
     }
     #[test]
     fn test_wrong_nonce() {
-        let alice = KeyPair::generate().unwrap();
+        let alice_kp = KeyPair::generate().unwrap();
+        let alice = Address::from(alice_kp.public_key_bytes());
         let mut state = AccountState::new();
-        state.add_balance(&alice.public_key_hex(), 1000);
+        state.add_balance(&alice, 1000);
+        let recipient = Address::from([1u8; 32]);
         let mut tx =
-            Transaction::new_with_fee(alice.public_key_hex(), "bob".into(), 100, 1, 5, vec![]);
-        tx.sign(&alice);
+            Transaction::new_with_fee(alice, recipient, 100, 1, 5, vec![]);
+        tx.sign(&alice_kp);
         let result = state.validate_transaction(&tx);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("nonce"));
     }
     #[test]
     fn test_replay_protection() {
-        let alice = KeyPair::generate().unwrap();
+        let alice_kp = KeyPair::generate().unwrap();
+        let alice = Address::from(alice_kp.public_key_bytes());
         let mut state = AccountState::new();
-        state.add_balance(&alice.public_key_hex(), 1000);
+        state.add_balance(&alice, 1000);
+        let recipient = Address::from([1u8; 32]);
         let mut tx1 =
-            Transaction::new_with_fee(alice.public_key_hex(), "bob".into(), 50, 1, 0, vec![]);
-        tx1.sign(&alice);
+            Transaction::new_with_fee(alice, recipient, 50, 1, 0, vec![]);
+        tx1.sign(&alice_kp);
         assert!(state.validate_transaction(&tx1).is_ok());
         crate::execution::executor::Executor::apply_transaction(&mut state, &tx1).unwrap();
         assert!(state.validate_transaction(&tx1).is_err());
+        let recipient = Address::from([1u8; 32]);
         let mut tx2 =
-            Transaction::new_with_fee(alice.public_key_hex(), "bob".into(), 50, 1, 1, vec![]);
-        tx2.sign(&alice);
+            Transaction::new_with_fee(alice, recipient, 50, 1, 1, vec![]);
+        tx2.sign(&alice_kp);
         assert!(state.validate_transaction(&tx2).is_ok());
     }
     #[test]
     fn test_fee_too_low() {
-        let alice = KeyPair::generate().unwrap();
+        let alice_kp = KeyPair::generate().unwrap();
+        let alice = Address::from(alice_kp.public_key_bytes());
         let mut state = AccountState::new();
-        state.add_balance(&alice.public_key_hex(), 1000);
+        state.add_balance(&alice, 1000);
         let mut tx =
-            Transaction::new_with_fee(alice.public_key_hex(), "bob".into(), 100, 0, 0, vec![]);
-        tx.sign(&alice);
+            Transaction::new_with_fee(alice, Address::zero(), 100, 0, 0, vec![]);
+        tx.sign(&alice_kp);
         let result = state.validate_transaction(&tx);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Fee"));

@@ -1,5 +1,6 @@
 use crate::core::block::Block;
 use crate::core::account::Account;
+use crate::core::address::Address;
 use crate::core::transaction::Transaction;
 use sled::Db;
 use std::str::from_utf8;
@@ -170,7 +171,9 @@ impl Storage {
     }
     pub fn get_last_hash(&self) -> std::io::Result<Option<String>> {
         if let Some(val) = self.db.get("LAST")? {
-            let hash = from_utf8(&val).unwrap().to_string();
+            let hash = from_utf8(&val)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
+                .to_string();
             Ok(Some(hash))
         } else {
             Ok(None)
@@ -208,19 +211,21 @@ impl Storage {
             Ok(None)
         }
     }
-    pub fn save_account(&self, pubkey: &str, account: &Account) -> std::io::Result<()> {
+    pub fn save_account(&self, pubkey: &Address, account: &Account) -> std::io::Result<()> {
         let key = format!("ACCT:{}", pubkey);
         let val = serde_json::to_vec(account)?;
         self.db.insert(key.as_bytes(), val)?;
         Ok(())
     }
-    pub fn load_all_accounts(&self) -> std::io::Result<std::collections::HashMap<String, Account>> {
+    pub fn load_all_accounts(&self) -> std::io::Result<std::collections::HashMap<Address, Account>> {
         let mut accounts = std::collections::HashMap::new();
         for item in self.db.scan_prefix(b"ACCT:") {
             let (key, val) = item?;
             let key_str = from_utf8(&key)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            let pubkey = key_str.strip_prefix("ACCT:").unwrap_or(key_str).to_string();
+            let pubkey_str = key_str.strip_prefix("ACCT:").unwrap_or(key_str);
+            let pubkey = Address::from_hex(pubkey_str)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             let account: Account = serde_json::from_slice(&val)?;
             accounts.insert(pubkey, account);
         }
@@ -245,6 +250,44 @@ impl Storage {
             txs.push(tx);
         }
         Ok(txs)
+    }
+    pub fn save_checkpoint(&self, checkpoint: &crate::consensus::pos::Checkpoint) -> std::io::Result<()> {
+        let key = format!("CP:{}", checkpoint.block_index);
+        let val = serde_json::to_vec(checkpoint)?;
+        self.db.insert(key.as_bytes(), val)?;
+        Ok(())
+    }
+    pub fn load_checkpoints(&self) -> std::io::Result<Vec<crate::consensus::pos::Checkpoint>> {
+        let mut cps = Vec::new();
+        for item in self.db.scan_prefix(b"CP:") {
+            let (_key, val) = item?;
+            let cp: crate::consensus::pos::Checkpoint = serde_json::from_slice(&val)?;
+            cps.push(cp);
+        }
+        cps.sort_by_key(|c| c.block_index);
+        Ok(cps)
+    }
+    pub fn save_seen_block(&self, header: &crate::core::block::BlockHeader, sig: &[u8]) -> std::io::Result<()> {
+        let producer_str = header.producer.map(|p| p.to_string()).unwrap_or_else(|| "unknown".to_string());
+        let key = format!("SEEN:{}:{}", producer_str, header.index);
+        let val = serde_json::to_vec(&(header, sig))?;
+        self.db.insert(key.as_bytes(), val)?;
+        Ok(())
+    }
+    pub fn load_all_seen_blocks(&self) -> std::io::Result<std::collections::HashMap<(Address, u64), (crate::core::block::BlockHeader, Vec<u8>)>> {
+        let mut seen = std::collections::HashMap::new();
+        for item in self.db.scan_prefix(b"SEEN:") {
+            let (key, val) = item?;
+            let key_str = from_utf8(&key).unwrap_or("");
+            let parts: Vec<&str> = key_str.strip_prefix("SEEN:").unwrap_or(key_str).split(':').collect();
+            if parts.len() == 2 {
+                let producer = Address::from_hex(parts[0]).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let index = parts[1].parse().unwrap_or(0);
+                let data: (crate::core::block::BlockHeader, Vec<u8>) = serde_json::from_slice(&val)?;
+                seen.insert((producer, index), data);
+            }
+        }
+        Ok(seen)
     }
     pub fn flush_batch(&self) -> std::io::Result<usize> {
         Ok(self.db.flush()?)

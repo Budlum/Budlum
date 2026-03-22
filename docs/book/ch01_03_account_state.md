@@ -15,7 +15,7 @@ Blok zinciri duran bir veri değildir, sürekli değişen bir durum makinesidir 
 **Kod:**
 ```rust
 pub struct Account {
-    pub public_key: String, // Hesap Numarası (IBAN gibi)
+    pub public_key: Address, // Hesap Numarası (32-byte binary)
     pub balance: u64,       // Bakiye
     pub nonce: u64,         // İşlem Sayacı
 }
@@ -34,7 +34,7 @@ Validatörler, sistemin güvenliğini sağlayan özel hesaplardır.
 **Kod:**
 ```rust
 pub struct Validator {
-    pub address: String,
+    pub address: Address,   // 32-byte binary
     pub stake: u64,         // Kilitlenen Teminat
     pub active: bool,       // Şu an görevde mi?
     pub slashed: bool,      // Kırmızı kart yedi mi?
@@ -56,12 +56,12 @@ pub struct Validator {
 **Kod:**
 ```rust
 pub struct AccountState {
-    pub accounts: HashMap<String, Account>,     // Tüm hesaplar
-    pub validators: HashMap<String, Validator>, // Tüm validatörler
+    pub accounts: BTreeMap<Address, Account>,   // Tüm hesaplar (sıralı)
+    pub validators: BTreeMap<Address, Validator>, // Tüm validatörler (sıralı)
     storage: Option<Storage>,                   // Disk bağlantısı
     pub epoch_index: u64,                       // Zaman dilimi sayacı
-    dirty_accounts: HashSet<String>,            // Değişen hesapların takibi
-    cached_leaves: Vec<[u8; 32]>,               // Merkle yaprağı önbelleği
+    dirty_accounts: HashSet<Address>,           // Değişen hesapların takibi
+    cached_tree: Vec<Vec<[u8; 32]>>,            // Incremental Merkle Tree
 }
 ```
 
@@ -76,8 +76,8 @@ Blockchain'de milyonlarca hesap olabilir. Her blokta tüm hesapları baştan has
 ```rust
 pub fn calculate_state_root(&mut self) -> String {
     // 1. Sadece dirty_accounts içindeki hesaplar için yeni yaprakları (leaves) hesapla.
-    // 2. Önbellekteki (cached_leaves) eski değerleri güncelle.
-    // 3. Merkle ağacını yukarı doğru (Root'a kadar) sadece etkilenen dallar için yeniden hesapla.
+    // 2. cached_tree yapısını kullanarak sadece değişen dalları güncelle ($O(\log N)$).
+    // 3. Root hash'ini döndür.
     // 4. Dirty listesini temizle.
 }
 ```
@@ -132,23 +132,25 @@ Tüm kontroller geçildikten sonra paranın el değiştirdiği yerdir.
 
 ```rust
 pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), String> {
-    // 1. Gönderen hesabı bul ve parayı düş.
+    // 1. Gönderen hesabı bul ve parayı güvenli düş.
     let sender = self.get_or_create(&tx.from);
-    sender.balance -= tx.total_cost();
-    sender.nonce += 1; // <--- Sayacı artırmayı UNUTMA!
+    sender.balance = sender.balance.saturating_sub(tx.total_cost());
+    sender.nonce = sender.nonce.saturating_add(1);
 
     // 2. İşlem tipine göre davran.
     match tx.tx_type {
         TransactionType::Transfer => {
-            // Alıcıyı bul (yoksa yarat) ve parayı ekle.
             let receiver = self.get_or_create(&tx.to);
-            receiver.balance += tx.amount;
+            receiver.balance = receiver.balance.saturating_add(tx.amount);
         }
         TransactionType::Stake => {
-            // Validatör tablosuna ekle.
-            let validator = self.validators.entry(tx.from.clone()).or_insert(...);
-            validator.stake += tx.amount; // Stakeleri biriktir.
-            validator.active = true;
+            let validator = self.get_validator_mut(&tx.from);
+            if let Some(v) = validator {
+                v.stake = v.stake.saturating_add(tx.amount);
+                v.active = true;
+            } else {
+                self.add_validator(tx.from, tx.amount);
+            }
         }
         // ...
     }
@@ -172,29 +174,21 @@ Ayrıca node ilk başlatılırken (`init` süreci) diskten okunan eski bloklar `
 
 ### Fonksiyon: `apply_slashing` (Adalet Dağıtımı)
 
-Konsensüs motoru (PoS) bir suç tespit ettiğinde bu fonksiyonu çağırır.
+Konsensüs motoru (PoS) bir suç tespit ettiğinde bu fonksiyonu çağırır. **Önemli:** Determinizm için tüm ekonomi hesaplamaları tam sayı (integer) aritmetiği ile yapılır.
 
 ```rust
-pub fn apply_slashing(&mut self, evidences: &[SlashingEvidence], slash_ratio: f64) {
+pub fn apply_slashing(&mut self, evidences: &[SlashingEvidence], slash_ratio_scaled: u64) {
     for evidence in evidences {
         let producer = &evidence.header1.producer;
         
         if let Some(validator) = self.validators.get_mut(producer) {
-            // Daha önce ceza yememişse...
             if !validator.slashed {
-                // 1. Ne kadar ceza keseceğiz? (Örn: %10)
-                let penalty = (validator.stake as f64 * slash_ratio) as u64;
-                
-                // 2. Parayı sil (Yak/Burn).
+                // Fixed-point math: (stake * ratio) / SCALE
+                let penalty = (validator.stake * slash_ratio_scaled) / FIXED_POINT_SCALE;
                 validator.stake = validator.stake.saturating_sub(penalty);
-                
-                // 3. Durumunu güncelle: Artık validatör değil, suçlu.
                 validator.slashed = true;
                 validator.active = false;
-                
-                // 4. Hapse at (geçici olarak sisteme dönemesin).
                 validator.jailed = true;
-                validator.jail_until = ...;
             }
         }
     }

@@ -1,4 +1,5 @@
 use crate::core::account::AccountState;
+use crate::core::address::Address;
 use crate::chain::finality::{ValidatorEntry, ValidatorSetSnapshot};
 use crate::consensus::ConsensusEngine;
 use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
@@ -9,6 +10,7 @@ use crate::core::block::Block;
 use crate::core::transaction::Transaction;
 use crate::execution::executor::Executor;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
 pub const MAX_REORG_DEPTH: usize = 100;
@@ -26,6 +28,7 @@ pub struct Blockchain {
     pub finalized_height: u64,
     pub finalized_hash: String,
     pub base_fee: u64,
+    pub genesis_time: u128,
 }
 impl Blockchain {
     pub fn new(
@@ -104,7 +107,7 @@ impl Blockchain {
         );
 
         for block in chain_vec.iter().skip(start_index) {
-            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_deref()) {
+            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_ref()) {
                 println!("CRITICAL: Failed to apply block {} during init: {}. Corrupted database, exiting.", block.index, e);
                 std::process::exit(1);
             }
@@ -123,7 +126,7 @@ impl Blockchain {
             }
         }
 
-        Blockchain {
+        let mut bc = Blockchain {
             chain: chain_vec,
             consensus,
             mempool,
@@ -134,7 +137,16 @@ impl Blockchain {
             finalized_height: restored_finalized_height,
             finalized_hash: restored_finalized_hash,
             base_fee: 1,
+            genesis_time: 0,
+        };
+        
+        if let Some(first) = bc.chain.first() {
+            bc.genesis_time = first.timestamp;
+        } else {
+            bc.genesis_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
         }
+        
+        bc
     }
 
     fn load_chain_from_db(&mut self, last_hash: String) -> std::io::Result<()> {
@@ -158,6 +170,9 @@ impl Blockchain {
         blocks.reverse();
         self.chain = blocks;
         println!("Loaded {} blocks from disk", self.chain.len());
+        if let Some(store) = &self.storage {
+            let _ = self.consensus.load_state(store);
+        }
         Ok(())
     }
     fn create_genesis_block(&mut self) {
@@ -209,7 +224,7 @@ impl Blockchain {
         }
         None
     }
-    pub fn get_nonce(&self, address: &str) -> u64 {
+    pub fn get_nonce(&self, address: &Address) -> u64 {
         self.state.get_nonce(address)
     }
 
@@ -218,7 +233,7 @@ impl Blockchain {
         let entries: Vec<ValidatorEntry> = active_validators
             .into_iter()
             .map(|v| ValidatorEntry {
-                address: v.address.clone(),
+                address: v.address,
                 stake: v.stake,
                 bls_public_key: Vec::new(),
                 pop_signature: Vec::new(),
@@ -226,14 +241,14 @@ impl Blockchain {
             .collect();
         ValidatorSetSnapshot::compute_hash(&entries)
     }
-    pub fn produce_block(&mut self, producer_address: String) -> Option<Block> {
+    pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
         let index = self.chain.len() as u64;
         let previous_hash = self.chain.last().unwrap().hash.clone();
 
         let mut valid_txs = Vec::new();
         let mut temp_state = self.state.clone();
 
-        let pending_txs = self.mempool.get_sorted_transactions(1000);
+        let pending_txs = self.mempool.get_sorted_transactions(10000);
         for tx in &pending_txs {
             if let Ok(_) = temp_state.validate_transaction(tx) {
                 if let Ok(_) = Executor::apply_transaction(&mut temp_state, tx) {
@@ -245,14 +260,15 @@ impl Blockchain {
         }
 
         let mut block = Block::new(index, previous_hash, valid_txs);
-        block.producer = Some(producer_address.clone());
+        block.producer = Some(producer_address);
+        block.timestamp = self.genesis_time + (index as u128 * crate::core::chain_config::SLOT_MS as u128);
 
-        if let Err(e) = Executor::apply_block(&mut self.state, &block.transactions, block.producer.as_deref()) {
+        if let Err(_e) = Executor::apply_block(&mut self.state, &block.transactions, block.producer.as_ref()) {
             return None;
         }
         block.state_root = self.state.calculate_state_root();
 
-        if let Err(e) = self.consensus.prepare_block(&mut block, &self.state) {
+        if let Err(_e) = self.consensus.prepare_block(&mut block, &self.state) {
             return None;
         }
 
@@ -275,14 +291,15 @@ impl Blockchain {
 
         let tx_count = block.transactions.len() as u64;
         let target = 50u64;
+        let max_base_fee = 10_000_000; // 10 BDLM cap
         if tx_count > target {
-            self.base_fee = self.base_fee.saturating_add(self.base_fee / 8);
+            self.base_fee = self.base_fee.saturating_add(self.base_fee / 8).min(max_base_fee);
         } else if tx_count < target {
             self.base_fee = self.base_fee.saturating_sub(self.base_fee / 8).max(1);
         }
         Some(block)
     }
-    pub fn mine_pending_transactions(&mut self, miner_address: String) {
+    pub fn mine_pending_transactions(&mut self, miner_address: Address) {
         self.produce_block(miner_address);
     }
     pub fn add_transaction(&mut self, transaction: Transaction) -> Result<(), String> {
@@ -292,7 +309,7 @@ impl Blockchain {
                 self.chain_id, transaction.chain_id
             ));
         }
-        if transaction.from == "0".repeat(64) {
+        if transaction.from == Address::zero() {
             return Err("Genesis transactions cannot be submitted to the mempool".into());
         }
         if !transaction.verify() {
@@ -311,7 +328,7 @@ impl Blockchain {
         Ok(())
     }
 
-    pub fn init_genesis_account(&mut self, address: &str) {
+    pub fn init_genesis_account(&mut self, address: &Address) {
         self.state.add_balance(address, 1_000_000_000);
     }
 
@@ -374,7 +391,7 @@ impl Blockchain {
                     i, block.chain_id, tx.chain_id
                 ));
             }
-            if block.index > 0 && tx.from == "0".repeat(64) {
+            if block.index > 0 && tx.from == Address::zero() {
                 return Err(format!(
                     "Invalid transaction at index {}: 'genesis' transactions only allowed in genesis block", i
                 ));
@@ -390,7 +407,7 @@ impl Blockchain {
         }
 
         let mut commit_state = self.state.clone();
-        if let Err(e) = Executor::apply_block(&mut commit_state, &block.transactions, block.producer.as_deref()) {
+        if let Err(e) = Executor::apply_block(&mut commit_state, &block.transactions, block.producer.as_ref()) {
             return Err(format!("Failed to apply block: {}", e));
         }
 
@@ -409,8 +426,8 @@ impl Blockchain {
         }
 
         if let Some(evidences) = &block.slashing_evidence {
-            let slash_ratio = 0.1;
-            commit_state.apply_slashing(evidences, slash_ratio);
+            let slash_ratio_fixed = (10 * crate::core::chain_config::FIXED_POINT_SCALE) / 100; // 0.1
+            commit_state.apply_slashing(evidences, slash_ratio_fixed);
         }
 
         if block.index > 0 && block.index % EPOCH_LENGTH == 0 {
@@ -421,19 +438,22 @@ impl Blockchain {
 
         self.chain.push(block);
 
-        if let Err(e) = self.consensus.record_block(self.chain.last().unwrap()) {
-            println!("Engine record block error: {}", e);
-        }
-
-        for tx in self.chain.last().unwrap().transactions.iter() {
-            self.mempool.remove_transaction(&tx.hash);
-            if let Some(ref store) = self.storage {
-                let _ = store.remove_mempool_tx(&tx.hash);
+        if let Some(last_block) = self.chain.last() {
+            if let Err(e) = self.consensus.record_block(last_block, self.storage.as_ref()) {
+                println!("Engine record block error: {}", e);
             }
         }
 
-        if let Some(ref pruning_manager) = self.pruning_manager {
-            let last_block = self.chain.last().unwrap();
+        if let Some(last_block) = self.chain.last() {
+            for tx in last_block.transactions.iter() {
+                self.mempool.remove_transaction(&tx.hash);
+                if let Some(ref store) = self.storage {
+                    let _ = store.remove_mempool_tx(&tx.hash);
+                }
+            }
+        }
+
+        if let (Some(pruning_manager), Some(last_block)) = (self.pruning_manager.as_ref(), self.chain.last()) {
             let height = last_block.index;
             if pruning_manager.should_create_snapshot(height) {
                 let snapshot = crate::chain::snapshot::StateSnapshot::from_state(
@@ -595,7 +615,7 @@ impl Blockchain {
     fn rebuild_state(chain: &[Block]) -> Result<AccountState, String> {
         let mut state = AccountState::new();
         for block in chain.iter() {
-            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_deref()) {
+            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_ref()) {
                 return Err(format!(
                     "Failed to rebuild state at block {}: {}",
                     block.index, e
@@ -649,7 +669,7 @@ impl Blockchain {
         let entries: Vec<ValidatorEntry> = active_validators
             .into_iter()
             .map(|v| ValidatorEntry {
-                address: v.address.clone(),
+                address: v.address,
                 stake: v.stake,
                 bls_public_key: Vec::new(),
                 pop_signature: Vec::new(),
@@ -693,6 +713,7 @@ impl Clone for Blockchain {
             finalized_height: self.finalized_height,
             finalized_hash: self.finalized_hash.clone(),
             base_fee: self.base_fee,
+            genesis_time: self.genesis_time,
         }
     }
 }
@@ -708,17 +729,18 @@ mod tests {
         let mut blockchain = Blockchain::new(consensus, None, 1337, None);
 
         let keypair = KeyPair::generate().unwrap();
-        let pubkey = keypair.public_key_hex();
+        let pubkey = Address::from(keypair.public_key_bytes());
 
         blockchain.state.add_balance(&pubkey, 100);
 
-        let mut tx = Transaction::new(pubkey.clone(), "bob".to_string(), 50, vec![]);
+        let recipient = Address::from([1u8; 32]);
+        let mut tx = Transaction::new(pubkey, recipient, 50, vec![]);
         tx.fee = 1;
         tx.sign(&keypair);
 
         blockchain.add_transaction(tx).unwrap();
 
-        blockchain.produce_block("miner1".to_string());
+        blockchain.produce_block(Address::zero());
         assert!(blockchain.is_valid());
         assert_eq!(blockchain.chain.len(), 2);
     }
@@ -728,8 +750,10 @@ mod tests {
         let consensus = Arc::new(PoWEngine::new(1));
         let mut blockchain = Blockchain::new(consensus, None, 1337, None);
 
-        let validator_addr = "validator1".to_string();
-        blockchain.state.add_validator(validator_addr.clone(), 1000);
+        let mut val_bytes = [0u8; 32];
+        val_bytes[0] = 1;
+        let validator_addr = Address::from(val_bytes);
+        blockchain.state.add_validator(validator_addr, 1000);
 
         if let Some(v) = blockchain.state.get_validator_mut(&validator_addr) {
             v.jailed = true;
@@ -743,7 +767,7 @@ mod tests {
         }
 
         for _ in 0..EPOCH_LENGTH {
-            blockchain.produce_block("miner".to_string());
+            blockchain.produce_block(Address::zero());
         }
 
         assert_eq!(blockchain.chain.len(), (EPOCH_LENGTH as usize) + 1);
@@ -767,33 +791,33 @@ mod tests {
         let alice_keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
         let alice_key = alice_keys.sig_key.clone();
         let alice_vrf_pub = alice_keys.vrf_key.public.to_bytes().to_vec();
-        let alice_pub = alice_key.public_key_hex();
+        let alice_pub = Address::from(alice_key.public_key_bytes());
 
         let mut config = PoSConfig::default();
-        config.slashing_penalty = 0.50;
+        config.slashing_penalty = (50 * crate::core::chain_config::FIXED_POINT_SCALE) / 100;
 
         let engine = Arc::new(PoSEngine::new(config, Some(alice_keys)));
 
         let mut blockchain = Blockchain::new(engine.clone(), None, 1337, None);
 
-        blockchain.state.add_validator(alice_pub.clone(), 2000);
+        blockchain.state.add_validator(alice_pub, 2000);
         if let Some(v) = blockchain.state.get_validator_mut(&alice_pub) {
             v.vrf_public_key = alice_vrf_pub.clone();
         }
         blockchain.state.add_balance(&alice_pub, 100);
 
         let mut real_b1 = Block::new(10, "prev".into(), vec![]);
-        real_b1.producer = Some(alice_pub.clone());
+        real_b1.producer = Some(alice_pub);
         real_b1.hash = real_b1.calculate_hash();
-        let sig1 = alice_key.sign(real_b1.hash.as_bytes()).to_vec();
+        let sig1 = alice_key.sign(&real_b1.calculate_hash_bytes()).to_vec();
         real_b1.signature = Some(sig1.clone());
         let h1 = BlockHeader::from_block(&real_b1);
 
         let mut real_b2 = Block::new(10, "prev".into(), vec![]);
         real_b2.timestamp += 1;
-        real_b2.producer = Some(alice_pub.clone());
+        real_b2.producer = Some(alice_pub);
         real_b2.hash = real_b2.calculate_hash();
-        let sig2 = alice_key.sign(real_b2.hash.as_bytes()).to_vec();
+        let sig2 = alice_key.sign(&real_b2.calculate_hash_bytes()).to_vec();
         real_b2.signature = Some(sig2.clone());
         let h2 = BlockHeader::from_block(&real_b2);
 
@@ -804,7 +828,7 @@ mod tests {
             guard.push(evidence);
         }
 
-        blockchain.produce_block(alice_pub.clone());
+        blockchain.produce_block(alice_pub);
 
         let produced_block = blockchain.chain.last().unwrap();
         assert!(
@@ -833,16 +857,20 @@ mod tests {
     fn test_fee_reaches_producer() {
         let consensus = Arc::new(PoWEngine::new(0));
         let sender = KeyPair::generate().unwrap();
-        let sender_pub = sender.public_key_hex();
+        let sender_pub = Address::from(sender.public_key_bytes());
         let mut bc = Blockchain::new(consensus, None, 1337, None);
         bc.state.add_balance(&sender_pub, 1000);
 
-        let mut tx = Transaction::new_with_fee(sender_pub.clone(), "bob".into(), 100, 5, 0, vec![]);
+        let recipient = Address::from([2u8; 32]);
+        let mut tx = Transaction::new_with_fee(sender_pub, recipient, 100, 5, 0, vec![]);
         tx.sign(&sender);
         bc.add_transaction(tx).unwrap();
 
-        bc.produce_block("miner_addr".to_string());
-        assert_eq!(bc.state.get_balance("miner_addr"), 5);
+        let mut miner_bytes = [0u8; 32];
+        miner_bytes[0] = 1;
+        let miner_addr = Address::from(miner_bytes);
+        bc.produce_block(miner_addr);
+        assert_eq!(bc.state.get_balance(&miner_addr), 55);
     }
 
     #[test]

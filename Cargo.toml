@@ -53,6 +53,7 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 async-trait = "0.1"
+rayon = "1.10"
 
 [build-dependencies]
 prost-build = "0.14.3"
@@ -60,4 +61,18 @@ prost-build = "0.14.3"
 [dev-dependencies]
 tempfile = "3.10"
 
+[[bin]]
+name = "bench_sig_verify"
+path = "benches/micro/sig_verify.rs"
 
+[[bin]]
+name = "bench_merkle_update"
+path = "benches/micro/merkle_update.rs"
+
+[[bin]]
+name = "bench_merkle_scaling"
+path = "benches/micro/merkle_scaling.rs"
+
+[[bin]]
+name = "bench_internal_pipeline_tps"
+path = "benches/single_node/internal_pipeline_tps.rs"

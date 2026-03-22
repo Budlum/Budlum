@@ -1,4 +1,5 @@
 use crate::core::account::AccountState;
+use crate::core::address::Address;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7,8 +8,8 @@ pub struct StateSnapshot {
     pub block_hash: String,
     pub chain_id: u64,
     pub created_at: u128,
-    pub balances: HashMap<String, u64>,
-    pub nonces: HashMap<String, u64>,
+    pub balances: HashMap<Address, u64>,
+    pub nonces: HashMap<Address, u64>,
     pub finalized_height: u64,
     pub finalized_hash: String,
     pub snapshot_hash: String,
@@ -51,13 +52,13 @@ impl StateSnapshot {
         let mut balance_keys: Vec<_> = self.balances.keys().collect();
         balance_keys.sort();
         for key in balance_keys {
-            hasher.update(key.as_bytes());
+            hasher.update(key.0);
             hasher.update(self.balances[key].to_le_bytes());
         }
         let mut nonce_keys: Vec<_> = self.nonces.keys().collect();
         nonce_keys.sort();
         for key in nonce_keys {
-            hasher.update(key.as_bytes());
+            hasher.update(key.0);
             hasher.update(self.nonces[key].to_le_bytes());
         }
         hasher.update(self.finalized_height.to_le_bytes());

@@ -34,7 +34,14 @@ pub trait ConsensusEngine: Send + Sync {
         chain: &[Block],
         state: &AccountState,
     ) -> Result<(), ConsensusError>;
-    fn record_block(&self, _block: &Block) -> Result<(), ConsensusError> {
+    fn record_block(
+        &self,
+        _block: &Block,
+        _storage: Option<&crate::storage::db::Storage>,
+    ) -> Result<(), ConsensusError> {
+        Ok(())
+    }
+    fn load_state(&self, _storage: &crate::storage::db::Storage) -> Result<(), ConsensusError> {
         Ok(())
     }
     fn consensus_type(&self) -> &'static str;
@@ -44,22 +51,6 @@ pub trait ConsensusEngine: Send + Sync {
         block: &Block,
         prev_block: Option<&Block>,
     ) -> Result<(), ConsensusError> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        if block.timestamp > now + MAX_FUTURE_BLOCK_TIME_MS {
-            return Err(ConsensusError(format!(
-                "Block timestamp too far in future: {} ms ahead",
-                block.timestamp - now
-            )));
-        }
-        if block.timestamp + MAX_PAST_BLOCK_TIME_MS < now {
-            return Err(ConsensusError(format!(
-                "Block timestamp too old: {} ms behind",
-                now - block.timestamp
-            )));
-        }
         if let Some(prev) = prev_block {
             if block.timestamp <= prev.timestamp {
                 return Err(ConsensusError(format!(

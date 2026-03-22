@@ -65,7 +65,7 @@ impl PoWEngine {
             block.hash = block.calculate_hash();
             iterations += 1;
             if iterations % 100_000 == 0 {
-                println!("   ... {} iterations, nonce: {}", iterations, block.nonce);
+                println!("... {} iterations, nonce: {}", iterations, block.nonce);
             }
         }
         println!(
@@ -82,8 +82,8 @@ impl PoWEngine {
         let first_block = &chain[chain.len() - interval];
         let actual_time = (last_block.timestamp - first_block.timestamp) / 1000;
         let expected_time = self.config.target_block_time * self.config.adjustment_interval;
-        let ratio = expected_time as f64 / actual_time.max(1) as f64;
-        let new_diff = (self.get_difficulty() as f64 * ratio) as usize;
+        let ratio_scaled = (expected_time as u128 * 100) / (actual_time.max(1) as u128);
+        let new_diff = (self.get_difficulty() * ratio_scaled as usize) / 100;
         new_diff.clamp(1, 32)
     }
 }

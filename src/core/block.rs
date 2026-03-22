@@ -1,5 +1,6 @@
 use crate::crypto::primitives::{verify_signature, KeyPair};
-use crate::core::hash::hash_fields;
+use crate::core::address::Address;
+use crate::core::hash::{hash_fields, hash_fields_bytes};
 use crate::core::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +13,7 @@ pub struct BlockHeader {
     pub timestamp: u128,
     pub previous_hash: String,
     pub hash: String,
-    pub producer: Option<String>,
+    pub producer: Option<Address>,
     pub chain_id: u64,
     pub state_root: String,
     pub tx_root: String,
@@ -47,6 +48,10 @@ impl BlockHeader {
     }
 
     pub fn calculate_hash(&self) -> String {
+        hex::encode(self.calculate_hash_bytes())
+    }
+    
+    pub fn calculate_hash_bytes(&self) -> [u8; 32] {
         let producer_bytes = self
             .producer
             .as_ref()
@@ -59,7 +64,7 @@ impl BlockHeader {
             .map(|e| bincode::serialize(e).unwrap_or_default())
             .unwrap_or_default();
 
-        hash_fields(&[
+        hash_fields_bytes(&[
             b"BDLM_BLOCK_V2",
             &self.index.to_le_bytes(),
             &self.timestamp.to_le_bytes(),
@@ -79,19 +84,17 @@ impl BlockHeader {
     }
 
     pub fn verify_signature(&self, signature: &[u8]) -> bool {
-        let producer_hex = match &self.producer {
+        let producer_addr = match &self.producer {
             Some(p) => p,
             None => return false,
         };
-        let public_key = match hex::decode(producer_hex) {
-            Ok(pk) => pk,
-            Err(_) => return false,
-        };
-        let calculated_hash = self.calculate_hash();
+        let public_key = producer_addr.as_bytes();
+        let binary_hash = self.calculate_hash_bytes();
+        let calculated_hash = hex::encode(binary_hash);
         if calculated_hash != self.hash {
             return false;
         }
-        verify_signature(self.hash.as_bytes(), signature, &public_key).is_ok()
+        verify_signature(&binary_hash, signature, public_key).is_ok()
     }
 }
 
@@ -103,7 +106,7 @@ pub struct Block {
     pub hash: String,
     pub transactions: Vec<Transaction>,
     pub nonce: u64,
-    pub producer: Option<String>,
+    pub producer: Option<Address>,
     pub signature: Option<Vec<u8>>,
     pub chain_id: u64,
     pub slashing_evidence: Option<Vec<SlashingEvidence>>,
@@ -163,8 +166,14 @@ impl Block {
     }
 
     pub fn calculate_tx_root(&self) -> String {
-        let mut tx_hashes: Vec<String> =
-            self.transactions.iter().map(|tx| tx.hash.clone()).collect();
+        let mut tx_hashes: Vec<[u8; 32]> = self.transactions.iter()
+            .map(|tx| {
+                let mut leaf = Vec::with_capacity(1 + 32);
+                leaf.push(0x00);
+                leaf.extend_from_slice(&hex::decode(&tx.hash).unwrap_or_else(|_| tx.hash.as_bytes().to_vec()));
+                crate::core::hash::calculate_hash_bytes(&leaf)
+            })
+            .collect();
 
         if tx_hashes.is_empty() {
             return "0".repeat(64);
@@ -175,18 +184,25 @@ impl Block {
             for chunk in tx_hashes.chunks(2) {
                 let left = &chunk[0];
                 let right = if chunk.len() > 1 { &chunk[1] } else { left };
-                let combined = format!("{}{}", left, right);
-                next_level.push(hex::encode(crate::core::hash::calculate_hash(
-                    combined.as_bytes(),
-                )));
+                
+                let mut combined = Vec::with_capacity(1 + 64);
+                combined.push(0x01);
+                combined.extend_from_slice(left);
+                combined.extend_from_slice(right);
+                
+                next_level.push(crate::core::hash::calculate_hash_bytes(&combined));
             }
             tx_hashes = next_level;
         }
 
-        tx_hashes[0].clone()
+        hex::encode(&tx_hashes[0])
     }
 
     pub fn calculate_hash(&self) -> String {
+        hex::encode(self.calculate_hash_bytes())
+    }
+
+    pub fn calculate_hash_bytes(&self) -> [u8; 32] {
         let producer_bytes = self
             .producer
             .as_ref()
@@ -198,7 +214,7 @@ impl Block {
             .map(|e| bincode::serialize(e).unwrap_or_default())
             .unwrap_or_default();
 
-        hash_fields(&[
+        hash_fields_bytes(&[
             b"BDLM_BLOCK_V2",
             &self.index.to_le_bytes(),
             &self.timestamp.to_le_bytes(),
@@ -217,19 +233,20 @@ impl Block {
         ])
     }
     pub fn sign(&mut self, keypair: &KeyPair) {
-        self.producer = Some(keypair.public_key_hex());
-        self.hash = self.calculate_hash();
-        let signature = keypair.sign(self.hash.as_bytes());
+        self.producer = Some(Address::from(keypair.public_key_bytes()));
+        let binary_hash = self.calculate_hash_bytes();
+        self.hash = hex::encode(binary_hash);
+        let signature = keypair.sign(&binary_hash);
         self.signature = Some(signature.to_vec());
         println!(
             "Block {} signed by {}",
             self.index,
-            &self.producer.as_ref().unwrap()[..16]
+            self.producer.as_ref().unwrap()
         );
     }
 
     pub fn verify_signature(&self) -> bool {
-        let producer_hex = match &self.producer {
+        let producer_addr = match &self.producer {
             Some(p) => p,
             None => {
                 println!("Block has no producer");
@@ -243,14 +260,13 @@ impl Block {
                 return false;
             }
         };
-        let public_key = match hex::decode(producer_hex) {
-            Ok(pk) => pk,
-            Err(e) => {
-                println!("Invalid producer hex: {}", e);
-                return false;
-            }
-        };
-        match verify_signature(self.hash.as_bytes(), signature, &public_key) {
+        let public_key = producer_addr.as_bytes();
+        let binary_hash = self.calculate_hash_bytes();
+        let calculated_hash = hex::encode(binary_hash);
+        if calculated_hash != self.hash {
+            return false;
+        }
+        match crate::crypto::primitives::verify_signature(&binary_hash, signature, public_key) {
             Ok(()) => {
                 println!("Block {} signature verified", self.index);
                 true
@@ -261,16 +277,16 @@ impl Block {
             }
         }
     }
-    pub fn verify_signature_with_pubkey(&self, expected_pubkey_hex: &str) -> bool {
-        let producer_hex = match &self.producer {
+    pub fn verify_signature_with_pubkey(&self, expected_pubkey: &Address) -> bool {
+        let producer = match &self.producer {
             Some(p) => p,
             None => return false,
         };
-        if producer_hex != expected_pubkey_hex {
+        if producer != expected_pubkey {
             println!(
-                "Wrong producer. Expected: {}..., Got: {}...",
-                &expected_pubkey_hex[..16.min(expected_pubkey_hex.len())],
-                &producer_hex[..16.min(producer_hex.len())]
+                "Wrong producer. Expected: {}, Got: {}",
+                expected_pubkey,
+                producer
             );
             return false;
         }
@@ -312,11 +328,13 @@ mod tests {
     #[test]
     fn test_signature_with_specific_pubkey() {
         let keypair = KeyPair::generate().unwrap();
+        let alice = Address::from(keypair.public_key_bytes());
         let mut block = Block::new(1, "0".repeat(64), vec![]);
         block.sign(&keypair);
-        assert!(block.verify_signature_with_pubkey(&keypair.public_key_hex()));
+        assert!(block.verify_signature_with_pubkey(&alice));
         let other_keypair = KeyPair::generate().unwrap();
-        assert!(!block.verify_signature_with_pubkey(&other_keypair.public_key_hex()));
+        let other_alice = Address::from(other_keypair.public_key_bytes());
+        assert!(!block.verify_signature_with_pubkey(&other_alice));
     }
     #[test]
     fn test_modified_block_fails_verification() {

@@ -1,3 +1,4 @@
+use crate::core::address::Address;
 use crate::core::block::{Block, DEFAULT_CHAIN_ID};
 use crate::core::transaction::Transaction;
 use serde::{Deserialize, Serialize};
@@ -14,9 +15,9 @@ pub const GENESIS_TIMESTAMP: u128 = 0;
 pub struct GenesisConfig {
     pub chain_id: u64,
 
-    pub allocations: Vec<(String, u64)>,
+    pub allocations: Vec<(Address, u64)>,
 
-    pub validators: Vec<String>,
+    pub validators: Vec<Address>,
 
     pub block_reward: u64,
 
@@ -43,12 +44,12 @@ impl GenesisConfig {
         }
     }
 
-    pub fn with_allocation(mut self, address: String, amount: u64) -> Self {
+    pub fn with_allocation(mut self, address: Address, amount: u64) -> Self {
         self.allocations.push((address, amount));
         self
     }
 
-    pub fn with_validator(mut self, address: String) -> Self {
+    pub fn with_validator(mut self, address: Address) -> Self {
         self.validators.push(address);
         self
     }
@@ -107,8 +108,8 @@ mod tests {
     #[test]
     fn test_config_builder() {
         let config = GenesisConfig::new(42)
-            .with_allocation("alice".to_string(), 1000)
-            .with_validator("validator1".to_string());
+            .with_allocation(Address::from_hex(&"0".repeat(64)).unwrap(), 1000)
+            .with_validator(Address::from_hex(&"1".repeat(64)).unwrap());
 
         assert_eq!(config.chain_id, 42);
         assert_eq!(config.allocations.len(), 1);

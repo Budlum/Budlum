@@ -1,5 +1,6 @@
 
 use budlum_core::chain::blockchain::Blockchain;
+use budlum_core::core::address::Address;
 use budlum_core::core::account::Validator;
 use budlum_core::core::transaction::Transaction;
 use budlum_core::consensus::pow::PoWEngine;
@@ -33,7 +34,7 @@ async fn main() {
             Ok(keys) => {
                 keys.save(path).expect("Failed to save key");
                 println!("Validator key generated and saved to: {}", path);
-                println!("Address: {}", keys.sig_key.public_key_hex());
+                println!("Address: {}", Address::from(keys.sig_key.public_key_bytes()));
             }
             Err(e) => eprintln!("Error generating key: {}", e),
         }
@@ -120,7 +121,7 @@ async fn main() {
         ConsensusType::PoS => {
            if let Some(ref v_path) = config.validator_key_file {
                if let Ok(keys) = budlum_core::crypto::primitives::ValidatorKeys::load(v_path) {
-                    let addr = keys.sig_key.public_key_hex();
+                    let addr = Address::from(keys.sig_key.public_key_bytes());
                     println!("Auto-bootstrapping validator: {}", addr);
                     // Add balance and validator info via actor or directly if before actor run
                     // For simplicity, we assume the user can do this via RPC or we add a command
@@ -163,7 +164,8 @@ async fn main() {
         node.dial(addr).expect("Failed to dial");
     }
     let client = node.get_client();
-    let peer_id = node.peer_id;
+    let peer_id = node.peer_id.to_string();
+    println!("Node PeerID: {}", peer_id);
 
     let rpc_addr = format!("{}:{}", config.rpc_host, config.rpc_port);
     let rpc_server = RpcServer::new(chain.clone(), node.get_client());
@@ -223,19 +225,21 @@ async fn main() {
                     let cmd = line.trim();
                     match cmd {
                         "tx" => {
+                            let alice = Address::from_hex(&"01".repeat(32)).unwrap();
+                            let bob = Address::from_hex(&"02".repeat(32)).unwrap();
                             let tx = Transaction::new(
-                                peer_id.to_string(),
-                                "recipient".to_string(),
+                                alice,
+                                bob,
                                 10,
                                 b"demo tx".to_vec(),
                             );
                             client.broadcast("transactions".to_string(), NetworkMessage::Transaction(tx)).await;
                         }
                         "block" | "mine" => {
-                            let producer = if let Some(addr) = &config.validator_address {
-                                addr.clone()
+                            let producer = if let Some(addr_str) = &config.validator_address {
+                                Address::from_hex(addr_str).unwrap_or(Address::zero())
                             } else {
-                                peer_id.to_string()
+                                Address::zero()
                             };
                             let _ = chain.produce_block(producer).await;
                         }

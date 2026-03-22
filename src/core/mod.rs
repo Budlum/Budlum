@@ -1,3 +1,5 @@
+pub mod address;
+pub use address::Address;
 pub mod account;
 pub mod block;
 pub mod chain_config;

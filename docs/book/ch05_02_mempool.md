@@ -138,16 +138,17 @@ pub fn cleanup_expired(&mut self) -> usize {
 
 Bu periyodik temizleyici sayesinde ağ, kendi hafızasını (Mempool'u) otomatik ve sistemli olarak sürekli temizler.
 
-## 5. Mempool Persistence (Disk Yedeği)
+## 5. Mempool Persistence (Disk Yedeği) ve Dayanıklılık
 
-Normalde Mempool sadece RAM'dedir. Node kapandığında içindeki tüm bekleyen işlemler silinir. Budlum Hardening ile birlikte artık **Mempool Persistence** devrededir.
+Normalde Mempool sadece RAM'dedir. Node kapandığında içindeki tüm bekleyen işlemler silinir. **Budlum Hardening Phase 2** ile birlikte artık tam kapsamlı **Mempool Persistence** ve hata denetimi (Error Handling) devrededir.
 
 ### Mekanizma:
-1. **Save-on-Arrival:** Bir işlem Mempool'a eklendiğinde aynı anda veritabanına da (`MEM:{hash}`) yazılır.
-2. **Remove-on-Mined:** İşlem bir bloğa girdiğinde diskten de temizlenir.
-3. **Startup Recovery:** Node açılırken `Blockchain::new()` fonksiyonu diskteki tüm `MEM:` önekli işlemleri tarar ve Mempool'u otomatik olarak doldurur.
+1. **Atomic Save-on-Arrival:** Bir işlem Mempool'a eklendiğinde aynı anda veritabanına da (`MEM_TX:{hash}`) yazılır. Bu işlem atomik olarak gerçekleşir.
+2. **Remove-on-Mined:** İşlem bir bloğa girdiğinde veya süresi dolduğunda (`cleanup_expired`) diskten de temizlenir.
+3. **Startup Recovery:** Node açılırken `Blockchain::new()` fonksiyonu diskteki tüm `MEM_TX:` önekli işlemleri tarar ve Mempool'u otomatik olarak doldurur.
+4. **Unwrap Audit (Güvenlik):** Mempool içindeki tüm `unwrap()` ve `expect()` çağrıları temizlenmiştir. Geçersiz bir işlem veya veritabanı hatası durumunda sistem çökmek (panic) yerine hatayı loglar ve güvenli bir şekilde çalışmaya devam eder.
 
-Bu sayede beklenmedik kapanmalarda kullanıcı işlemleri ağda kaybolmaz.
+Bu sayede beklenmedik kapanmalarda kullanıcı işlemleri ağda kaybolmaz ve sistem dış saldırılara karşı çok daha dirençli hale gelir.
 
 ---
 

@@ -1,5 +1,6 @@
 use super::{ConsensusEngine, ConsensusError};
 use crate::core::account::{AccountState, Validator};
+use crate::core::address::Address;
 use crate::core::block::Block;
 #[derive(Debug, Clone)]
 pub struct PoAConfig {
@@ -32,7 +33,7 @@ impl PoAEngine {
     }
     pub fn with_config(
         config: PoAConfig,
-        _validators: Vec<String>,
+        _validators: Vec<Address>,
         keypair: Option<KeyPair>,
     ) -> Self {
         PoAEngine { config, keypair }
@@ -62,31 +63,31 @@ impl ConsensusEngine for PoAEngine {
 
         let expected_signer_addr =
             if let Some(expected) = self.expected_proposer(slot, &active_refs) {
-                expected.address.clone()
+                expected.address
             } else {
-                // Genesis or bootstrap
                 if block.index == 0 {
-                    String::new()
+                    Address::zero()
                 } else {
                     return Err(ConsensusError("No active validators found".into()));
                 }
             };
 
-        if !expected_signer_addr.is_empty() {
+        if expected_signer_addr != Address::zero() {
             println!(
                 "PoA: Block {} should be proposed by: {}",
                 slot,
-                &expected_signer_addr[..16.min(expected_signer_addr.len())]
+                expected_signer_addr
             );
 
             if let Some(kp) = &self.keypair {
                 let kp: &KeyPair = kp;
-                if kp.public_key_hex() == expected_signer_addr {
+                let our_addr = Address::from(kp.public_key_bytes());
+                if our_addr == expected_signer_addr {
                     block.sign(kp);
                     println!(
                         " PoA: Block {} signed by us ({})",
                         block.index,
-                        &expected_signer_addr[..16.min(expected_signer_addr.len())]
+                        expected_signer_addr
                     );
                 } else {
                     /*
@@ -145,8 +146,8 @@ impl ConsensusEngine for PoAEngine {
             if producer != &expected.address {
                 return Err(ConsensusError(format!(
                     "Wrong proposer. Expected: {}, Got: {}",
-                    &expected.address[..16.min(expected.address.len())],
-                    &producer[..16.min(producer.len())]
+                    expected.address,
+                    producer
                 )));
             }
 
@@ -157,7 +158,7 @@ impl ConsensusEngine for PoAEngine {
             println!(
                 "PoA: Block {} signature verified (producer: {})",
                 block.index,
-                &producer[..16.min(producer.len())]
+                producer
             );
         } else {
             // No validators - maybe test environment
@@ -185,6 +186,7 @@ impl ConsensusEngine for PoAEngine {
 mod tests {
     use super::*;
     use crate::core::account::{AccountState, Validator};
+    use crate::core::address::Address;
     use crate::crypto::primitives::KeyPair;
 
     #[test]
@@ -192,24 +194,26 @@ mod tests {
         let mut state = AccountState::new();
         let alice = KeyPair::generate().unwrap();
         let bob = KeyPair::generate().unwrap();
+        let alice_addr = Address::from(alice.public_key_bytes());
+        let bob_addr = Address::from(bob.public_key_bytes());
 
         state.validators.insert(
-            alice.public_key_hex(),
-            Validator::new(alice.public_key_hex(), 0),
+            alice_addr,
+            Validator::new(alice_addr, 0),
         );
         state.validators.insert(
-            bob.public_key_hex(),
-            Validator::new(bob.public_key_hex(), 0),
+            bob_addr,
+            Validator::new(bob_addr, 0),
         );
 
         state
             .validators
-            .get_mut(&alice.public_key_hex())
+            .get_mut(&alice_addr)
             .unwrap()
             .active = true;
         state
             .validators
-            .get_mut(&bob.public_key_hex())
+            .get_mut(&bob_addr)
             .unwrap()
             .active = true;
 
@@ -230,12 +234,12 @@ mod tests {
     #[test]
     fn test_poa_signing() {
         let keypair = KeyPair::generate().unwrap();
-        let pubkey = keypair.public_key_hex();
+        let pubkey = Address::from(keypair.public_key_bytes());
 
         let mut state = AccountState::new();
         state
             .validators
-            .insert(pubkey.clone(), Validator::new(pubkey.clone(), 0));
+            .insert(pubkey, Validator::new(pubkey, 0));
         state.validators.get_mut(&pubkey).unwrap().active = true;
 
         let mut engine = PoAEngine::new(PoAConfig::default(), Some(keypair));

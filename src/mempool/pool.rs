@@ -1,4 +1,5 @@
 use crate::core::transaction::Transaction;
+use crate::core::address::Address;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -17,8 +18,8 @@ pub struct MempoolConfig {
 impl Default for MempoolConfig {
     fn default() -> Self {
         MempoolConfig {
-            max_size: 5000,
-            max_per_sender: 16,
+            max_size: 20000,
+            max_per_sender: 100,
             min_fee: 1,
             tx_ttl_secs: 3600,
             rbf_bump_percent: 10,
@@ -49,7 +50,7 @@ pub struct Mempool {
 
     transactions: HashMap<String, PendingTx>,
 
-    by_sender: HashMap<String, BTreeMap<u64, String>>,
+    by_sender: HashMap<Address, BTreeMap<u64, String>>,
 
     by_fee: BTreeMap<u64, HashSet<String>>,
 }
@@ -102,7 +103,7 @@ impl Mempool {
             .as_millis();
 
         self.by_sender
-            .entry(tx.from.clone())
+            .entry(tx.from)
             .or_insert_with(BTreeMap::new)
             .insert(tx.nonce, tx.hash.clone());
         self.by_fee
@@ -193,7 +194,7 @@ impl Mempool {
         txs
     }
 
-    fn find_tx_by_sender_nonce(&self, sender: &str, nonce: u64) -> Option<String> {
+    fn find_tx_by_sender_nonce(&self, sender: &Address, nonce: u64) -> Option<String> {
         self.by_sender
             .get(sender)
             .and_then(|nonces| nonces.get(&nonce).cloned())
@@ -222,18 +223,19 @@ impl Default for Mempool {
 mod tests {
     use super::*;
 
-    fn create_test_tx(from: &str, nonce: u64, fee: u64) -> Transaction {
-        let mut tx = Transaction::new(from.to_string(), "to".to_string(), 100, vec![]);
+    fn create_test_tx(from_hex: &str, nonce: u64, fee: u64) -> Transaction {
+        let from = Address::from_hex(from_hex).unwrap();
+        let mut tx = Transaction::new(from, Address::zero(), 100, vec![]);
         tx.nonce = nonce;
         tx.fee = fee;
-        tx.hash = format!("tx_{}_{}", from, nonce);
+        tx.hash = format!("tx_{}_{}", from_hex, nonce);
         tx
     }
 
     #[test]
     fn test_add_and_get() {
         let mut pool = Mempool::default();
-        let tx = create_test_tx("alice", 0, 10);
+        let tx = create_test_tx(&"01".repeat(32), 0, 10);
         assert!(pool.add_transaction(tx.clone()).is_ok());
         assert_eq!(pool.len(), 1);
         assert!(pool.get(&tx.hash).is_some());
@@ -242,7 +244,7 @@ mod tests {
     #[test]
     fn test_duplicate_rejection() {
         let mut pool = Mempool::default();
-        let tx = create_test_tx("alice", 0, 10);
+        let tx = create_test_tx(&"01".repeat(32), 0, 10);
         pool.add_transaction(tx.clone()).unwrap();
         assert_eq!(
             pool.add_transaction(tx),
@@ -253,7 +255,7 @@ mod tests {
     #[test]
     fn test_fee_too_low() {
         let mut pool = Mempool::default();
-        let tx = create_test_tx("alice", 0, 0);
+        let tx = create_test_tx(&"01".repeat(32), 0, 0);
         assert_eq!(pool.add_transaction(tx), Err(MempoolError::FeeTooLow));
     }
 
@@ -265,12 +267,13 @@ mod tests {
         };
         let mut pool = Mempool::new(config);
 
-        pool.add_transaction(create_test_tx("alice", 0, 10))
+        let alice_hex = "01".repeat(32);
+        pool.add_transaction(create_test_tx(&alice_hex, 0, 10))
             .unwrap();
-        pool.add_transaction(create_test_tx("alice", 1, 10))
+        pool.add_transaction(create_test_tx(&alice_hex, 1, 10))
             .unwrap();
         assert_eq!(
-            pool.add_transaction(create_test_tx("alice", 2, 10)),
+            pool.add_transaction(create_test_tx(&alice_hex, 2, 10)),
             Err(MempoolError::SenderLimitReached)
         );
     }
@@ -278,9 +281,9 @@ mod tests {
     #[test]
     fn test_sorted_by_fee() {
         let mut pool = Mempool::default();
-        pool.add_transaction(create_test_tx("a", 0, 5)).unwrap();
-        pool.add_transaction(create_test_tx("b", 0, 20)).unwrap();
-        pool.add_transaction(create_test_tx("c", 0, 10)).unwrap();
+        pool.add_transaction(create_test_tx(&"01".repeat(32), 0, 5)).unwrap();
+        pool.add_transaction(create_test_tx(&"02".repeat(32), 0, 20)).unwrap();
+        pool.add_transaction(create_test_tx(&"03".repeat(32), 0, 10)).unwrap();
 
         let sorted = pool.get_sorted_transactions(10);
         assert_eq!(sorted[0].fee, 20);
@@ -291,10 +294,11 @@ mod tests {
     #[test]
     fn test_rbf() {
         let mut pool = Mempool::default();
-        let tx1 = create_test_tx("alice", 0, 10);
+        let alice_hex = "01".repeat(32);
+        let tx1 = create_test_tx(&alice_hex, 0, 10);
         pool.add_transaction(tx1).unwrap();
 
-        let mut tx2 = create_test_tx("alice", 0, 15);
+        let mut tx2 = create_test_tx(&alice_hex, 0, 15);
         tx2.hash = "tx_alice_0_v2".to_string();
         assert!(pool.add_transaction(tx2).is_ok());
         assert_eq!(pool.len(), 1);
@@ -306,7 +310,7 @@ mod tests {
         config.tx_ttl_secs = 1;
         let mut pool = Mempool::new(config);
 
-        let tx = create_test_tx("alice", 0, 10);
+        let tx = create_test_tx(&"01".repeat(32), 0, 10);
         pool.add_transaction(tx).unwrap();
         assert_eq!(pool.len(), 1);
 

@@ -4,6 +4,7 @@ mod chaos_tests {
     use crate::consensus::pow::PoWEngine;
     use crate::crypto::primitives::KeyPair;
     use crate::core::transaction::Transaction;
+    use crate::core::address::Address;
     use std::sync::Arc;
 
     #[test]
@@ -17,12 +18,14 @@ mod chaos_tests {
         assert_eq!(chain_a.chain.len(), 1);
         assert_eq!(chain_b.chain.len(), 1);
 
+        let producer_a = Address::from_hex(&"01".repeat(32)).unwrap();
         for _ in 0..3 {
-            chain_a.produce_block("producer_a".to_string());
+            chain_a.produce_block(producer_a);
         }
 
+        let producer_b = Address::from_hex(&"02".repeat(32)).unwrap();
         for _ in 0..5 {
-            chain_b.produce_block("producer_b".to_string());
+            chain_b.produce_block(producer_b);
         }
 
         assert_eq!(chain_a.chain.len(), 4);
@@ -44,10 +47,13 @@ mod chaos_tests {
         println!("Flooding mempool with 1000 transactions from 1000 senders...");
         for i in 0..1000 {
             let sender = KeyPair::generate().unwrap();
-            let sender_pub = sender.public_key_hex();
+            let sender_pub = Address::from(sender.public_key_bytes());
             blockchain.state.add_balance(&sender_pub, 100);
 
-            let mut tx = Transaction::new(sender_pub, format!("recipient_{}", i), 1, vec![]);
+            let mut recipient_bytes = [0u8; 32];
+            recipient_bytes[0] = ((i % 250) + 1) as u8;
+            let recipient = Address::from(recipient_bytes);
+            let mut tx = Transaction::new(sender_pub, recipient, 1, vec![]);
             tx.nonce = 0;
             tx.fee = 1;
             tx.sign(&sender);
@@ -56,7 +62,8 @@ mod chaos_tests {
 
         assert_eq!(blockchain.mempool.len(), 1000);
 
-        blockchain.produce_block("miner".to_string());
+        let miner = Address::from_hex(&"03".repeat(32)).unwrap();
+        blockchain.produce_block(miner);
         
         println!("Mempool size after block: {}", blockchain.mempool.len());
         assert_eq!(blockchain.mempool.len(), 0, "Mempool should be empty after processing all txs");
@@ -77,12 +84,14 @@ mod chaos_tests {
         let consensus_b = Arc::new(PoWEngine::with_config(pow_config));
         let mut chain_b = Blockchain::new(consensus_b, None, 1337, None);
 
+        let producer_a = Address::from_hex(&"01".repeat(32)).unwrap();
         for _ in 0..(MAX_REORG_DEPTH + 10) {
-            chain_a.produce_block("a".into());
+            chain_a.produce_block(producer_a);
         }
 
+        let producer_b = Address::from_hex(&"02".repeat(32)).unwrap();
         for _ in 0..(MAX_REORG_DEPTH + 20) {
-            chain_b.produce_block("b".into());
+            chain_b.produce_block(producer_b);
         }
 
         let result = chain_a.try_reorg(chain_b.chain.clone());
@@ -97,7 +106,9 @@ mod chaos_tests {
         let consensus = Arc::new(PoWEngine::new(0));
         let mut blockchain = Blockchain::new(consensus, None, 1337, None);
         
-        let mut invalid_tx = Transaction::new("alice".into(), "bob".into(), 100, vec![]);
+        let alice = Address::from_hex(&"01".repeat(32)).unwrap();
+        let bob = Address::from_hex(&"02".repeat(32)).unwrap();
+        let mut invalid_tx = Transaction::new(alice, bob, 100, vec![]);
         invalid_tx.signature = Some(vec![0; 64]); 
 
         let result = blockchain.add_transaction(invalid_tx);

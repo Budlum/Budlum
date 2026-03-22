@@ -1,5 +1,6 @@
 use crate::consensus::pos::SlashingEvidence;
 use crate::network::protocol::NetworkMessage;
+use crate::core::address::Address;
 use crate::core::block::{Block, BlockHeader};
 use crate::core::transaction::{Transaction, TransactionType};
 use prost::Message;
@@ -11,8 +12,8 @@ pub mod pb {
 impl From<&Transaction> for pb::ProtoTransaction {
     fn from(tx: &Transaction) -> Self {
         pb::ProtoTransaction {
-            from: tx.from.clone(),
-            to: tx.to.clone(),
+            from: tx.from.to_string(),
+            to: tx.to.to_string(),
             amount: tx.amount,
             fee: tx.fee,
             nonce: tx.nonce,
@@ -58,8 +59,8 @@ impl TryFrom<pb::ProtoTransaction> for Transaction {
         };
 
         Ok(Transaction {
-            from: proto.from,
-            to: proto.to,
+            from: Address::from_hex(&proto.from).map_err(|e| format!("Invalid from address: {}", e))?,
+            to: Address::from_hex(&proto.to).map_err(|e| format!("Invalid to address: {}", e))?,
             amount: proto.amount,
             fee: proto.fee,
             nonce: proto.nonce,
@@ -105,7 +106,7 @@ impl From<&BlockHeader> for pb::ProtoBlockHeader {
             timestamp: header.timestamp.to_string(),
             previous_hash: header.previous_hash.clone(),
             hash: header.hash.clone(),
-            producer: header.producer.clone().unwrap_or_default(),
+            producer: header.producer.map(|p| p.to_string()).unwrap_or_default(),
             chain_id: header.chain_id,
             state_root: header.state_root.clone(),
             tx_root: header.tx_root.clone(),
@@ -136,7 +137,7 @@ impl TryFrom<pb::ProtoBlockHeader> for BlockHeader {
         let producer = if proto.producer.is_empty() {
             None
         } else {
-            Some(proto.producer)
+            Some(Address::from_hex(&proto.producer).map_err(|e| format!("Invalid producer address: {}", e))?)
         };
         let mut evidence = Vec::new();
         for ev in proto.slashing_evidence {
@@ -180,7 +181,7 @@ impl From<&Block> for pb::ProtoBlock {
                 .map(pb::ProtoTransaction::from)
                 .collect(),
             nonce: block.nonce,
-            producer: block.producer.clone().unwrap_or_default(),
+            producer: block.producer.map(|p| p.to_string()).unwrap_or_default(),
             signature: block.signature.clone().unwrap_or_default(),
             chain_id: block.chain_id,
             slashing_evidence: block
@@ -211,7 +212,7 @@ impl TryFrom<pb::ProtoBlock> for Block {
         let producer = if proto.producer.is_empty() {
             None
         } else {
-            Some(proto.producer)
+            Some(Address::from_hex(&proto.producer).map_err(|e| format!("Invalid producer address: {}", e))?)
         };
         let signature = if proto.signature.is_empty() {
             None
@@ -572,9 +573,10 @@ mod tests {
     #[test]
     fn test_transaction_proto_conversion() {
         let keypair = KeyPair::generate().unwrap();
+        let from = Address::from(keypair.public_key_bytes());
         let mut tx = Transaction::new_with_fee(
-            keypair.public_key_hex(),
-            "RECEIVER_ADDR".to_string(),
+            from,
+            Address::zero(),
             100,
             1,
             42,
@@ -593,9 +595,10 @@ mod tests {
     #[test]
     fn test_block_proto_conversion() {
         let keypair = KeyPair::generate().unwrap();
+        let from = Address::from(keypair.public_key_bytes());
         let mut tx = Transaction::new(
-            keypair.public_key_hex(),
-            "RECEIVER_ADDR".to_string(),
+            from,
+            Address::zero(),
             50,
             vec![],
         );
@@ -604,6 +607,7 @@ mod tests {
         let mut block = Block::new(10, "PREV_HASH".to_string(), vec![tx]);
         block.state_root = "STATE_ROOT".to_string();
         block.tx_root = "TX_ROOT".to_string();
+        block.producer = Some(from);
         block.sign(&keypair);
 
         let proto_block = pb::ProtoBlock::from(&block);

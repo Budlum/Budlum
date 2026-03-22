@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use std::collections::HashMap;
+use crate::core::address::Address;
 
 use crate::core::chain_config::{
     FINALITY_CHECKPOINT_INTERVAL, FINALITY_QUORUM_DENOMINATOR, FINALITY_QUORUM_NUMERATOR,
@@ -16,7 +17,7 @@ pub struct ValidatorSetSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatorEntry {
-    pub address: String,
+    pub address: Address,
     pub stake: u64,
     pub bls_public_key: Vec<u8>,
     pub pop_signature: Vec<u8>,
@@ -35,21 +36,24 @@ impl ValidatorSetSnapshot {
     }
 
     pub fn compute_hash(validators: &[ValidatorEntry]) -> String {
+        let mut sorted_validators = validators.to_vec();
+        sorted_validators.sort_by_key(|v| v.address);
+        
         let mut hasher = Sha3_256::new();
-        for v in validators {
-            hasher.update(v.address.as_bytes());
+        for v in sorted_validators {
+            hasher.update(v.address.0);
             hasher.update(v.stake.to_le_bytes());
             hasher.update(&v.bls_public_key);
         }
         hex::encode(hasher.finalize())
     }
 
-    pub fn find_validator(&self, address: &str) -> Option<&ValidatorEntry> {
-        self.validators.iter().find(|v| v.address == address)
+    pub fn find_validator(&self, address: &Address) -> Option<&ValidatorEntry> {
+        self.validators.iter().find(|v| &v.address == address)
     }
 
-    pub fn validator_index(&self, address: &str) -> Option<usize> {
-        self.validators.iter().position(|v| v.address == address)
+    pub fn validator_index(&self, address: &Address) -> Option<usize> {
+        self.validators.iter().position(|v| &v.address == address)
     }
 
     pub fn quorum_stake(&self) -> u64 {
@@ -62,7 +66,7 @@ pub struct Prevote {
     pub epoch: u64,
     pub checkpoint_height: u64,
     pub checkpoint_hash: String,
-    pub voter_id: String,
+    pub voter_id: Address,
     pub sig_bls: Vec<u8>,
 }
 
@@ -71,7 +75,7 @@ pub struct Precommit {
     pub epoch: u64,
     pub checkpoint_height: u64,
     pub checkpoint_hash: String,
-    pub voter_id: String,
+    pub voter_id: Address,
     pub sig_bls: Vec<u8>,
 }
 
@@ -111,10 +115,10 @@ pub fn is_checkpoint_height(height: u64) -> bool {
     height > 0 && height % FINALITY_CHECKPOINT_INTERVAL == 0
 }
 
-pub fn pop_signing_message(address: &str, bls_pk: &[u8]) -> Vec<u8> {
+pub fn pop_signing_message(address: &Address, bls_pk: &[u8]) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"BUDLUM_BLS_POP");
-    msg.extend_from_slice(address.as_bytes());
+    msg.extend_from_slice(&address.0);
     msg.extend_from_slice(bls_pk);
     msg
 }
@@ -137,8 +141,8 @@ pub struct FinalityAggregator {
     pub epoch: u64,
     pub checkpoint_height: u64,
     pub checkpoint_hash: String,
-    pub prevotes: HashMap<String, Prevote>,
-    pub precommits: HashMap<String, Precommit>,
+    pub prevotes: HashMap<Address, Prevote>,
+    pub precommits: HashMap<Address, Precommit>,
     pub validator_snapshot: Option<ValidatorSetSnapshot>,
     pub prevote_quorum_reached: bool,
     pub precommit_quorum_reached: bool,
@@ -334,11 +338,15 @@ mod tests {
 
     fn make_snapshot(n: usize, stake_each: u64) -> ValidatorSetSnapshot {
         let validators: Vec<ValidatorEntry> = (0..n)
-            .map(|i| ValidatorEntry {
-                address: format!("validator_{}", i),
-                stake: stake_each,
-                bls_public_key: vec![i as u8; 48],
-                pop_signature: vec![i as u8; 96],
+            .map(|i| {
+                let mut addr_bytes = [0u8; 32];
+                addr_bytes[0] = (i + 1) as u8;
+                ValidatorEntry {
+                    address: Address::from(addr_bytes),
+                    stake: stake_each,
+                    bls_public_key: vec![i as u8; 48],
+                    pop_signature: vec![i as u8; 96],
+                }
             })
             .collect();
         ValidatorSetSnapshot::new(1, validators)
@@ -349,25 +357,30 @@ mod tests {
         let snap = make_snapshot(4, 1000);
         assert_eq!(snap.total_stake, 4000);
         assert_eq!(snap.quorum_stake(), 2666);
-        assert!(snap.find_validator("validator_0").is_some());
-        assert!(snap.find_validator("nonexistent").is_none());
-        assert_eq!(snap.validator_index("validator_2"), Some(2));
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[0] = 1;
+        let v0_addr = Address::from(addr_bytes);
+        assert!(snap.find_validator(&v0_addr).is_some());
+        assert!(snap.find_validator(&Address::zero()).is_none());
+        assert_eq!(snap.validator_index(&v0_addr), Some(0));
     }
 
     #[test]
     fn test_checkpoint_height() {
         assert!(!is_checkpoint_height(0));
-        assert!(!is_checkpoint_height(50));
-        assert!(is_checkpoint_height(100));
-        assert!(is_checkpoint_height(200));
+        assert!(!is_checkpoint_height(5));
+        assert!(is_checkpoint_height(10));
+        assert!(is_checkpoint_height(20));
     }
 
     #[test]
     fn test_pop_message_deterministic() {
-        let msg1 = pop_signing_message("alice", &[1, 2, 3]);
-        let msg2 = pop_signing_message("alice", &[1, 2, 3]);
+        let addr = Address::from([1u8; 32]);
+        let msg1 = pop_signing_message(&addr, &[1, 2, 3]);
+        let msg2 = pop_signing_message(&addr, &[1, 2, 3]);
         assert_eq!(msg1, msg2);
-        let msg3 = pop_signing_message("bob", &[1, 2, 3]);
+        let addr_bob = Address::from([2u8; 32]);
+        let msg3 = pop_signing_message(&addr_bob, &[1, 2, 3]);
         assert_ne!(msg1, msg3);
     }
 
@@ -375,9 +388,9 @@ mod tests {
     fn test_prevote_signing_message() {
         let vote = Prevote {
             epoch: 1,
-            checkpoint_height: 100,
+            checkpoint_height: 10,
             checkpoint_hash: "abc".into(),
-            voter_id: "v0".into(),
+            voter_id: Address::zero(),
             sig_bls: vec![],
         };
         let msg = vote.signing_message();
@@ -387,15 +400,17 @@ mod tests {
     #[test]
     fn test_aggregator_prevote_flow() {
         let snap = make_snapshot(4, 1000);
-        let mut agg = FinalityAggregator::new(1, 100, "cp_hash".into());
+        let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
         for i in 0..3 {
+            let mut addr_bytes = [0u8; 32];
+            addr_bytes[0] = (i + 1) as u8;
             let vote = Prevote {
                 epoch: 1,
-                checkpoint_height: 100,
+                checkpoint_height: 10,
                 checkpoint_hash: "cp_hash".into(),
-                voter_id: format!("validator_{}", i),
+                voter_id: Address::from(addr_bytes),
                 sig_bls: vec![i as u8; 48],
             };
             agg.add_prevote(vote).unwrap();
@@ -406,14 +421,16 @@ mod tests {
     #[test]
     fn test_aggregator_rejects_duplicate() {
         let snap = make_snapshot(4, 1000);
-        let mut agg = FinalityAggregator::new(1, 100, "cp_hash".into());
+        let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[0] = 1;
         let vote = Prevote {
             epoch: 1,
-            checkpoint_height: 100,
+            checkpoint_height: 10,
             checkpoint_hash: "cp_hash".into(),
-            voter_id: "validator_0".into(),
+            voter_id: Address::from(addr_bytes),
             sig_bls: vec![0; 48],
         };
         agg.add_prevote(vote.clone()).unwrap();
@@ -423,14 +440,16 @@ mod tests {
     #[test]
     fn test_aggregator_rejects_wrong_epoch() {
         let snap = make_snapshot(4, 1000);
-        let mut agg = FinalityAggregator::new(1, 100, "cp_hash".into());
+        let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[0] = 1;
         let vote = Prevote {
             epoch: 99,
-            checkpoint_height: 100,
+            checkpoint_height: 10,
             checkpoint_hash: "cp_hash".into(),
-            voter_id: "validator_0".into(),
+            voter_id: Address::from(addr_bytes),
             sig_bls: vec![0; 48],
         };
         assert!(agg.add_prevote(vote).is_err());
@@ -439,14 +458,16 @@ mod tests {
     #[test]
     fn test_precommit_requires_prevote_quorum() {
         let snap = make_snapshot(4, 1000);
-        let mut agg = FinalityAggregator::new(1, 100, "cp_hash".into());
+        let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[0] = 1;
         let pc = Precommit {
             epoch: 1,
-            checkpoint_height: 100,
+            checkpoint_height: 10,
             checkpoint_hash: "cp_hash".into(),
-            voter_id: "validator_0".into(),
+            voter_id: Address::from(addr_bytes),
             sig_bls: vec![0; 48],
         };
         assert!(agg.add_precommit(pc).is_err());
@@ -455,15 +476,17 @@ mod tests {
     #[test]
     fn test_full_finality_flow() {
         let snap = make_snapshot(4, 1000);
-        let mut agg = FinalityAggregator::new(1, 100, "cp_hash".into());
+        let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap.clone());
 
         for i in 0..3 {
+            let mut addr_bytes = [0u8; 32];
+            addr_bytes[0] = (i + 1) as u8;
             let vote = Prevote {
                 epoch: 1,
-                checkpoint_height: 100,
+                checkpoint_height: 10,
                 checkpoint_hash: "cp_hash".into(),
-                voter_id: format!("validator_{}", i),
+                voter_id: Address::from(addr_bytes),
                 sig_bls: vec![i as u8; 48],
             };
             agg.add_prevote(vote).unwrap();
@@ -471,11 +494,13 @@ mod tests {
         assert!(agg.prevote_quorum_reached);
 
         for i in 0..3 {
+            let mut addr_bytes = [0u8; 32];
+            addr_bytes[0] = (i + 1) as u8;
             let vote = Precommit {
                 epoch: 1,
-                checkpoint_height: 100,
+                checkpoint_height: 10,
                 checkpoint_hash: "cp_hash".into(),
-                voter_id: format!("validator_{}", i),
+                voter_id: Address::from(addr_bytes),
                 sig_bls: vec![i as u8; 48],
             };
             agg.add_precommit(vote).unwrap();
@@ -484,7 +509,7 @@ mod tests {
 
         let cert = agg.try_produce_cert().expect("Should produce cert");
         assert_eq!(cert.epoch, 1);
-        assert_eq!(cert.checkpoint_height, 100);
+        assert_eq!(cert.checkpoint_height, 10);
         assert_eq!(cert.checkpoint_hash, "cp_hash");
         assert_eq!(cert.set_hash, snap.set_hash);
         assert_eq!(cert.signer_count(4), 3);
@@ -497,7 +522,7 @@ mod tests {
         let snap = make_snapshot(4, 1000);
         let cert = FinalityCert {
             epoch: 1,
-            checkpoint_height: 100,
+            checkpoint_height: 10,
             checkpoint_hash: "cp_hash".into(),
             agg_sig_bls: vec![1; 48],
             bitmap: vec![0b0000_0001],
@@ -513,7 +538,7 @@ mod tests {
         let snap = make_snapshot(4, 1000);
         let cert = FinalityCert {
             epoch: 1,
-            checkpoint_height: 100,
+            checkpoint_height: 10,
             checkpoint_hash: "cp_hash".into(),
             agg_sig_bls: vec![1; 48],
             bitmap: vec![0b0000_1111],

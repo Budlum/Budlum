@@ -14,18 +14,19 @@ PoS, parası olanın söz sahibi olduğu, ancak hata yapanın parasını kaybett
 
 ```rust
 pub struct PoSConfig {
-    pub min_stake: u64,          // Min. Teminat (örn. 32 ETH)
-    pub slot_duration: u64,      // Her blok kaç saniye? (12 sn)
-    pub epoch_length: u64,       // Bir devir kaç blok sürer? (32 blok)
-    pub slashing_penalty: f64,   // Suçun bedeli (Örn. %10)
+    pub min_stake: u64,          // Min. Teminat
+    pub slot_duration: u64,      // Her blok kaç ms? (SLOT_MS: 3000)
+    pub epoch_length: u64,       // Bir devir kaç blok sürer?
+    pub slashing_penalty_scaled: u64, // Fixed-point ceza oranı (Örn %10 = 100,000 / SCALE)
 }
 
 pub struct PoSEngine {
     config: PoSConfig,
-    seen_blocks: RwLock<HashMap<(String, u64), String>>, // Çift imza yakalamak için
-    slashing_evidence: RwLock<Vec<SlashingEvidence>>,    // Tespit edilen suçlar
-    epoch_seed: RwLock<[u8; 32]>,                        // RANDAO Lider Seçim Tohumu
-    keypair: Option<KeyPair>,                            // Eğer biz validatörsek
+    seen_blocks: RwLock<HashMap<(String, u64), String>>, 
+    slashing_evidence: RwLock<Vec<SlashingEvidence>>,    
+    epoch_seed: RwLock<[u8; 32]>,                        
+    storage: Option<Storage>,                            // Kalıcılık için disk bağlantısı
+    keypair: Option<KeyPair>,                            
 }
 ```
 
@@ -63,6 +64,25 @@ pub fn expected_proposer(&self, slot: u64, validators: &[Validator]) -> Option<V
 - **Sıfır Manipülasyon (Bias-Resistance):** RANDAO'da son blok üreticisi hash'i manipüle ederek gelecekteki liderleri etkileyebilir (bias). VRF'de ise çıktı sadece liderin gizli anahtarına bağlıdır ve deterministiktir; kimse (lider dahil) sonucu önceden değiştiremez.
 - **Gizlilik:** Kimin lider olacağı, o slot gelene ve lider kanıtını sunana kadar ağ tarafından bilinmez. Bu, DoS saldırılarına karşı koruma sağlar.
 
+### Determinizm ve Sabit Noktalı Matematik (Fixed-Point Math)
+
+**Budlum Hardening** ile birlikte, tüm platformlarda (Mac, Windows, Linux) aynı sonucun alınması için `f64` kullanımı tamamen kaldırılmıştır.
+
+```rust
+pub fn check_vrf_threshold(&self, vrf_output: [u8; 32], stake: u64, total_stake: u64) -> bool {
+    // Threshold = (MAX_U256 * stake) / total_stake
+    // Tüm hesaplamalar u256/u128 üzerinden tam sayı aritmetiği ile yapılır.
+    let threshold = self.calculate_threshold(stake, total_stake);
+    u256_from_be_bytes(vrf_output) < threshold
+}
+```
+
+### Slot-Bazlı Deterministik Zaman Damgaları
+
+Artık blok zamanları `SystemTime::now()` ile değil, genesis zamanından itibaren geçen slot sayısına göre hesaplanır:
+`timestamp = genesis_time + (block_index * SLOT_MS)`
+Bu sayede ağdaki saat farkları (clock drift) fork'a sebep olamaz.
+
 ---
 
 ## 3. Slashing Kanıtları: Suç ve Ceza
@@ -77,27 +97,17 @@ Bir liderin aynı slot içinde iki farklı blok üretip imzalamasıdır. Bu, zin
 
 ---
 
-### Fonksiyon: `record_block` (Seed Toplama & Dedektiflik)
+### Fonksiyon: `record_block` (Kalıcılık ve Dedektiflik)
 
-Ağa gelen her bloğu kaydeder. İki önemli görevi vardır: **Çift imza yakalamak** ve **RANDAO Tohumunu Güncellemek**.
+Ağa gelen her bloğu kaydeder. **Mainnet Ready** aşamasında, bu fonksiyon artık değişiklikleri anında diske (`Storage`) yazar.
 
 ```rust
 pub fn record_block(&self, block: &Block) {
-    // 1. RANDAO Tohumu Güncellemesi (XOR-Mix)
-    let block_hash_bytes = hex::decode(&block.hash).unwrap();
-    let mut block_contrib = Sha3_256::new();
-    block_contrib.update(&block_hash_bytes);
-    let contribution: [u8; 32] = block_contrib.finalize().into();
-
-    if let Ok(mut seed) = self.epoch_seed.write() {
-        // Her blok, epoch_seed'i XOR ile mutasyona uğratır.
-        for (i, byte) in seed.iter_mut().enumerate() {
-            *byte ^= contribution[i];
-        }
+    // 1. Double-Sign Tespiti
+    // 2. Eğer geçerliyse, konsensüs durumunu (seen_blocks, seed) diske kaydet.
+    if let Some(ref storage) = self.storage {
+        storage.save_consensus_state(&self.get_state()); 
     }
-    
-    // 2. Double-Sign Tespiti
-    // ... Eğer aynı index için farklı hash atanmışsa SlashingEvidence oluştur.
 }
 ```
 

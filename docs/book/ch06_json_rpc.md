@@ -85,6 +85,11 @@ curl -X POST -H "Content-Type: application/json" \
   http://127.0.0.1:8545
 ```
 
-## 4. Mimari Tasarım
+## 4. Mimari Tasarım ve Güvenlik (Hardening)
 
-RPC sunucusu, asenkron bir `tokio` görevinde çalışır. `Blockchain` verisine erişmek için `Arc<Mutex<Blockchain>>` kullanır. Ağ verileri (peer count vb.) için ise `NodeClient` üzerinden ağ döngüsüyle iletişim kurar.
+RPC sunucusu, asenkron bir `tokio` görevinde çalışır. **Mainnet Ready** aşamasında aşağıdaki güvenlik katmanları eklenmiştir:
+
+1. **Bağlantı Sınırı (Max Connections):** Aynı anda en fazla 100 aktif bağlantıya izin verilir. Bu, kaynak tükenmesini (resource exhaustion) önler.
+2. **Payload Sınırı (Max Request Size):** Gelen her RPC isteği en fazla **2 MB** olabilir. Çok büyük JSON paketleri ile belleği şişirme saldırıları bu sayede engelenir.
+3. **İşlem Doğrulama (TX Validation):** `bud_sendRawTransaction` metodu, işlemi ağa yaymadan önce **transaction size** (Max 100KB) ve **kriptografik imza** kontrolü yapar. Hatalı veya devasa işlemler anında reddedilir.
+4. **Panic Prevention:** Sunucu kodundaki tüm kritik noktalar `Result` tipiyle yönetilir. Bozuk bir JSON veya ağ hatası tüm düğümü çökertemez.
