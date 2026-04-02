@@ -12,6 +12,7 @@ pub struct StateSnapshot {
     pub nonces: HashMap<Address, u64>,
     pub finalized_height: u64,
     pub finalized_hash: String,
+    pub validators: HashMap<Address, crate::core::account::Validator>,
     pub snapshot_hash: String,
 }
 impl StateSnapshot {
@@ -29,6 +30,7 @@ impl StateSnapshot {
             .as_millis();
         let balances = account_state.get_all_balances();
         let nonces = account_state.get_all_nonces();
+        let validators = account_state.validators.clone().into_iter().collect();
         let mut snapshot = StateSnapshot {
             height,
             block_hash,
@@ -38,6 +40,7 @@ impl StateSnapshot {
             nonces,
             finalized_height,
             finalized_hash,
+            validators,
             snapshot_hash: String::new(),
         };
         snapshot.snapshot_hash = snapshot.calculate_hash();
@@ -61,6 +64,14 @@ impl StateSnapshot {
             hasher.update(key.0);
             hasher.update(self.nonces[key].to_le_bytes());
         }
+        let mut validator_keys: Vec<_> = self.validators.keys().collect();
+        validator_keys.sort();
+        for key in validator_keys {
+            hasher.update(key.0);
+            let v = &self.validators[key];
+            hasher.update(v.stake.to_le_bytes());
+            hasher.update(&v.bls_public_key);
+        }
         hasher.update(self.finalized_height.to_le_bytes());
         hasher.update(self.finalized_hash.as_bytes());
         hex::encode(hasher.finalize())
@@ -76,6 +87,11 @@ impl StateSnapshot {
     }
     pub fn size(&self) -> usize {
         self.to_bytes().len()
+    }
+
+    pub fn chunk(&self, chunk_size: usize) -> Vec<Vec<u8>> {
+        let data = self.to_bytes();
+        data.chunks(chunk_size).map(|c| c.to_vec()).collect()
     }
 }
 #[derive(Clone)]

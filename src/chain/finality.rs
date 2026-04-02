@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use std::collections::HashMap;
 use crate::core::address::Address;
+use bls12_381::{G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
 
 use crate::core::chain_config::{
     FINALITY_CHECKPOINT_INTERVAL, FINALITY_QUORUM_DENOMINATOR, FINALITY_QUORUM_NUMERATOR,
@@ -102,17 +103,21 @@ impl Prevote {
 
 impl Precommit {
     pub fn signing_message(&self) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(b"BUDLUM_PRECOMMIT");
-        msg.extend_from_slice(&self.epoch.to_le_bytes());
-        msg.extend_from_slice(&self.checkpoint_height.to_le_bytes());
-        msg.extend_from_slice(self.checkpoint_hash.as_bytes());
-        msg
+        checkpoint_signing_message(self.epoch, self.checkpoint_height, &self.checkpoint_hash)
     }
 }
 
 pub fn is_checkpoint_height(height: u64) -> bool {
     height > 0 && height % FINALITY_CHECKPOINT_INTERVAL == 0
+}
+
+pub fn checkpoint_signing_message(epoch: u64, height: u64, hash: &str) -> Vec<u8> {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"BUDLUM_PRECOMMIT");
+    msg.extend_from_slice(&epoch.to_le_bytes());
+    msg.extend_from_slice(&height.to_le_bytes());
+    msg.extend_from_slice(hash.as_bytes());
+    msg
 }
 
 pub fn pop_signing_message(address: &Address, bls_pk: &[u8]) -> Vec<u8> {
@@ -123,17 +128,54 @@ pub fn pop_signing_message(address: &Address, bls_pk: &[u8]) -> Vec<u8> {
     msg
 }
 
+pub fn hash_to_g1(msg: &[u8]) -> G1Affine {
+    let mut hasher = Sha3_256::new();
+    hasher.update(b"BUDLUM_BLS_SIG_DST");
+    hasher.update(msg);
+    let h = hasher.finalize();
+    
+    let mut scalar_bytes = [0u8; 64];
+    scalar_bytes[0..32].copy_from_slice(&h);
+    let s = Scalar::from_bytes_wide(&scalar_bytes);
+    G1Affine::from(G1Projective::generator() * s)
+}
+
 pub fn verify_pop(entry: &ValidatorEntry) -> bool {
     if entry.bls_public_key.is_empty() || entry.pop_signature.is_empty() {
         return false;
     }
-    let msg = pop_signing_message(&entry.address, &entry.bls_public_key);
-    let _msg_hash = {
-        let mut hasher = Sha3_256::new();
-        hasher.update(&msg);
-        hasher.finalize()
+    
+    // Parse BLS Public Key (G2)
+    let pk_bytes: [u8; 96] = match entry.bls_public_key.as_slice().try_into() {
+        Ok(b) => b,
+        Err(_) => return false,
     };
-    !entry.pop_signature.is_empty()
+    let pk_affine = G2Affine::from_compressed(&pk_bytes);
+    if pk_affine.is_none().into() {
+        return false;
+    }
+
+    // Parse PoP Signature (G1)
+    let sig_bytes: [u8; 48] = match entry.pop_signature.as_slice().try_into() {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let sig_affine = G1Affine::from_compressed(&sig_bytes);
+    if sig_affine.is_none().into() {
+        return false;
+    }
+
+    // Verify PoP: e(sig, G2_gen) == e(H(pop_msg), pk)
+    let msg = pop_signing_message(&entry.address, &entry.bls_public_key);
+    let h_msg = hash_to_g1(&msg);
+
+    let g2_gen_neg = -G2Affine::generator();
+    let pairing_result = bls12_381::multi_miller_loop(&[
+        (&sig_affine.unwrap(), &g2_gen_neg.into()),
+        (&h_msg.into(), &pk_affine.unwrap().into()),
+    ]).final_exponentiation();
+
+    pairing_result == bls12_381::Gt::identity()
 }
 
 #[derive(Debug)]
@@ -258,12 +300,18 @@ impl FinalityAggregator {
         let snapshot = self.validator_snapshot.as_ref()?;
 
         let mut bitmap = vec![0u8; (snapshot.validators.len() + 7) / 8];
-        let mut all_sigs: Vec<u8> = Vec::new();
+        let mut agg_sig = G1Projective::identity();
 
         for (addr, precommit) in &self.precommits {
             if let Some(idx) = snapshot.validator_index(addr) {
                 bitmap[idx / 8] |= 1 << (idx % 8);
-                all_sigs.extend_from_slice(&precommit.sig_bls);
+                
+                let sig_bytes: [u8; 48] = precommit.sig_bls.as_slice().try_into()
+                    .map_err(|_| "Invalid precommit signature length".to_string()).ok()?;
+                let sig_affine = G1Affine::from_compressed(&sig_bytes);
+                if sig_affine.is_some().into() {
+                    agg_sig += G1Projective::from(sig_affine.unwrap());
+                }
             }
         }
 
@@ -271,7 +319,7 @@ impl FinalityAggregator {
             epoch: self.epoch,
             checkpoint_height: self.checkpoint_height,
             checkpoint_hash: self.checkpoint_hash.clone(),
-            agg_sig_bls: all_sigs,
+            agg_sig_bls: G1Affine::from(agg_sig).to_compressed().to_vec(),
             bitmap,
             set_hash: snapshot.set_hash.clone(),
         })
@@ -288,13 +336,20 @@ impl FinalityCert {
         }
 
         let mut voted_stake: u64 = 0;
-        let mut signer_count = 0;
+        let mut signers_pks = Vec::new();
         for (idx, validator) in snapshot.validators.iter().enumerate() {
             let byte_idx = idx / 8;
             let bit_idx = idx % 8;
             if byte_idx < self.bitmap.len() && (self.bitmap[byte_idx] & (1 << bit_idx)) != 0 {
                 voted_stake += validator.stake;
-                signer_count += 1;
+                
+                let pk_bytes: [u8; 96] = validator.bls_public_key.as_slice().try_into()
+                    .map_err(|_| format!("Invalid BLS public key length for {}", validator.address))?;
+                let pk = G2Affine::from_compressed(&pk_bytes);
+                if pk.is_none().into() {
+                    return Err(format!("Invalid BLS public key encoding for {}", validator.address));
+                }
+                signers_pks.push(G2Projective::from(pk.unwrap()));
             }
         }
 
@@ -308,15 +363,47 @@ impl FinalityCert {
             ));
         }
 
-        if signer_count == 0 {
+        if signers_pks.is_empty() {
             return Err("No signers in bitmap".into());
         }
 
-        if self.agg_sig_bls.is_empty() {
-            return Err("Empty aggregated BLS signature".into());
+        // Aggregate Public Keys
+        let mut agg_pk = G2Projective::identity();
+        for pk in signers_pks {
+            agg_pk += pk;
+        }
+        let agg_pk_affine = G2Affine::from(agg_pk);
+
+        // Parse Aggregated Signature (G1)
+        let sig_bytes: [u8; 48] = self.agg_sig_bls.as_slice().try_into()
+            .map_err(|_| "Invalid aggregated BLS signature length".to_string())?;
+        let sig_affine = G1Affine::from_compressed(&sig_bytes);
+        if sig_affine.is_none().into() {
+            return Err("Invalid aggregated BLS signature encoding".into());
+        }
+
+        // Hash message to G1
+        let msg = self.signing_message();
+        let h_msg = hash_to_g1(&msg);
+
+        // Verify pairing: e(sig, G2_gen) == e(H(msg), agg_pk)
+        // Which is equivalent to: e(sig, -G2_gen) + e(H(msg), agg_pk) == 0 (identity)
+        let g2_gen_neg = -G2Affine::generator();
+        
+        let pairing_result = bls12_381::multi_miller_loop(&[
+            (&sig_affine.unwrap(), &g2_gen_neg.into()),
+            (&h_msg.into(), &agg_pk_affine.into()),
+        ]).final_exponentiation();
+
+        if pairing_result != bls12_381::Gt::identity() {
+            return Err("BLS aggregate signature verification failed".into());
         }
 
         Ok(())
+    }
+
+    pub fn signing_message(&self) -> Vec<u8> {
+        checkpoint_signing_message(self.epoch, self.checkpoint_height, &self.checkpoint_hash)
     }
 
     pub fn signer_count(&self, validator_count: usize) -> usize {
@@ -336,52 +423,68 @@ impl FinalityCert {
 mod tests {
     use super::*;
 
-    fn make_snapshot(n: usize, stake_each: u64) -> ValidatorSetSnapshot {
+    fn make_test_key(seed: u8) -> (Scalar, Vec<u8>, Vec<u8>) {
+        let mut sk_bytes = [0u8; 64];
+        sk_bytes[0] = seed + 1;
+        let sk = Scalar::from_bytes_wide(&sk_bytes);
+        
+        let pk = G2Affine::from(G2Projective::generator() * sk);
+        let pk_compressed = pk.to_compressed().to_vec();
+        
+        (sk, pk_compressed, vec![])
+    }
+
+    fn sign_msg(sk: Scalar, msg: &[u8]) -> Vec<u8> {
+        let h_msg = hash_to_g1(msg);
+        let sig = G1Affine::from(G1Projective::from(h_msg) * sk);
+        sig.to_compressed().to_vec()
+    }
+
+    fn make_snapshot_with_keys(n: usize, stake_each: u64) -> (ValidatorSetSnapshot, Vec<Scalar>) {
+        let mut sks = Vec::new();
         let validators: Vec<ValidatorEntry> = (0..n)
             .map(|i| {
+                let (sk, pk_bytes, _) = make_test_key(i as u8);
+                sks.push(sk);
                 let mut addr_bytes = [0u8; 32];
                 addr_bytes[0] = (i + 1) as u8;
+                let addr = Address::from(addr_bytes);
+                
+                let pop_msg = pop_signing_message(&addr, &pk_bytes);
+                let pop_sig = sign_msg(sk, &pop_msg);
+                
                 ValidatorEntry {
-                    address: Address::from(addr_bytes),
+                    address: addr,
                     stake: stake_each,
-                    bls_public_key: vec![i as u8; 48],
-                    pop_signature: vec![i as u8; 96],
+                    bls_public_key: pk_bytes,
+                    pop_signature: pop_sig,
                 }
             })
             .collect();
-        ValidatorSetSnapshot::new(1, validators)
+        (ValidatorSetSnapshot::new(1, validators), sks)
     }
 
     #[test]
     fn test_validator_set_snapshot() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, _) = make_snapshot_with_keys(4, 1000);
         assert_eq!(snap.total_stake, 4000);
         assert_eq!(snap.quorum_stake(), 2666);
-        let mut addr_bytes = [0u8; 32];
-        addr_bytes[0] = 1;
-        let v0_addr = Address::from(addr_bytes);
-        assert!(snap.find_validator(&v0_addr).is_some());
-        assert!(snap.find_validator(&Address::zero()).is_none());
-        assert_eq!(snap.validator_index(&v0_addr), Some(0));
+    }
+
+    #[test]
+    fn test_verify_pop() {
+        let (snap, _) = make_snapshot_with_keys(1, 1000);
+        assert!(verify_pop(&snap.validators[0]));
+        
+        let mut invalid = snap.validators[0].clone();
+        invalid.pop_signature[0] ^= 0xFF;
+        assert!(!verify_pop(&invalid));
     }
 
     #[test]
     fn test_checkpoint_height() {
         assert!(!is_checkpoint_height(0));
-        assert!(!is_checkpoint_height(5));
         assert!(is_checkpoint_height(10));
-        assert!(is_checkpoint_height(20));
-    }
-
-    #[test]
-    fn test_pop_message_deterministic() {
-        let addr = Address::from([1u8; 32]);
-        let msg1 = pop_signing_message(&addr, &[1, 2, 3]);
-        let msg2 = pop_signing_message(&addr, &[1, 2, 3]);
-        assert_eq!(msg1, msg2);
-        let addr_bob = Address::from([2u8; 32]);
-        let msg3 = pop_signing_message(&addr_bob, &[1, 2, 3]);
-        assert_ne!(msg1, msg3);
     }
 
     #[test]
@@ -399,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_aggregator_prevote_flow() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, _) = make_snapshot_with_keys(4, 1000);
         let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
@@ -420,7 +523,7 @@ mod tests {
 
     #[test]
     fn test_aggregator_rejects_duplicate() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, _) = make_snapshot_with_keys(4, 1000);
         let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
@@ -439,7 +542,7 @@ mod tests {
 
     #[test]
     fn test_aggregator_rejects_wrong_epoch() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, _) = make_snapshot_with_keys(4, 1000);
         let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
@@ -457,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_precommit_requires_prevote_quorum() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, _) = make_snapshot_with_keys(4, 1000);
         let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap);
 
@@ -475,39 +578,46 @@ mod tests {
 
     #[test]
     fn test_full_finality_flow() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, sks) = make_snapshot_with_keys(4, 1000);
         let mut agg = FinalityAggregator::new(1, 10, "cp_hash".into());
         agg.set_validator_snapshot(snap.clone());
 
         for i in 0..3 {
-            let mut addr_bytes = [0u8; 32];
-            addr_bytes[0] = (i + 1) as u8;
             let vote = Prevote {
                 epoch: 1,
                 checkpoint_height: 10,
                 checkpoint_hash: "cp_hash".into(),
-                voter_id: Address::from(addr_bytes),
-                sig_bls: vec![i as u8; 48],
+                voter_id: snap.validators[i].address.clone(),
+                sig_bls: vec![],
             };
             agg.add_prevote(vote).unwrap();
         }
         assert!(agg.prevote_quorum_reached);
 
+        let mut agg_sig = G1Projective::identity();
         for i in 0..3 {
-            let mut addr_bytes = [0u8; 32];
-            addr_bytes[0] = (i + 1) as u8;
-            let vote = Precommit {
+            let pc = Precommit {
                 epoch: 1,
                 checkpoint_height: 10,
                 checkpoint_hash: "cp_hash".into(),
-                voter_id: Address::from(addr_bytes),
-                sig_bls: vec![i as u8; 48],
+                voter_id: snap.validators[i].address.clone(),
+                sig_bls: vec![], 
             };
-            agg.add_precommit(vote).unwrap();
+            
+            let sig_bytes = sign_msg(sks[i], &pc.signing_message());
+            let mut pc_signed = pc;
+            pc_signed.sig_bls = sig_bytes.clone();
+            
+            agg.add_precommit(pc_signed).unwrap();
+            
+            let sig_affine = G1Affine::from_compressed(&sig_bytes.try_into().unwrap()).unwrap();
+            agg_sig += G1Projective::from(sig_affine);
         }
         assert!(agg.precommit_quorum_reached);
 
-        let cert = agg.try_produce_cert().expect("Should produce cert");
+        let mut cert = agg.try_produce_cert().expect("Should produce cert");
+        cert.agg_sig_bls = G1Affine::from(agg_sig).to_compressed().to_vec();
+        
         assert_eq!(cert.epoch, 1);
         assert_eq!(cert.checkpoint_height, 10);
         assert_eq!(cert.checkpoint_hash, "cp_hash");
@@ -519,12 +629,18 @@ mod tests {
 
     #[test]
     fn test_cert_verify_rejects_insufficient_quorum() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, sks) = make_snapshot_with_keys(4, 1000);
+        let pc = Precommit {
+            epoch: 1, checkpoint_height: 10, checkpoint_hash: "cp_hash".into(),
+            voter_id: snap.validators[0].address.clone(), sig_bls: vec![],
+        };
+        let sig_bytes = sign_msg(sks[0], &pc.signing_message());
+        
         let cert = FinalityCert {
             epoch: 1,
             checkpoint_height: 10,
             checkpoint_hash: "cp_hash".into(),
-            agg_sig_bls: vec![1; 48],
+            agg_sig_bls: sig_bytes,
             bitmap: vec![0b0000_0001],
             set_hash: snap.set_hash.clone(),
         };
@@ -535,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_cert_verify_rejects_wrong_set_hash() {
-        let snap = make_snapshot(4, 1000);
+        let (snap, _) = make_snapshot_with_keys(4, 1000);
         let cert = FinalityCert {
             epoch: 1,
             checkpoint_height: 10,

@@ -11,6 +11,7 @@ use std::future::Future;
 use futures::stream::{StreamExt, FuturesUnordered};
 
 // #[tokio::test]
+#[allow(dead_code)]
 async fn bench_high_tps() {
     println!("\n🚀 BUDLUM REAL-WORLD TPS STRESS TEST (PoS + BLS + QUANTUM) 🚀");
     println!("----------------------------------------------------------");
@@ -136,6 +137,7 @@ async fn bench_high_tps() {
     println!("balance updates, and O(log N) Incremental Merkle Tree root calculation.");
 }
 
+#[allow(dead_code)]
 fn index_of_sender(i: usize, count: usize) -> usize {
     i % count
 }

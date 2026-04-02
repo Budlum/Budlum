@@ -86,6 +86,10 @@ pub struct NodeConfig {
     pub metrics_port: u16,
     #[arg(long, default_value = "validators.json")]
     pub validators_file_cli: Option<String>,
+    #[arg(long)]
+    pub check_db: bool,
+    #[arg(long)]
+    pub repair_db: bool,
 }
 
 impl Default for NodeConfig {
@@ -111,6 +115,8 @@ impl Default for NodeConfig {
             config: None,
             metrics_port: 9090,
             validators_file_cli: None,
+            check_db: false,
+            repair_db: false,
         }
     }
 }

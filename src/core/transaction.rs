@@ -1,8 +1,8 @@
 use crate::crypto::primitives::{verify_signature, KeyPair};
 use crate::core::address::Address;
-use crate::core::hash::calculate_hash;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
+use crate::core::governance::ProposalType;
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
 
@@ -52,6 +52,40 @@ impl Transaction {
             vec![],
             DEFAULT_CHAIN_ID,
             TransactionType::Stake,
+        )
+    }
+
+    pub fn new_proposal(from: Address, p_type: ProposalType, duration: u64, nonce: u64) -> Self {
+        let mut data = Vec::new();
+        data.extend_from_slice(&duration.to_le_bytes());
+        data.extend_from_slice(&serde_json::to_vec(&p_type).unwrap_or_default());
+        
+        Self::new_with_chain_id(
+            from,
+            Address::zero(),
+            0,
+            0,
+            nonce,
+            data,
+            DEFAULT_CHAIN_ID,
+            TransactionType::Vote,
+        )
+    }
+
+    pub fn new_vote(from: Address, proposal_id: u64, vote_for: bool, nonce: u64) -> Self {
+        let mut data = Vec::new();
+        data.push(if vote_for { 1 } else { 0 });
+        data.extend_from_slice(&proposal_id.to_le_bytes());
+        
+        Self::new_with_chain_id(
+            from,
+            Address::zero(),
+            0,
+            0,
+            nonce,
+            data,
+            DEFAULT_CHAIN_ID,
+            TransactionType::Vote,
         )
     }
 

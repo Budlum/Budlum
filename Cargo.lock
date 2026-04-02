@@ -347,6 +347,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "futures",
+ "group",
  "hex",
  "http-body-util",
  "hyper 1.8.1",

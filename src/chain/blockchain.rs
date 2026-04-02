@@ -27,7 +27,6 @@ pub struct Blockchain {
     pub pruning_manager: Option<PruningManager>,
     pub finalized_height: u64,
     pub finalized_hash: String,
-    pub base_fee: u64,
     pub genesis_time: u128,
 }
 impl Blockchain {
@@ -136,7 +135,6 @@ impl Blockchain {
             pruning_manager,
             finalized_height: restored_finalized_height,
             finalized_hash: restored_finalized_hash,
-            base_fee: 1,
             genesis_time: 0,
         };
         
@@ -149,6 +147,7 @@ impl Blockchain {
         bc
     }
 
+    #[allow(dead_code)]
     fn load_chain_from_db(&mut self, last_hash: String) -> std::io::Result<()> {
         let mut current_hash = last_hash;
         let mut blocks = Vec::new();
@@ -175,6 +174,7 @@ impl Blockchain {
         }
         Ok(())
     }
+    #[allow(dead_code)]
     fn create_genesis_block(&mut self) {
         let genesis_block = Block::genesis();
         self.chain.push(genesis_block.clone());
@@ -235,8 +235,8 @@ impl Blockchain {
             .map(|v| ValidatorEntry {
                 address: v.address,
                 stake: v.stake,
-                bls_public_key: Vec::new(),
-                pop_signature: Vec::new(),
+                bls_public_key: v.bls_public_key.clone(),
+                pop_signature: v.pop_signature.clone(),
             })
             .collect();
         ValidatorSetSnapshot::compute_hash(&entries)
@@ -278,6 +278,7 @@ impl Blockchain {
 
         if block.index > 0 && block.index % EPOCH_LENGTH == 0 {
             self.state.advance_epoch(block.timestamp);
+            self.mempool.set_min_fee(self.state.base_fee);
         }
 
         self.chain.push(block.clone());
@@ -293,9 +294,9 @@ impl Blockchain {
         let target = 50u64;
         let max_base_fee = 10_000_000; // 10 BDLM cap
         if tx_count > target {
-            self.base_fee = self.base_fee.saturating_add(self.base_fee / 8).min(max_base_fee);
+            self.state.base_fee = self.state.base_fee.saturating_add(self.state.base_fee / 8).min(max_base_fee);
         } else if tx_count < target {
-            self.base_fee = self.base_fee.saturating_sub(self.base_fee / 8).max(1);
+            self.state.base_fee = self.state.base_fee.saturating_sub(self.state.base_fee / 8).max(1);
         }
         Some(block)
     }
@@ -432,6 +433,7 @@ impl Blockchain {
 
         if block.index > 0 && block.index % EPOCH_LENGTH == 0 {
             commit_state.advance_epoch(block.timestamp);
+            self.mempool.set_min_fee(commit_state.base_fee);
         }
 
         self.state = commit_state;
@@ -636,6 +638,48 @@ impl Blockchain {
             println!(" Block #{}: {}", block.index, &block.hash[..16]);
         }
     }
+    pub fn get_state_snapshot(&self, height: u64) -> Option<crate::chain::snapshot::StateSnapshot> {
+        if height >= self.chain.len() as u64 {
+            return None;
+        }
+        let block = &self.chain[height as usize];
+        Some(crate::chain::snapshot::StateSnapshot::from_state(
+            height,
+            block.hash.clone(),
+            self.chain_id,
+            &self.state,
+            self.finalized_height,
+            self.finalized_hash.clone(),
+        ))
+    }
+
+    pub fn apply_state_snapshot(&mut self, snapshot: crate::chain::snapshot::StateSnapshot) -> Result<(), String> {
+        if !snapshot.verify() {
+            return Err("Snapshot verification failed".into());
+        }
+        self.state = AccountState::from_snapshot(&snapshot);
+        self.finalized_height = snapshot.finalized_height;
+        self.finalized_hash = snapshot.finalized_hash;
+        self.mempool.set_min_fee(self.state.base_fee);
+
+        if self.chain.len() < snapshot.height as usize + 1 {
+            let mut stubs = Vec::new();
+            let start = self.chain.len();
+            for i in start..=snapshot.height as usize {
+                let mut stub = Block::new(i as u64, "stub".into(), vec![]);
+                if i == snapshot.height as usize {
+                    stub.hash = snapshot.block_hash.clone();
+                } else {
+                    stub.hash = format!("stub_{}", i);
+                }
+                stubs.push(stub);
+            }
+            self.chain.extend(stubs);
+        }
+        
+        Ok(())
+    }
+
     pub fn handle_finality_cert(
         &mut self,
         cert: crate::chain::finality::FinalityCert,
@@ -671,8 +715,8 @@ impl Blockchain {
             .map(|v| ValidatorEntry {
                 address: v.address,
                 stake: v.stake,
-                bls_public_key: Vec::new(),
-                pop_signature: Vec::new(),
+                bls_public_key: v.bls_public_key.clone(),
+                pop_signature: v.pop_signature.clone(),
             })
             .collect();
         let snapshot = ValidatorSetSnapshot::new(cert.epoch, entries);
@@ -712,7 +756,6 @@ impl Clone for Blockchain {
             pruning_manager: self.pruning_manager.clone(),
             finalized_height: self.finalized_height,
             finalized_hash: self.finalized_hash.clone(),
-            base_fee: self.base_fee,
             genesis_time: self.genesis_time,
         }
     }

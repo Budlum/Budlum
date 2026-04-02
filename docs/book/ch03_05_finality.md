@@ -52,11 +52,14 @@ pub struct FinalityCert {
     pub epoch: u64,
     pub checkpoint_height: u64,
     pub checkpoint_hash: String,
-    pub agg_sig_bls: Vec<u8>,    // 2/3 çoğunluğun agregasyon yapılmış BLS imzası
+    pub agg_sig_bls: Vec<u8>,    // G1 Projective nokta toplama ile üretilmiş aggregate imza
     pub bitmap: Vec<u8>,         // Hangi validatörlerin oy verdiğini gösteren bit dizisi
     pub set_hash: String,        // O anki validatör setinin özeti
 }
 ```
+
+### 3.1. Agregasyon Matematiği (Hardening)
+Budlum'un üretim sürümünde imzalar sadece yan yana dizilmez (concatenation). `bls12_381` kütüphanesi kullanılarak G1 grubu üzerinde gerçek bir matematiksel toplama yapılır. Bu, sertifika boyutunun validatör sayısından bağımsız olarak her zaman sabit (96 byte) kalmasını sağlar.
 
 ---
 

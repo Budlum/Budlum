@@ -1,8 +1,6 @@
 use crate::core::account::AccountState;
 use crate::core::address::Address;
 use crate::core::transaction::{Transaction, TransactionType};
-use crate::consensus::pos::SlashingEvidence;
-use crate::chain::genesis::BLOCK_REWARD;
 
 pub struct Executor;
 
@@ -74,22 +72,51 @@ impl Executor {
                 sender.nonce = sender.nonce.saturating_add(1);
             }
             TransactionType::Vote => {
-                let sender = state.get_or_create(&tx.from);
-                sender.balance = sender.balance.saturating_sub(tx.fee);
-                sender.nonce = sender.nonce.saturating_add(1);
+                let sender_acc = state.get_or_create(&tx.from);
+                sender_acc.balance = sender_acc.balance.saturating_sub(tx.fee);
+                sender_acc.nonce = sender_acc.nonce.saturating_add(1);
 
-                if let Some(target) = state.get_validator_mut(&tx.to) {
-                    if tx.amount > 0 {
-                        target.votes_for += 1;
-                    } else {
-                        target.votes_against += 1;
+                if tx.to != Address::zero() {
+                    if let Some(target) = state.get_validator_mut(&tx.to) {
+                        if tx.amount > 0 {
+                            target.votes_for += 1;
+                        } else {
+                            target.votes_against += 1;
+                        }
+                        tracing::info!("Validator Vote recorded: {} -> {}", tx.from, tx.to);
                     }
-                    tracing::info!(
-                        "Vote recorded: {} voted {} validator {}",
-                        tx.from,
-                        if tx.amount > 0 { "FOR" } else { "AGAINST" },
-                        tx.to
-                    );
+                } else if !tx.data.is_empty() {
+                    if tx.data.len() >= 9 {
+                        if tx.data.len() == 9 {
+                            let vote_for = tx.data[0] != 0;
+                            let mut id_bytes = [0u8; 8];
+                            id_bytes.copy_from_slice(&tx.data[1..9]);
+                            let proposal_id = u64::from_le_bytes(id_bytes);
+                            
+                            let voter_stake = state.get_validator(&tx.from).map(|v| v.stake).unwrap_or(0);
+                            if voter_stake == 0 {
+                                return Err("Only validators can vote in governance".into());
+                            }
+                            
+                            if let Some(proposal) = state.governance.find_proposal_mut(proposal_id) {
+                                proposal.add_vote(tx.from, voter_stake, vote_for)?;
+                                tracing::info!("Governance Vote: Proposal {} from {}", proposal_id, tx.from);
+                            } else {
+                                return Err("Proposal not found".into());
+                            }
+                        } else {
+                            // Likely a Proposal: [duration (8), ProposalType (...)]
+                            let mut dur_bytes = [0u8; 8];
+                            dur_bytes.copy_from_slice(&tx.data[0..8]);
+                            let duration = u64::from_le_bytes(dur_bytes);
+                            
+                            let p_type: crate::core::governance::ProposalType = serde_json::from_slice(&tx.data[8..])
+                                .map_err(|e| format!("Invalid proposal data: {}", e))?;
+                            
+                            let id = state.governance.create_proposal(tx.from, p_type, state.epoch_index, duration);
+                            tracing::info!("Governance Proposal Created: ID {} from {}", id, tx.from);
+                        }
+                    }
                 }
             }
         }
@@ -113,11 +140,11 @@ impl Executor {
             total_fees = total_fees.saturating_add(tx.fee);
         }
         if let Some(producer) = block_producer {
-            let reward = total_fees.saturating_add(BLOCK_REWARD);
+            let reward = total_fees.saturating_add(state.block_reward);
             if reward > 0 {
                 let producer_account = state.get_or_create(producer);
                 producer_account.balance = producer_account.balance.saturating_add(reward);
-                tracing::info!("Producer {} received reward: {} (fees: {}, block: {})", producer, reward, total_fees, BLOCK_REWARD);
+                tracing::info!("Producer {} received reward: {} (fees: {}, block: {})", producer, reward, total_fees, state.block_reward);
             }
         }
         Ok(())
@@ -138,8 +165,9 @@ mod tests {
         
         Executor::apply_block(&mut state, &txs, Some(&producer)).unwrap();
         
+        let reward = state.block_reward;
         let account = state.get_or_create(&producer);
-        assert_eq!(account.balance, BLOCK_REWARD);
+        assert_eq!(account.balance, reward);
     }
 
     #[test]
@@ -155,8 +183,9 @@ mod tests {
         
         Executor::apply_block(&mut state, &[tx], Some(&producer)).unwrap();
         
+        let reward = state.block_reward;
         let producer_acc = state.get_or_create(&producer);
-        assert_eq!(producer_acc.balance, BLOCK_REWARD + 5);
+        assert_eq!(producer_acc.balance, reward + 5);
         
         let alice_acc = state.get_or_create(&alice);
         assert_eq!(alice_acc.balance, 100 - 15);

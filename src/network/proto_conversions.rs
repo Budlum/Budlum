@@ -3,7 +3,6 @@ use crate::network::protocol::NetworkMessage;
 use crate::core::address::Address;
 use crate::core::block::{Block, BlockHeader};
 use crate::core::transaction::{Transaction, TransactionType};
-use prost::Message;
 
 pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/budlum.network.rs"));

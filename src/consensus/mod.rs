@@ -9,7 +9,6 @@ pub use pos::PoSEngine;
 pub use pow::{PoWConfig, PoWEngine};
 use std::error::Error;
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug)]
 pub struct ConsensusError(pub String);
 impl fmt::Display for ConsensusError {

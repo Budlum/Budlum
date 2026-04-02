@@ -211,6 +211,10 @@ impl Mempool {
         }
         false
     }
+
+    pub fn set_min_fee(&mut self, min_fee: u64) {
+        self.config.min_fee = min_fee;
+    }
 }
 
 impl Default for Mempool {

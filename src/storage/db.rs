@@ -4,6 +4,7 @@ use crate::core::address::Address;
 use crate::core::transaction::Transaction;
 use sled::Db;
 use std::str::from_utf8;
+use tracing::info;
 #[derive(Clone, Debug)]
 pub struct Storage {
     db: Db,
@@ -291,5 +292,79 @@ impl Storage {
     }
     pub fn flush_batch(&self) -> std::io::Result<usize> {
         Ok(self.db.flush()?)
+    }
+
+    pub fn check_integrity(&self) -> Result<Vec<String>, String> {
+        let mut errors = Vec::new();
+        let height = self.get_canonical_height().map_err(|e| e.to_string())?;
+        
+        info!("Starting integrity audit up to height {}", height);
+        
+        let mut prev_hash = "0".repeat(64);
+        for i in 0..=height {
+            let block_res = self.get_block_by_height(i);
+            match block_res {
+                Ok(Some(block)) => {
+                    // Check hash
+                    let calc_hash = block.calculate_hash();
+                    if block.hash != calc_hash {
+                        errors.push(format!("Block {}: hash mismatch (stored: {}, calc: {})", i, block.hash, calc_hash));
+                    }
+                    
+                    // Check linkage
+                    if i > 0 && block.previous_hash != prev_hash {
+                        errors.push(format!("Block {}: linkage error (expected prev: {}, got: {})", i, prev_hash, block.previous_hash));
+                    }
+                    
+                    prev_hash = block.hash.clone();
+                }
+                Ok(None) => {
+                    errors.push(format!("Block {}: missing in index", i));
+                }
+                Err(e) => {
+                    errors.push(format!("Block {}: read error: {}", i, e));
+                }
+            }
+        }
+        
+        Ok(errors)
+    }
+
+    pub fn repair_index(&self) -> Result<(), String> {
+        tracing::info!("Starting database index repair...");
+        let last_hash_key = "LAST_BLOCK_HASH";
+        let last_hash = match self.db.get(last_hash_key) {
+            Ok(Some(h)) => String::from_utf8_lossy(&h).to_string(),
+            _ => return Err("Cannot repair: No tip found in DB".into()),
+        };
+
+        let mut current_hash = last_hash;
+        let mut count = 0;
+        loop {
+            if let Ok(Some(data)) = self.db.get(format!("BLOCK:{}", current_hash)) {
+                let block: crate::core::block::Block = serde_json::from_slice(&data)
+                    .map_err(|e| format!("De-serial error during repair: {}", e))?;
+                
+                let height_key = format!("BLOCK_HEIGHT:{}", block.index);
+                self.db.insert(height_key, block.hash.as_bytes()).map_err(|e| e.to_string())?;
+                
+                let hash_key = format!("BLOCK_HASH:{}", block.index);
+                self.db.insert(hash_key, block.hash.as_bytes()).map_err(|e| e.to_string())?;
+
+                for tx in &block.transactions {
+                    self.db.insert(format!("TX_BLOCK:{}", tx.hash), &block.index.to_le_bytes()).map_err(|e| e.to_string())?;
+                }
+
+                count += 1;
+                if block.previous_hash == "0".repeat(64) {
+                    break;
+                }
+                current_hash = block.previous_hash;
+            } else {
+                break;
+            }
+        }
+        tracing::info!("Repair complete. Re-indexed {} blocks", count);
+        Ok(())
     }
 }

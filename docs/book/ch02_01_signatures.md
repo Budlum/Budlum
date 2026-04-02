@@ -140,7 +140,8 @@ BLS imzaları, birden fazla imzanın tek bir imza haline getirilebilmesi (Aggreg
 
 - **Kullanım Alanı:** Finalite Katmanı oylamaları (Prevote/Precommit).
 - **Avantajı:** 100 validatörün farklı imzalarını 96 byte'lık tek bir imzaya indirger. Bu, blok boyutunu ve doğrulama maliyetini (CPU) devasa oranda düşürür.
-- **Teknik Detay:** `bls12_381` eğrisi kullanılır. İmzalar agregasyon sırasında toplanır: $S_{agg} = \sum S_i$.
+- **Teknik Detay:** `bls12_381` eğrisi kullanılır. İmzalar agregasyon sırasında G1 grubu üzerinde nokta toplama (point addition) işlemiyle birleştirilir: $S_{agg} = \sum P_i$.
+- **Doğrulama:** Eşleme (Pairing) dostu eğriler sayesinde, agregasyon yapılmış tek bir imza, tüm imzalayanların açık anahtarlarının toplamı ($\sum PK_i$) kullanılarak tek bir operasyonla doğrulanabilir.
 
 ### 2. Dilithium (Post-Quantum Signature)
 

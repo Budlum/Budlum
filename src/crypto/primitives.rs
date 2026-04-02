@@ -31,9 +31,7 @@ pub struct KeyPair {
 }
 
 use schnorrkel::{
-    vrf::{VRFInOut, VRFProof},
-    Keypair as SchnorrkelKeypair, PublicKey as SchnorrkelPublicKey,
-    Signature as SchnorrkelSignature,
+    Keypair as SchnorrkelKeypair,
 };
 
 #[derive(Clone)]

@@ -4,6 +4,7 @@ use crate::core::transaction::{Transaction, TransactionType};
 use crate::consensus::pos::SlashingEvidence;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use crate::core::governance::GovernanceState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 pub const MIN_TX_FEE: u64 = 1;
 pub const GENESIS_BALANCE: u64 = 1_000_000_000;
@@ -49,6 +50,8 @@ pub struct Validator {
     pub votes_for: u64,
     pub votes_against: u64,
     pub vrf_public_key: Vec<u8>,
+    pub bls_public_key: Vec<u8>,
+    pub pop_signature: Vec<u8>,
 }
 
 impl Validator {
@@ -64,6 +67,8 @@ impl Validator {
             votes_for: 0,
             votes_against: 0,
             vrf_public_key: Vec::new(),
+            bls_public_key: Vec::new(),
+            pop_signature: Vec::new(),
         }
     }
     pub fn effective_stake(&self) -> u64 {
@@ -86,6 +91,9 @@ pub struct AccountState {
     storage: Option<Storage>,
     pub epoch_index: u64,
     pub last_epoch_time: u64,
+    pub governance: GovernanceState,
+    pub base_fee: u64,
+    pub block_reward: u64,
     dirty_accounts: HashSet<Address>,
     keys_dirty: bool,
     cached_leaves: Vec<[u8; 32]>,
@@ -101,6 +109,9 @@ impl AccountState {
             storage: None,
             epoch_index: 0,
             last_epoch_time: 0,
+            governance: GovernanceState::default(),
+            base_fee: MIN_TX_FEE,
+            block_reward: 50, // Default block reward
             dirty_accounts: HashSet::new(),
             keys_dirty: true,
             cached_leaves: Vec::new(),
@@ -116,6 +127,9 @@ impl AccountState {
             storage: Some(storage),
             epoch_index: 0,
             last_epoch_time: 0,
+            governance: GovernanceState::default(),
+            base_fee: MIN_TX_FEE,
+            block_reward: 50,
             dirty_accounts: HashSet::new(),
             keys_dirty: true,
             cached_leaves: Vec::new(),
@@ -127,6 +141,36 @@ impl AccountState {
         }
         state
     }
+    pub fn from_snapshot(snapshot: &crate::chain::snapshot::StateSnapshot) -> Self {
+        let mut accounts = BTreeMap::new();
+        for (addr, balance) in &snapshot.balances {
+            let mut acc = Account::new(*addr);
+            acc.balance = *balance;
+            acc.nonce = *snapshot.nonces.get(addr).unwrap_or(&0);
+            accounts.insert(*addr, acc);
+        }
+        let mut validators = BTreeMap::new();
+        for (addr, v) in &snapshot.validators {
+            validators.insert(*addr, v.clone());
+        }
+        AccountState {
+            accounts,
+            validators,
+            unbonding_queue: Vec::new(),
+            storage: None,
+            epoch_index: snapshot.height / 100,
+            last_epoch_time: 0,
+            governance: GovernanceState::default(),
+            base_fee: MIN_TX_FEE,
+            block_reward: 50,
+            dirty_accounts: HashSet::new(),
+            keys_dirty: true,
+            cached_leaves: Vec::new(),
+            cached_keys: Vec::new(),
+            cached_tree: Vec::new(),
+        }
+    }
+
     pub fn init_genesis(&mut self, genesis_pubkey: &Address) {
         let account = Account::with_balance(*genesis_pubkey, GENESIS_BALANCE);
         self.accounts.insert(*genesis_pubkey, account);
@@ -189,8 +233,8 @@ impl AccountState {
         if !tx.verify() {
             return Err("Invalid signature".into());
         }
-        if tx.fee < MIN_TX_FEE {
-            return Err(format!("Fee too low: {} < {}", tx.fee, MIN_TX_FEE));
+        if tx.fee < self.base_fee {
+            return Err(format!("Fee too low: {} < {}", tx.fee, self.base_fee));
         }
         let expected_nonce = self.get_nonce(&tx.from);
         if tx.nonce != expected_nonce {
@@ -286,6 +330,28 @@ impl AccountState {
     }
 
     pub fn advance_epoch(&mut self, current_timestamp: u128) {
+        let total_stake = self.get_total_stake();
+        let quorum_pct = 33; // 33% stake required for quorum
+
+        let current_epoch = self.epoch_index;
+        let mut to_execute = Vec::new();
+
+        for proposal in self.governance.proposals.iter_mut() {
+            if proposal.status == crate::core::governance::ProposalStatus::Active && current_epoch >= proposal.end_epoch {
+                proposal.finalize(total_stake, quorum_pct);
+                if proposal.status == crate::core::governance::ProposalStatus::Passed {
+                    to_execute.push(proposal.clone());
+                }
+            }
+        }
+
+        for proposal in to_execute {
+            self.execute_proposal(&proposal);
+            if let Some(p) = self.governance.find_proposal_mut(proposal.id) {
+                p.status = crate::core::governance::ProposalStatus::Executed;
+            }
+        }
+
         self.epoch_index = self.epoch_index.saturating_add(1);
         self.last_epoch_time = current_timestamp as u64;
         tracing::info!("Epoch advanced to {}", self.epoch_index);
@@ -301,6 +367,31 @@ impl AccountState {
                 if validator.stake > 0 {
                     validator.active = true;
                 }
+            }
+        }
+    }
+
+    fn execute_proposal(&mut self, proposal: &crate::core::governance::Proposal) {
+        use crate::core::governance::ProposalType;
+        match &proposal.p_type {
+            ProposalType::ChangeBaseFee(new_fee) => {
+                self.base_fee = *new_fee;
+                tracing::info!("Executing Governance: BaseFee changed to {}", new_fee);
+            }
+            ProposalType::ChangeBlockReward(new_reward) => {
+                self.block_reward = *new_reward;
+                tracing::info!("Executing Governance: BlockReward changed to {}", new_reward);
+            }
+            ProposalType::SlashValidator(addr) => {
+                if let Some(v) = self.validators.get_mut(addr) {
+                    v.slashed = true;
+                    v.active = false;
+                    v.stake = 0;
+                    tracing::info!("Executing Governance: Slashed validator {}", addr);
+                }
+            }
+            ProposalType::ParameterUpdate(key, value) => {
+                tracing::info!("Executing Governance: Parameter {} updated to {}", key, value);
             }
         }
     }

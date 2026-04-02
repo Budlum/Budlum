@@ -9,7 +9,37 @@ mod integration_tests {
     use crate::crypto::primitives::KeyPair;
     use crate::core::transaction::Transaction;
     use crate::core::address::Address;
+    use crate::core::governance::ProposalType;
+    use crate::execution::executor::Executor;
     use std::sync::Arc;
+
+    #[test]
+    fn test_governance_full_lifecycle() {
+        let mut state = AccountState::new();
+        let val_kp = KeyPair::generate().unwrap();
+        let val_addr = Address::from(val_kp.public_key_bytes());
+        
+        state.add_balance(&val_addr, 1000);
+        state.add_validator(val_addr, 1000);
+        
+        let p_type = ProposalType::ChangeBaseFee(10);
+        let mut prop_tx = Transaction::new_proposal(val_addr, p_type, 1, 0);
+        prop_tx.sign(&val_kp);
+        
+        Executor::apply_transaction(&mut state, &prop_tx).unwrap();
+        assert_eq!(state.governance.proposals.len(), 1);
+        let prop_id = state.governance.proposals[0].id;
+        
+        let mut vote_tx = Transaction::new_vote(val_addr, prop_id, true, 1);
+        vote_tx.sign(&val_kp);
+        
+        Executor::apply_transaction(&mut state, &vote_tx).unwrap();
+        
+        state.advance_epoch(1000); // 0 -> 1
+        state.advance_epoch(2000); // 1 -> 2
+        
+        assert_eq!(state.governance.proposals[0].status, crate::core::governance::ProposalStatus::Executed);
+    }
 
     #[test]
     fn test_poa_rejects_unsigned_block() {
@@ -267,6 +297,15 @@ mod integration_tests {
 
         let mut validator = crate::core::account::Validator::new(pubkey, 1000);
         validator.active = true;
+        
+        let mut sk_bytes = [0u8; 64];
+        sk_bytes[0] = 42;
+        let bls_sk = bls12_381::Scalar::from_bytes_wide(&sk_bytes);
+        let bls_pk_point = bls12_381::G2Affine::from(bls12_381::G2Projective::generator() * bls_sk);
+        let bls_pk = bls_pk_point.to_compressed().to_vec();
+        
+        validator.bls_public_key = bls_pk.clone();
+        validator.pop_signature = vec![0u8; 48];
         blockchain
             .state
             .validators
@@ -278,21 +317,29 @@ mod integration_tests {
 
         let checkpoint_block = blockchain.chain[10].clone();
 
+        use bls12_381::G2Affine;
+        let valid_pk = G2Affine::generator().to_compressed().to_vec();
+
         let _entry = ValidatorEntry {
             address: pubkey,
             stake: 1000,
-            bls_public_key: Vec::new(),
+            bls_public_key: valid_pk.clone(),
             pop_signature: Vec::new(),
         };
 
-        let cert = FinalityCert {
+        let mut cert = FinalityCert {
             epoch: 1,
             checkpoint_height: 10,
             checkpoint_hash: checkpoint_block.hash.clone(),
-            agg_sig_bls: vec![1; 48],
+            agg_sig_bls: Vec::new(),
             bitmap: vec![0b0000_0001],
             set_hash: blockchain.get_validator_set_hash(),
         };
+        
+        let msg = cert.signing_message();
+        let h_msg_point = crate::chain::finality::hash_to_g1(&msg);
+        let sig_point = bls12_381::G1Projective::from(h_msg_point) * bls_sk;
+        cert.agg_sig_bls = bls12_381::G1Affine::from(sig_point).to_compressed().to_vec();
 
         blockchain.handle_finality_cert(cert).unwrap();
         assert_eq!(blockchain.finalized_height, 10);

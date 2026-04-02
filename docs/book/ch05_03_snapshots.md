@@ -37,7 +37,11 @@ pub struct Snapshot {
 ```
 
 **Analiz:**
-Bu yapı, `AccountState`'in serileştirilmiş (paketlemiş) halidir. İçinde geçmiş işlemler (`Transaction`) veya eski bloklar (`Block`) YOKTUR. Sadece "Şu an kimin ne kadar parası var?" bilgisi vardır.
+Bu yapı, `AccountState`'in serileştirilmiş (paketlemiş) halidir. 
+
+**Hardening İyileştirmesi:**
+- **Validator Set:** Snapshot artık tüm aktif validatör setini ve stake miktarlarını içerir. Bu sayede Fast Sync ile ağa yeni katılan bir node, checkpoint imzalarını doğrulamak için genesis'ten beri gelen tüm validatör değişimlerini izlemek (replay) zorunda kalmaz.
+- **Sync Sürekliliği:** Snapshot uygulandığında, eksik kalan blok yükseklikleri için "stub block"lar oluşturularak veritabanı indeksleme bütünlüğü korunur.
 
 ---
 

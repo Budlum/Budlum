@@ -107,11 +107,17 @@ cargo build --release
 
 ---
 
+---
+
 ### 🟢 Production Hardening (Mainnet Ready)
 
-Budlum Core is now secured with **Phase 1 & 2 Hardening** measures, making it resistant to non-determinism, state loss, and spam:
+Budlum Core has undergone a rigorous production-readiness audit and is now equipped with advanced features for scale, security, and governance:
 
--   **Deterministic Economics**: All reward and slashing calculations use **Saturating Fixed-Point Math** (`u64`). This ensures 100% identical state roots across different CPU architectures and prevents overflows.
+-   **Cryptographic BLS Finality**: Mandatory BFT finality gadget using aggregate BLS12-381 signatures for immutable checkpoints.
+-   **On-Chain Governance**: Stake-weighted voting protocol for real-time network parameter updates (fees, rewards, etc.) without hard forks.
+-   **Fast Sync (Snapshot-Based)**: Protocol for rapid node discovery and state synchronization using chunked P2P transfers. (See [Ch 5.3](docs/book/ch05_03_snapshots.md))
+-   **Database Integrity Audit (FSCK)**: Built-in tool for verifying blockchain data consistency (`--check-db`) and self-repairing index corruptions (`--repair-db`). (See [Ch 5.1](docs/book/ch05_01_storage.md))
+-   **Deterministic Economics**: All reward and slashing calculations use **Saturating Fixed-Point Math** (`u64`).
 -   **Deterministic Slot-Timestamps**: Block timestamps are derived from `genesis_time + (index * SLOT_MS)`.
 -   **Atomic Persistence & State Resilience**:
     *   Consensus state (seen blocks, checkpoints, seeds) is persisted to `sled`.
@@ -301,6 +307,8 @@ Usage: `cargo run -- [OPTIONS]`
 | `--min-stake <AMT>` | Minimum Stake (PoS) | `1000` |
 | `--validator-address` | Address to mine/validate for | `None` |
 | `--bootstrap <ADDR>` | Peer multiaddr to join | `None` |
+| `--check-db` | Run Database Integrity Audit | `false` |
+| `--repair-db` | Rebuild indexes from raw block data | `false` |
 
 ---
 

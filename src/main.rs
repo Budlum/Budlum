@@ -1,7 +1,6 @@
 
 use budlum_core::chain::blockchain::Blockchain;
 use budlum_core::core::address::Address;
-use budlum_core::core::account::Validator;
 use budlum_core::core::transaction::Transaction;
 use budlum_core::consensus::pow::PoWEngine;
 use budlum_core::consensus::pos::{PoSEngine, PoSConfig};
@@ -13,10 +12,10 @@ use budlum_core::storage::db::Storage;
 use budlum_core::chain::snapshot::PruningManager;
 use budlum_core::cli::{ConsensusType, NodeConfig};
 use budlum_core::rpc::RpcServer;
-use budlum_core::chain::chain_actor::{ChainActor, ChainHandle};
+use budlum_core::chain::chain_actor::ChainActor;
 
 use clap::Parser;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
@@ -37,6 +36,46 @@ async fn main() {
                 println!("Address: {}", Address::from(keys.sig_key.public_key_bytes()));
             }
             Err(e) => eprintln!("Error generating key: {}", e),
+        }
+        return;
+    }
+
+    if config.check_db {
+        let storage = Storage::new(&config.db_path).expect("Failed to open DB");
+        println!("🔍 Starting Database Integrity Audit on: {}", config.db_path);
+        match storage.check_integrity() {
+            Ok(errors) => {
+                if errors.is_empty() {
+                    println!("✅ Integrity Audit PASSED. No corruptions found.");
+                } else {
+                    println!("❌ Integrity Audit FAILED! Found {} errors.", errors.len());
+                    for err in errors {
+                        println!("   - {}", err);
+                    }
+                    if config.repair_db {
+                        println!("🔧 Attempting automatic repair...");
+                        if let Err(e) = storage.repair_index() {
+                            eprintln!("❌ Repair failed: {}", e);
+                        } else {
+                            println!("✅ Repair successful. Please run --check-db again to verify.");
+                        }
+                    } else {
+                        println!("💡 Tip: Run with --repair-db to attempt index reconstruction.");
+                    }
+                }
+            }
+            Err(e) => eprintln!("System error during audit: {}", e),
+        }
+        return;
+    }
+
+    if config.repair_db {
+        let storage = Storage::new(&config.db_path).expect("Failed to open DB");
+        println!("🔧 Starting manual Database Repair on: {}", config.db_path);
+        if let Err(e) = storage.repair_index() {
+            eprintln!("Repair failed: {}", e);
+        } else {
+            println!("Repair complete. Re-indexing finished.");
         }
         return;
     }
@@ -123,8 +162,6 @@ async fn main() {
                if let Ok(keys) = budlum_core::crypto::primitives::ValidatorKeys::load(v_path) {
                     let addr = Address::from(keys.sig_key.public_key_bytes());
                     println!("Auto-bootstrapping validator: {}", addr);
-                    // Add balance and validator info via actor or directly if before actor run
-                    // For simplicity, we assume the user can do this via RPC or we add a command
                     Some(keys)
                } else { None }
            } else { None }
@@ -138,7 +175,6 @@ async fn main() {
         let validators = config.load_validators();
         if !validators.is_empty() {
             println!("Initializing PoA validators: {:?}", validators);
-            // This logic should be moved into Blockchain::new or handled via actor
         } else {
             println!(" No validators configured!");
         }

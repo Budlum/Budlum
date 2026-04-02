@@ -161,7 +161,6 @@ impl ConsensusEngine for PoAEngine {
                 producer
             );
         } else {
-            // No validators - maybe test environment
             if block.hash != block.calculate_hash() {
                 return Err(ConsensusError("Invalid block hash".into()));
             }
@@ -242,7 +241,7 @@ mod tests {
             .insert(pubkey, Validator::new(pubkey, 0));
         state.validators.get_mut(&pubkey).unwrap().active = true;
 
-        let mut engine = PoAEngine::new(PoAConfig::default(), Some(keypair));
+        let engine = PoAEngine::new(PoAConfig::default(), Some(keypair));
 
         let mut block = Block::new(1, "prev".into(), vec![]);
 

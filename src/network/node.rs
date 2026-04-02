@@ -15,6 +15,7 @@ use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 use tracing::{info, warn};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(NetworkBehaviour)]
 pub struct BudlumBehaviour {
@@ -25,7 +26,6 @@ pub struct BudlumBehaviour {
     kad: Kademlia<MemoryStore>,
     sync: request_response::Behaviour<crate::network::sync_codec::SyncCodec>,
 }
-use crate::chain::blockchain::Blockchain;
 use crate::chain::chain_actor::ChainHandle;
 use crate::network::peer_manager::PeerManager;
 use std::sync::{Arc, Mutex};
@@ -63,6 +63,7 @@ impl NodeClient {
 async fn test_node_creation() {
     use crate::consensus::pow::PoWEngine;
     use crate::chain::chain_actor::ChainActor;
+    use crate::chain::blockchain::Blockchain;
     let consensus = std::sync::Arc::new(PoWEngine::new(2));
     let blockchain = Blockchain::new(consensus, None, 1337, None);
     let (chain_actor, chain) = ChainActor::new(blockchain);
@@ -84,6 +85,7 @@ pub struct Node {
     pub peer_manager: Arc<Mutex<PeerManager>>,
     pub bootstrap_peers: Vec<String>,
     pub peer_count: Arc<AtomicUsize>,
+    pub in_progress_snapshots: HashMap<u64, Vec<Option<Vec<u8>>>>,
 }
 
 impl Node {
@@ -120,7 +122,7 @@ impl Node {
                     key.public().to_peer_id(),
                 )?;
                 let kad_store = MemoryStore::new(key.public().to_peer_id());
-                let kad_config = KademliaConfig::default();
+                let kad_config = KademliaConfig::new(libp2p::StreamProtocol::new("/budlum/kad/1.0.0"));
                 let kademlia =
                     Kademlia::with_config(key.public().to_peer_id(), kad_store, kad_config);
                 let identify = identify::Behaviour::new(identify::Config::new(
@@ -160,6 +162,7 @@ impl Node {
             peer_manager,
             bootstrap_peers: Vec::new(),
             peer_count,
+            in_progress_snapshots: HashMap::new(),
         })
     }
     pub fn new_with_bootstrap(
@@ -368,7 +371,7 @@ impl Node {
                             self.peer_count.fetch_sub(1, Ordering::SeqCst);
                             warn!("Disconnected from {}, Peers: {}", peer_id, self.peer_count.load(Ordering::SeqCst));
                         }
-                        SwarmEvent::Behaviour(BudlumBehaviourEvent::Ping(event)) => {
+                        SwarmEvent::Behaviour(BudlumBehaviourEvent::Ping(_event)) => {
                         }
                         SwarmEvent::Behaviour(BudlumBehaviourEvent::Mdns(event)) => {
                             match event {
@@ -574,7 +577,6 @@ impl Node {
                                             let our_block_at_start = self.chain.get_block(start_idx).await;
                                             if let Some(our_b) = our_block_at_start {
                                                 if our_b.hash != blocks[0].hash {
-                                                    // This is a fork/reorg case
                                                     let _ = self.chain.try_reorg(blocks.clone()).await;
                                                 } else {
                                                     for block in blocks {
@@ -585,7 +587,6 @@ impl Node {
                                                     }
                                                 }
                                             } else {
-                                                // We don't have this index at all, just try adding if it's next
                                                 for block in blocks {
                                                     let h = self.chain.get_height().await;
                                                     if block.index == h + 1 {
@@ -609,24 +610,65 @@ impl Node {
                                         }
                                     }
 
-                                    NetworkMessage::GetStateSnapshot { height } => {
-                                        info!("GetStateSnapshot request from {} (height: {})", peer_id, height);
-                                        let state_root = self.chain.get_state_root(height).await;
-                                        let ok = state_root.is_some();
-                                        let response = NetworkMessage::StateSnapshotResponse { 
-                                            height, 
-                                            state_root: state_root.unwrap_or_default(), 
-                                            ok 
-                                        };
-                                        let topic = gossipsub::IdentTopic::new("blocks");
-                                        let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, response.to_bytes());
-                                    }
-
                                     NetworkMessage::StateSnapshotResponse { height, state_root, ok } => {
                                         if ok {
-                                            info!("StateSnapshot height={} root={}...", height, &state_root[..16.min(state_root.len())]);
+                                            info!("Received StateSnapshotResponse: height={}, root={}", height, state_root);
                                         } else {
-                                            warn!("StateSnapshot unavailable at height={}", height);
+                                            warn!("Peer {} reported snapshot unavailable at height {}", peer_id, height);
+                                        }
+                                    }
+
+                                    NetworkMessage::GetStateSnapshot { height } => {
+                                        info!("GetStateSnapshot request from {} (height: {})", peer_id, height);
+                                        let snapshot_opt = self.chain.get_state_snapshot_data(height).await;
+                                        if let Some(snapshot) = snapshot_opt {
+                                            let chunks = snapshot.chunk(512 * 1024); // 512KB chunks
+                                            let total = chunks.len() as u32;
+                                            for (i, chunk_data) in chunks.into_iter().enumerate() {
+                                                let chunk_msg = NetworkMessage::SnapshotChunk {
+                                                    height,
+                                                    index: i as u32,
+                                                    total,
+                                                    data: chunk_data,
+                                                };
+                                                let topic = gossipsub::IdentTopic::new("blocks");
+                                                let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, chunk_msg.to_bytes());
+                                            }
+                                            info!("Sent {} snapshot chunks for height {}", total, height);
+                                        } else {
+                                            let response = NetworkMessage::StateSnapshotResponse { height, state_root: "".into(), ok: false };
+                                            let topic = gossipsub::IdentTopic::new("blocks");
+                                            let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, response.to_bytes());
+                                        }
+                                    }
+
+                                    NetworkMessage::SnapshotChunk { height, index, total, data } => {
+                                        info!("Received snapshot chunk {}/{} for height {}", index + 1, total, height);
+                                        let entry = self.in_progress_snapshots.entry(height).or_insert_with(|| vec![None; total as usize]);
+                                        if (index as usize) < entry.len() {
+                                            entry[index as usize] = Some(data);
+                                        }
+
+                                        if entry.iter().all(|c| c.is_some()) {
+                                            info!("Snapshot reassembly complete for height {}", height);
+                                            let mut full_data = Vec::new();
+                                            for chunk in entry.drain(..) {
+                                                full_data.extend(chunk.unwrap());
+                                            }
+                                            self.in_progress_snapshots.remove(&height);
+                                            
+                                            match crate::chain::snapshot::StateSnapshot::from_bytes(&full_data) {
+                                                Ok(snapshot) => {
+                                                    info!("Applying snapshot at height {}", snapshot.height);
+                                                    let chain = self.chain.clone();
+                                                    tokio::spawn(async move {
+                                                        if let Err(e) = chain.apply_snapshot(snapshot).await {
+                                                            warn!("Failed to apply snapshot: {}", e);
+                                                        }
+                                                    });
+                                                }
+                                                Err(e) => warn!("Failed to parse reassembled snapshot: {}", e),
+                                            }
                                         }
                                     }
 
@@ -666,12 +708,6 @@ impl Node {
                                             }
                                         }
                                         self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).report_good_behavior(&peer_id);
-                                    }
-
-                                    NetworkMessage::SnapshotChunk { height, index, total, data } => {
-                                        info!("SnapshotChunk from {}: height={}, {}/{}, {} bytes",
-                                            peer_id, height, index, total, data.len());
-
                                     }
 
                                     NetworkMessage::Handshake { version_major, version_minor, chain_id, best_height, validator_set_hash, supported_schemes } => {

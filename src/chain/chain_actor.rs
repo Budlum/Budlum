@@ -4,7 +4,6 @@ use crate::core::address::Address;
 use crate::core::transaction::Transaction;
 use crate::chain::finality::FinalityCert;
 use tokio::sync::{mpsc, oneshot};
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum ChainCommand {
@@ -33,6 +32,8 @@ pub enum ChainCommand {
     GetStateRoot(u64, oneshot::Sender<Option<String>>),
     AddBalance(Address, u64, oneshot::Sender<()>),
     InitGenesis(Address, oneshot::Sender<()>),
+    GetStateSnapshotData(u64, oneshot::Sender<Option<crate::chain::snapshot::StateSnapshot>>),
+    ApplySnapshot(crate::chain::snapshot::StateSnapshot, oneshot::Sender<Result<(), String>>),
 }
 
 #[derive(Clone)]
@@ -194,6 +195,18 @@ impl ChainHandle {
         let _ = self.tx.send(ChainCommand::InitGenesis(*address, tx)).await;
         let _ = rx.await;
     }
+
+    pub async fn get_state_snapshot_data(&self, height: u64) -> Option<crate::chain::snapshot::StateSnapshot> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::GetStateSnapshotData(height, tx)).await;
+        rx.await.unwrap_or(None)
+    }
+
+    pub async fn apply_snapshot(&self, snapshot: crate::chain::snapshot::StateSnapshot) -> Result<(), String> {
+        let (res_tx, res_rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::ApplySnapshot(snapshot, res_tx)).await;
+        res_rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
 }
 
 pub struct ChainActor {
@@ -252,7 +265,7 @@ impl ChainActor {
                     let _ = tx.send(self.blockchain.chain_id);
                 }
                 ChainCommand::GetBaseFee(tx) => {
-                    let _ = tx.send(self.blockchain.base_fee);
+                    let _ = tx.send(self.blockchain.state.base_fee);
                 }
                 ChainCommand::GetValidatorSetHash(tx) => {
                     let _ = tx.send(self.blockchain.get_validator_set_hash());
@@ -272,7 +285,7 @@ impl ChainActor {
                 }
                 ChainCommand::GetChainInfo(tx) => {
                     let info = format!("Height: {}, BaseFee: {}, Mempool: {}", 
-                        self.blockchain.chain.len(), self.blockchain.base_fee, self.blockchain.mempool.len());
+                        self.blockchain.chain.len(), self.blockchain.state.base_fee, self.blockchain.mempool.len());
                     let _ = tx.send(info);
                 }
                 ChainCommand::GetLocator(tx) => {
@@ -314,6 +327,14 @@ impl ChainActor {
                 ChainCommand::InitGenesis(addr, tx) => {
                     self.blockchain.init_genesis_account(&addr);
                     let _ = tx.send(());
+                }
+                ChainCommand::GetStateSnapshotData(height, tx) => {
+                    let res = self.blockchain.get_state_snapshot(height);
+                    let _ = tx.send(res);
+                }
+                ChainCommand::ApplySnapshot(snapshot, res_tx) => {
+                    let res = self.blockchain.apply_state_snapshot(snapshot);
+                    let _ = res_tx.send(res.map_err(|e: String| e.to_string()));
                 }
             }
         }

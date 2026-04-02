@@ -1,6 +1,6 @@
 use crate::crypto::primitives::{verify_signature, KeyPair};
 use crate::core::address::Address;
-use crate::core::hash::{hash_fields, hash_fields_bytes};
+use crate::core::hash::hash_fields_bytes;
 use crate::core::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 

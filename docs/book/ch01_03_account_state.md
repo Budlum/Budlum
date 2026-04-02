@@ -55,9 +55,10 @@ pub struct Validator {
 
 **Kod:**
 ```rust
-pub struct AccountState {
     pub accounts: BTreeMap<Address, Account>,   // Tüm hesaplar (sıralı)
     pub validators: BTreeMap<Address, Validator>, // Tüm validatörler (sıralı)
+    pub base_fee: u64,                          // Dinamik ağ işlem ücreti
+    pub block_reward: u64,                      // Dinamik blok ödülü
     storage: Option<Storage>,                   // Disk bağlantısı
     pub epoch_index: u64,                       // Zaman dilimi sayacı
     dirty_accounts: HashSet<Address>,           // Değişen hesapların takibi
@@ -87,9 +88,17 @@ pub fn calculate_state_root(&mut self) -> String {
 2. **Disk Dostu:** Sadece değişen hesaplar diske yazılır (**Per-Account Persistence**). Eskiden tüm state koca bir JSON blob'u iken, artık her hesap `ACCT:{pubkey}` anahtarıyla ayrı ayrı kaydedilir.
 3. **Merkle Proofs:** Hafif istemciler (Light Clients), tüm hesap verisini indirmeden sadece Merkle yolunu (Path) ve Root'u kullanarak bir hesabın bakiyesini kriptografik olarak doğrulayabilir.
 
+### 2. Dinamik Parametreler ve Yönetişim (Hardening)
+
+Budlum'un üretim sürümünde, ağ parametreleri artık statik kod sabitleri değil, state içinde yaşayan dinamik değişkenlerdir.
+
+- **`base_fee`**: Ağdaki minimum işlem ücreti. Blok doluluğuna göre EIP-1559 benzeri bir elastik yapıyla güncellenir.
+- **`block_reward`**: Validatörlere verilen blok üretim ödülü.
+- **Yönetişim (Governance)**: `TransactionType::Vote` ile başlayan oylama süreçleri, epoch geçişlerinde (`advance_epoch`) sonuçlandırılır ve bu parametreler on-chain olarak güncellenir.
+
 ---
 
-## 2. Fonksiyonlar ve İş Mantığı
+## 3. Fonksiyonlar ve İş Mantığı
 
 ### Fonksiyon: `validate_transaction` (Kural Kontrolü)
 

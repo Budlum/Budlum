@@ -1,7 +1,4 @@
-use jsonrpsee::server::Server;
 use jsonrpsee::types::error::ErrorObjectOwned;
-use std::sync::Arc;
-use crate::chain::blockchain::Blockchain;
 use crate::chain::chain_actor::ChainHandle;
 use crate::core::address::Address;
 use crate::core::block::Block;
@@ -155,14 +152,14 @@ impl BudlumApiServer for RpcServer {
     }
 
     async fn estimate_gas(&self, tx: Transaction) -> Result<String, ErrorObjectOwned> {
-        if let Err(e) = crate::network::protocol::NetworkMessage::validate_tx_size(&tx) {
-            return Err(ErrorObjectOwned::owned(-32602, format!("Transaction too large: {:?}", e), None::<()>));
+        if let Err(_e) = crate::network::protocol::NetworkMessage::validate_tx_size(&tx) {
+            return Err(ErrorObjectOwned::owned(-32602, format!("Transaction too large: {:?}", _e), None::<()>));
         }
         Ok(Self::to_hex(21000))
     }
 
     async fn tx_precheck(&self, tx: Transaction) -> Result<serde_json::Value, ErrorObjectOwned> {
-        if let Err(e) = crate::network::protocol::NetworkMessage::validate_tx_size(&tx) {
+        if let Err(_e) = crate::network::protocol::NetworkMessage::validate_tx_size(&tx) {
             return Ok(serde_json::json!({
                 "accepted": false,
                 "reasons": ["transaction_too_large"]

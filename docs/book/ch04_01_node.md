@@ -177,5 +177,17 @@ async fn handle_network_event(&mut self, event: SwarmEvent<BudlumBehaviourEvent>
 }
 ```
 
+---
+
+## 4. Bakım ve Operasyon (Hardening)
+
+Budlum'un üretim sürümünde, düğüm operatörleri için yeni bakım komutları eklenmiştir:
+
+- **`--check-db`**: Düğümü başlatmadan önce veritabanındaki tüm blokların hash ve bağlantı (linkage) bütünlüğünü kontrol eder.
+- **`--repair-db`**: Eğer veritabanı indeksleri (height -> hash) bozulmuşsa, ham blok verisinden indeksleri yeniden inşa eder.
+- **`--metrics-port`**: Düğümün sağlığını (peer sayısı, blok yüksekliği, mempool doluluğu) Prometheus formatında dışarı sunar.
+
+---
+
 **Tasarım Notu:**
 Burada blok geldiğinde `process_incoming_block` çağrılır. Bu fonksiyon, Bölüm 3'teki `validate_block` fonksiyonunu çağırır. Eğer blok geçerliyse zincire ekler, değilse göndereni banlar (`PeerManager`). Hepsi birbirine bağlıdır.
