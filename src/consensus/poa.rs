@@ -54,29 +54,55 @@ impl PoAEngine {
     pub fn active_validator_count(&self, state: &AccountState) -> usize {
         state.get_active_validators().len()
     }
+
+    fn prepare_common(
+        &self,
+        block: &mut Block,
+        state: &AccountState,
+    ) -> Result<Option<Address>, ConsensusError> {
+        let active_refs = state.get_active_validators();
+        let expected_signer_addr =
+            if let Some(expected) = self.expected_proposer(block.index, &active_refs) {
+                expected.address
+            } else if block.index == 0 {
+                Address::zero()
+            } else {
+                return Err(ConsensusError("No active validators found".into()));
+            };
+
+        if expected_signer_addr == Address::zero() {
+            return Ok(None);
+        }
+
+        if let Some(kp) = &self.keypair {
+            let our_addr = Address::from(kp.public_key_bytes());
+            if our_addr == expected_signer_addr {
+                block.producer = Some(our_addr);
+                return Ok(Some(our_addr));
+            }
+        }
+
+        if block.producer.is_none() || block.producer == Some(Address::zero()) {
+            block.producer = Some(expected_signer_addr);
+        }
+
+        Ok(block.producer)
+    }
 }
 
 impl ConsensusEngine for PoAEngine {
+    fn preview_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError> {
+        let _ = self.prepare_common(block, state)?;
+        Ok(())
+    }
+
     fn prepare_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError> {
-        let slot = block.index;
-        let active_refs = state.get_active_validators();
+        let expected_signer_addr = self.prepare_common(block, state)?;
 
-        let expected_signer_addr =
-            if let Some(expected) = self.expected_proposer(slot, &active_refs) {
-                expected.address
-            } else {
-                if block.index == 0 {
-                    Address::zero()
-                } else {
-                    return Err(ConsensusError("No active validators found".into()));
-                }
-            };
-
-        if expected_signer_addr != Address::zero() {
+        if let Some(expected_signer_addr) = expected_signer_addr {
             println!(
                 "PoA: Block {} should be proposed by: {}",
-                slot,
-                expected_signer_addr
+                block.index, expected_signer_addr
             );
 
             if let Some(kp) = &self.keypair {
@@ -86,17 +112,8 @@ impl ConsensusEngine for PoAEngine {
                     block.sign(kp);
                     println!(
                         " PoA: Block {} signed by us ({})",
-                        block.index,
-                        expected_signer_addr
+                        block.index, expected_signer_addr
                     );
-                } else {
-                    /*
-                    println!(
-                        " PoA: We are not the proposer (us: {}, expected: {})",
-                        keypair.public_key_hex(),
-                        expected_signer_addr
-                    );
-                    */
                 }
             } else {
                 println!(" PoA: No keypair configured, cannot sign block");
@@ -146,8 +163,7 @@ impl ConsensusEngine for PoAEngine {
             if producer != &expected.address {
                 return Err(ConsensusError(format!(
                     "Wrong proposer. Expected: {}, Got: {}",
-                    expected.address,
-                    producer
+                    expected.address, producer
                 )));
             }
 
@@ -157,8 +173,7 @@ impl ConsensusEngine for PoAEngine {
 
             println!(
                 "PoA: Block {} signature verified (producer: {})",
-                block.index,
-                producer
+                block.index, producer
             );
         } else {
             if block.hash != block.calculate_hash() {
@@ -196,25 +211,15 @@ mod tests {
         let alice_addr = Address::from(alice.public_key_bytes());
         let bob_addr = Address::from(bob.public_key_bytes());
 
-        state.validators.insert(
-            alice_addr,
-            Validator::new(alice_addr, 0),
-        );
-        state.validators.insert(
-            bob_addr,
-            Validator::new(bob_addr, 0),
-        );
+        state
+            .validators
+            .insert(alice_addr, Validator::new(alice_addr, 0));
+        state
+            .validators
+            .insert(bob_addr, Validator::new(bob_addr, 0));
 
-        state
-            .validators
-            .get_mut(&alice_addr)
-            .unwrap()
-            .active = true;
-        state
-            .validators
-            .get_mut(&bob_addr)
-            .unwrap()
-            .active = true;
+        state.validators.get_mut(&alice_addr).unwrap().active = true;
+        state.validators.get_mut(&bob_addr).unwrap().active = true;
 
         let engine = PoAEngine::new(PoAConfig::default(), None);
 
@@ -236,9 +241,7 @@ mod tests {
         let pubkey = Address::from(keypair.public_key_bytes());
 
         let mut state = AccountState::new();
-        state
-            .validators
-            .insert(pubkey, Validator::new(pubkey, 0));
+        state.validators.insert(pubkey, Validator::new(pubkey, 0));
         state.validators.get_mut(&pubkey).unwrap().active = true;
 
         let engine = PoAEngine::new(PoAConfig::default(), Some(keypair));

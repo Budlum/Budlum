@@ -1,8 +1,8 @@
+use crate::core::address::Address;
+use bls12_381::{G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use std::collections::HashMap;
-use crate::core::address::Address;
-use bls12_381::{G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
 
 use crate::core::chain_config::{
     FINALITY_CHECKPOINT_INTERVAL, FINALITY_QUORUM_DENOMINATOR, FINALITY_QUORUM_NUMERATOR,
@@ -39,7 +39,7 @@ impl ValidatorSetSnapshot {
     pub fn compute_hash(validators: &[ValidatorEntry]) -> String {
         let mut sorted_validators = validators.to_vec();
         sorted_validators.sort_by_key(|v| v.address);
-        
+
         let mut hasher = Sha3_256::new();
         for v in sorted_validators {
             hasher.update(v.address.0);
@@ -133,7 +133,7 @@ pub fn hash_to_g1(msg: &[u8]) -> G1Affine {
     hasher.update(b"BUDLUM_BLS_SIG_DST");
     hasher.update(msg);
     let h = hasher.finalize();
-    
+
     let mut scalar_bytes = [0u8; 64];
     scalar_bytes[0..32].copy_from_slice(&h);
     let s = Scalar::from_bytes_wide(&scalar_bytes);
@@ -144,7 +144,7 @@ pub fn verify_pop(entry: &ValidatorEntry) -> bool {
     if entry.bls_public_key.is_empty() || entry.pop_signature.is_empty() {
         return false;
     }
-    
+
     // Parse BLS Public Key (G2)
     let pk_bytes: [u8; 96] = match entry.bls_public_key.as_slice().try_into() {
         Ok(b) => b,
@@ -173,7 +173,8 @@ pub fn verify_pop(entry: &ValidatorEntry) -> bool {
     let pairing_result = bls12_381::multi_miller_loop(&[
         (&sig_affine.unwrap(), &g2_gen_neg.into()),
         (&h_msg.into(), &pk_affine.unwrap().into()),
-    ]).final_exponentiation();
+    ])
+    .final_exponentiation();
 
     pairing_result == bls12_381::Gt::identity()
 }
@@ -305,9 +306,13 @@ impl FinalityAggregator {
         for (addr, precommit) in &self.precommits {
             if let Some(idx) = snapshot.validator_index(addr) {
                 bitmap[idx / 8] |= 1 << (idx % 8);
-                
-                let sig_bytes: [u8; 48] = precommit.sig_bls.as_slice().try_into()
-                    .map_err(|_| "Invalid precommit signature length".to_string()).ok()?;
+
+                let sig_bytes: [u8; 48] = precommit
+                    .sig_bls
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid precommit signature length".to_string())
+                    .ok()?;
                 let sig_affine = G1Affine::from_compressed(&sig_bytes);
                 if sig_affine.is_some().into() {
                     agg_sig += G1Projective::from(sig_affine.unwrap());
@@ -342,12 +347,21 @@ impl FinalityCert {
             let bit_idx = idx % 8;
             if byte_idx < self.bitmap.len() && (self.bitmap[byte_idx] & (1 << bit_idx)) != 0 {
                 voted_stake += validator.stake;
-                
-                let pk_bytes: [u8; 96] = validator.bls_public_key.as_slice().try_into()
-                    .map_err(|_| format!("Invalid BLS public key length for {}", validator.address))?;
+
+                let pk_bytes: [u8; 96] =
+                    validator
+                        .bls_public_key
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| {
+                            format!("Invalid BLS public key length for {}", validator.address)
+                        })?;
                 let pk = G2Affine::from_compressed(&pk_bytes);
                 if pk.is_none().into() {
-                    return Err(format!("Invalid BLS public key encoding for {}", validator.address));
+                    return Err(format!(
+                        "Invalid BLS public key encoding for {}",
+                        validator.address
+                    ));
                 }
                 signers_pks.push(G2Projective::from(pk.unwrap()));
             }
@@ -375,7 +389,10 @@ impl FinalityCert {
         let agg_pk_affine = G2Affine::from(agg_pk);
 
         // Parse Aggregated Signature (G1)
-        let sig_bytes: [u8; 48] = self.agg_sig_bls.as_slice().try_into()
+        let sig_bytes: [u8; 48] = self
+            .agg_sig_bls
+            .as_slice()
+            .try_into()
             .map_err(|_| "Invalid aggregated BLS signature length".to_string())?;
         let sig_affine = G1Affine::from_compressed(&sig_bytes);
         if sig_affine.is_none().into() {
@@ -389,11 +406,12 @@ impl FinalityCert {
         // Verify pairing: e(sig, G2_gen) == e(H(msg), agg_pk)
         // Which is equivalent to: e(sig, -G2_gen) + e(H(msg), agg_pk) == 0 (identity)
         let g2_gen_neg = -G2Affine::generator();
-        
+
         let pairing_result = bls12_381::multi_miller_loop(&[
             (&sig_affine.unwrap(), &g2_gen_neg.into()),
             (&h_msg.into(), &agg_pk_affine.into()),
-        ]).final_exponentiation();
+        ])
+        .final_exponentiation();
 
         if pairing_result != bls12_381::Gt::identity() {
             return Err("BLS aggregate signature verification failed".into());
@@ -427,10 +445,10 @@ mod tests {
         let mut sk_bytes = [0u8; 64];
         sk_bytes[0] = seed + 1;
         let sk = Scalar::from_bytes_wide(&sk_bytes);
-        
+
         let pk = G2Affine::from(G2Projective::generator() * sk);
         let pk_compressed = pk.to_compressed().to_vec();
-        
+
         (sk, pk_compressed, vec![])
     }
 
@@ -449,10 +467,10 @@ mod tests {
                 let mut addr_bytes = [0u8; 32];
                 addr_bytes[0] = (i + 1) as u8;
                 let addr = Address::from(addr_bytes);
-                
+
                 let pop_msg = pop_signing_message(&addr, &pk_bytes);
                 let pop_sig = sign_msg(sk, &pop_msg);
-                
+
                 ValidatorEntry {
                     address: addr,
                     stake: stake_each,
@@ -475,7 +493,7 @@ mod tests {
     fn test_verify_pop() {
         let (snap, _) = make_snapshot_with_keys(1, 1000);
         assert!(verify_pop(&snap.validators[0]));
-        
+
         let mut invalid = snap.validators[0].clone();
         invalid.pop_signature[0] ^= 0xFF;
         assert!(!verify_pop(&invalid));
@@ -601,15 +619,15 @@ mod tests {
                 checkpoint_height: 10,
                 checkpoint_hash: "cp_hash".into(),
                 voter_id: snap.validators[i].address.clone(),
-                sig_bls: vec![], 
+                sig_bls: vec![],
             };
-            
+
             let sig_bytes = sign_msg(sks[i], &pc.signing_message());
             let mut pc_signed = pc;
             pc_signed.sig_bls = sig_bytes.clone();
-            
+
             agg.add_precommit(pc_signed).unwrap();
-            
+
             let sig_affine = G1Affine::from_compressed(&sig_bytes.try_into().unwrap()).unwrap();
             agg_sig += G1Projective::from(sig_affine);
         }
@@ -617,7 +635,7 @@ mod tests {
 
         let mut cert = agg.try_produce_cert().expect("Should produce cert");
         cert.agg_sig_bls = G1Affine::from(agg_sig).to_compressed().to_vec();
-        
+
         assert_eq!(cert.epoch, 1);
         assert_eq!(cert.checkpoint_height, 10);
         assert_eq!(cert.checkpoint_hash, "cp_hash");
@@ -631,11 +649,14 @@ mod tests {
     fn test_cert_verify_rejects_insufficient_quorum() {
         let (snap, sks) = make_snapshot_with_keys(4, 1000);
         let pc = Precommit {
-            epoch: 1, checkpoint_height: 10, checkpoint_hash: "cp_hash".into(),
-            voter_id: snap.validators[0].address.clone(), sig_bls: vec![],
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: "cp_hash".into(),
+            voter_id: snap.validators[0].address.clone(),
+            sig_bls: vec![],
         };
         let sig_bytes = sign_msg(sks[0], &pc.signing_message());
-        
+
         let cert = FinalityCert {
             epoch: 1,
             checkpoint_height: 10,

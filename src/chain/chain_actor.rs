@@ -1,8 +1,8 @@
 use crate::chain::blockchain::Blockchain;
-use crate::core::block::Block;
-use crate::core::address::Address;
-use crate::core::transaction::Transaction;
 use crate::chain::finality::FinalityCert;
+use crate::core::address::Address;
+use crate::core::block::Block;
+use crate::core::transaction::Transaction;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
@@ -17,6 +17,7 @@ pub enum ChainCommand {
     ValidateAndAddBlock(Block, oneshot::Sender<Result<(), String>>),
     GetTransactionByHash(String, oneshot::Sender<Option<Transaction>>),
     GetTxReceipt(String, oneshot::Sender<Option<serde_json::Value>>),
+    TxPrecheck(Transaction, oneshot::Sender<serde_json::Value>),
     GetChainId(oneshot::Sender<u64>),
     GetBaseFee(oneshot::Sender<u64>),
     GetValidatorSetHash(oneshot::Sender<String>),
@@ -28,12 +29,21 @@ pub enum ChainCommand {
     GetLocator(oneshot::Sender<Vec<String>>),
     FindCommonHeight(Vec<String>, oneshot::Sender<Option<u64>>),
     GetQcBlob(u64, oneshot::Sender<Option<crate::consensus::qc::QcBlob>>),
-    GetFinalityCert(u64, oneshot::Sender<Option<crate::chain::finality::FinalityCert>>),
+    GetFinalityCert(
+        u64,
+        oneshot::Sender<Option<crate::chain::finality::FinalityCert>>,
+    ),
     GetStateRoot(u64, oneshot::Sender<Option<String>>),
     AddBalance(Address, u64, oneshot::Sender<()>),
     InitGenesis(Address, oneshot::Sender<()>),
-    GetStateSnapshotData(u64, oneshot::Sender<Option<crate::chain::snapshot::StateSnapshot>>),
-    ApplySnapshot(crate::chain::snapshot::StateSnapshot, oneshot::Sender<Result<(), String>>),
+    GetStateSnapshotData(
+        u64,
+        oneshot::Sender<Option<crate::chain::snapshot::StateSnapshot>>,
+    ),
+    ApplySnapshot(
+        crate::chain::snapshot::StateSnapshot,
+        oneshot::Sender<Result<(), String>>,
+    ),
 }
 
 #[derive(Clone)]
@@ -79,7 +89,9 @@ impl ChainHandle {
     pub async fn add_transaction(&self, tx: Transaction) -> Result<(), String> {
         let (res_tx, res_rx) = oneshot::channel();
         let _ = self.tx.send(ChainCommand::AddTransaction(tx, res_tx)).await;
-        res_rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
     pub async fn produce_block(&self, producer: Address) -> Option<Block> {
@@ -90,13 +102,21 @@ impl ChainHandle {
 
     pub async fn validate_and_add_block(&self, block: Block) -> Result<(), String> {
         let (res_tx, res_rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::ValidateAndAddBlock(block, res_tx)).await;
-        res_rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+        let _ = self
+            .tx
+            .send(ChainCommand::ValidateAndAddBlock(block, res_tx))
+            .await;
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
     pub async fn get_transaction_by_hash(&self, hash: String) -> Option<Transaction> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::GetTransactionByHash(hash, tx)).await;
+        let _ = self
+            .tx
+            .send(ChainCommand::GetTransactionByHash(hash, tx))
+            .await;
         rx.await.unwrap_or(None)
     }
 
@@ -104,6 +124,17 @@ impl ChainHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(ChainCommand::GetTxReceipt(hash, tx)).await;
         rx.await.unwrap_or(None)
+    }
+
+    pub async fn tx_precheck(&self, tx_obj: Transaction) -> serde_json::Value {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::TxPrecheck(tx_obj, tx)).await;
+        rx.await.unwrap_or_else(|_| {
+            serde_json::json!({
+                "accepted": false,
+                "reasons": ["actor_dropped"]
+            })
+        })
     }
 
     pub async fn get_chain_id(&self) -> u64 {
@@ -132,8 +163,13 @@ impl ChainHandle {
 
     pub async fn handle_finality_cert(&self, cert: FinalityCert) -> Result<(), String> {
         let (res_tx, res_rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::HandleFinalityCert(cert, res_tx)).await;
-        res_rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+        let _ = self
+            .tx
+            .send(ChainCommand::HandleFinalityCert(cert, res_tx))
+            .await;
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
     pub async fn cleanup_mempool(&self) -> usize {
@@ -145,7 +181,9 @@ impl ChainHandle {
     pub async fn try_reorg(&self, fork: Vec<Block>) -> Result<bool, String> {
         let (res_tx, res_rx) = oneshot::channel();
         let _ = self.tx.send(ChainCommand::TryReorg(fork, res_tx)).await;
-        res_rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
     pub async fn get_chain_info(&self) -> String {
@@ -162,7 +200,10 @@ impl ChainHandle {
 
     pub async fn find_common_height(&self, locator: Vec<String>) -> Option<u64> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::FindCommonHeight(locator, tx)).await;
+        let _ = self
+            .tx
+            .send(ChainCommand::FindCommonHeight(locator, tx))
+            .await;
         rx.await.unwrap_or(None)
     }
 
@@ -172,9 +213,15 @@ impl ChainHandle {
         rx.await.unwrap_or(None)
     }
 
-    pub async fn get_finality_cert(&self, height: u64) -> Option<crate::chain::finality::FinalityCert> {
+    pub async fn get_finality_cert(
+        &self,
+        height: u64,
+    ) -> Option<crate::chain::finality::FinalityCert> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::GetFinalityCert(height, tx)).await;
+        let _ = self
+            .tx
+            .send(ChainCommand::GetFinalityCert(height, tx))
+            .await;
         rx.await.unwrap_or(None)
     }
 
@@ -186,7 +233,10 @@ impl ChainHandle {
 
     pub async fn add_balance(&self, address: &Address, amount: u64) {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::AddBalance(*address, amount, tx)).await;
+        let _ = self
+            .tx
+            .send(ChainCommand::AddBalance(*address, amount, tx))
+            .await;
         let _ = rx.await;
     }
 
@@ -196,16 +246,30 @@ impl ChainHandle {
         let _ = rx.await;
     }
 
-    pub async fn get_state_snapshot_data(&self, height: u64) -> Option<crate::chain::snapshot::StateSnapshot> {
+    pub async fn get_state_snapshot_data(
+        &self,
+        height: u64,
+    ) -> Option<crate::chain::snapshot::StateSnapshot> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::GetStateSnapshotData(height, tx)).await;
+        let _ = self
+            .tx
+            .send(ChainCommand::GetStateSnapshotData(height, tx))
+            .await;
         rx.await.unwrap_or(None)
     }
 
-    pub async fn apply_snapshot(&self, snapshot: crate::chain::snapshot::StateSnapshot) -> Result<(), String> {
+    pub async fn apply_snapshot(
+        &self,
+        snapshot: crate::chain::snapshot::StateSnapshot,
+    ) -> Result<(), String> {
         let (res_tx, res_rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::ApplySnapshot(snapshot, res_tx)).await;
-        res_rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+        let _ = self
+            .tx
+            .send(ChainCommand::ApplySnapshot(snapshot, res_tx))
+            .await;
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 }
 
@@ -232,7 +296,12 @@ impl ChainActor {
                     let _ = tx.send(block);
                 }
                 ChainCommand::GetBlockByHash(hash, tx) => {
-                    let block = self.blockchain.chain.iter().find(|b| b.hash == hash).cloned();
+                    let block = self
+                        .blockchain
+                        .chain
+                        .iter()
+                        .find(|b| b.hash == hash)
+                        .cloned();
                     let _ = tx.send(block);
                 }
                 ChainCommand::GetBalance(addr, tx) => {
@@ -244,14 +313,22 @@ impl ChainActor {
                     let _ = tx.send(nonce);
                 }
                 ChainCommand::AddTransaction(tx_obj, res_tx) => {
-                    let _ = res_tx.send(self.blockchain.add_transaction(tx_obj).map_err(|e| e.to_string()));
+                    let _ = res_tx.send(
+                        self.blockchain
+                            .add_transaction(tx_obj)
+                            .map_err(|e| e.to_string()),
+                    );
                 }
                 ChainCommand::ProduceBlock(producer, tx) => {
                     let block = self.blockchain.produce_block(producer);
                     let _ = tx.send(block);
                 }
                 ChainCommand::ValidateAndAddBlock(block, res_tx) => {
-                    let _ = res_tx.send(self.blockchain.validate_and_add_block(block).map_err(|e| e.to_string()));
+                    let _ = res_tx.send(
+                        self.blockchain
+                            .validate_and_add_block(block)
+                            .map_err(|e| e.to_string()),
+                    );
                 }
                 ChainCommand::GetTransactionByHash(hash, tx) => {
                     let tx_obj = self.blockchain.get_transaction_by_hash(&hash);
@@ -260,6 +337,9 @@ impl ChainActor {
                 ChainCommand::GetTxReceipt(hash, tx) => {
                     let receipt = self.blockchain.get_transaction_receipt(&hash);
                     let _ = tx.send(receipt);
+                }
+                ChainCommand::TxPrecheck(tx_obj, tx) => {
+                    let _ = tx.send(self.blockchain.tx_precheck(&tx_obj));
                 }
                 ChainCommand::GetChainId(tx) => {
                     let _ = tx.send(self.blockchain.chain_id);
@@ -274,7 +354,11 @@ impl ChainActor {
                     let _ = tx.send(self.blockchain.mempool.len());
                 }
                 ChainCommand::HandleFinalityCert(cert, res_tx) => {
-                    let _ = res_tx.send(self.blockchain.handle_finality_cert(cert).map_err(|e| e.to_string()));
+                    let _ = res_tx.send(
+                        self.blockchain
+                            .handle_finality_cert(cert)
+                            .map_err(|e| e.to_string()),
+                    );
                 }
                 ChainCommand::CleanupMempool(tx) => {
                     let removed = self.blockchain.mempool.cleanup_expired();
@@ -284,8 +368,12 @@ impl ChainActor {
                     let _ = res_tx.send(self.blockchain.try_reorg(fork).map_err(|e| e.to_string()));
                 }
                 ChainCommand::GetChainInfo(tx) => {
-                    let info = format!("Height: {}, BaseFee: {}, Mempool: {}", 
-                        self.blockchain.chain.len(), self.blockchain.state.base_fee, self.blockchain.mempool.len());
+                    let info = format!(
+                        "Height: {}, BaseFee: {}, Mempool: {}",
+                        self.blockchain.chain.len(),
+                        self.blockchain.state.base_fee,
+                        self.blockchain.mempool.len()
+                    );
                     let _ = tx.send(info);
                 }
                 ChainCommand::GetLocator(tx) => {
@@ -304,16 +392,28 @@ impl ChainActor {
                 }
                 ChainCommand::FindCommonHeight(locator, tx) => {
                     let common = locator.iter().find_map(|hash| {
-                        self.blockchain.chain.iter().position(|b| &b.hash == hash).map(|p| p as u64)
+                        self.blockchain
+                            .chain
+                            .iter()
+                            .position(|b| &b.hash == hash)
+                            .map(|p| p as u64)
                     });
                     let _ = tx.send(common);
                 }
                 ChainCommand::GetQcBlob(height, tx) => {
-                    let res = self.blockchain.storage.as_ref().and_then(|s| s.get_qc_blob(height).unwrap_or(None));
+                    let res = self
+                        .blockchain
+                        .storage
+                        .as_ref()
+                        .and_then(|s| s.get_qc_blob(height).unwrap_or(None));
                     let _ = tx.send(res);
                 }
                 ChainCommand::GetFinalityCert(height, tx) => {
-                    let res = self.blockchain.storage.as_ref().and_then(|s| s.get_finality_cert(height).unwrap_or(None));
+                    let res = self
+                        .blockchain
+                        .storage
+                        .as_ref()
+                        .and_then(|s| s.get_finality_cert(height).unwrap_or(None));
                     let _ = tx.send(res);
                 }
                 ChainCommand::GetStateRoot(height, tx) => {

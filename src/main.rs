@@ -1,23 +1,30 @@
-
 use budlum_core::chain::blockchain::Blockchain;
-use budlum_core::core::address::Address;
-use budlum_core::core::transaction::Transaction;
-use budlum_core::consensus::pow::PoWEngine;
-use budlum_core::consensus::pos::{PoSEngine, PoSConfig};
-use budlum_core::consensus::poa::{PoAEngine, PoAConfig};
-use budlum_core::consensus::ConsensusEngine;
-use budlum_core::network::node::Node;
-use budlum_core::network::protocol::NetworkMessage;
-use budlum_core::storage::db::Storage;
+use budlum_core::chain::chain_actor::ChainActor;
 use budlum_core::chain::snapshot::PruningManager;
 use budlum_core::cli::{ConsensusType, NodeConfig};
+use budlum_core::consensus::poa::{PoAConfig, PoAEngine};
+use budlum_core::consensus::pos::{PoSConfig, PoSEngine};
+use budlum_core::consensus::pow::PoWEngine;
+use budlum_core::consensus::ConsensusEngine;
+use budlum_core::core::address::Address;
+use budlum_core::core::transaction::Transaction;
+use budlum_core::crypto::primitives::{KeyPair, ValidatorKeys};
+use budlum_core::network::node::Node;
+use budlum_core::network::protocol::NetworkMessage;
 use budlum_core::rpc::RpcServer;
-use budlum_core::chain::chain_actor::ChainActor;
+use budlum_core::storage::db::Storage;
 
 use clap::Parser;
 use std::sync::Arc;
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
+
+fn load_signing_key(path: &str) -> Option<KeyPair> {
+    ValidatorKeys::load(path)
+        .map(|keys| keys.sig_key)
+        .or_else(|_| KeyPair::load(path))
+        .ok()
+}
 
 #[tokio::main]
 async fn main() {
@@ -27,13 +34,16 @@ async fn main() {
         .with_max_level(Level::INFO)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
-    
+
     if let Some(ref path) = config.gen_key {
         match budlum_core::crypto::primitives::ValidatorKeys::generate() {
             Ok(keys) => {
                 keys.save(path).expect("Failed to save key");
                 println!("Validator key generated and saved to: {}", path);
-                println!("Address: {}", Address::from(keys.sig_key.public_key_bytes()));
+                println!(
+                    "Address: {}",
+                    Address::from(keys.sig_key.public_key_bytes())
+                );
             }
             Err(e) => eprintln!("Error generating key: {}", e),
         }
@@ -42,7 +52,10 @@ async fn main() {
 
     if config.check_db {
         let storage = Storage::new(&config.db_path).expect("Failed to open DB");
-        println!("🔍 Starting Database Integrity Audit on: {}", config.db_path);
+        println!(
+            "🔍 Starting Database Integrity Audit on: {}",
+            config.db_path
+        );
         match storage.check_integrity() {
             Ok(errors) => {
                 if errors.is_empty() {
@@ -57,7 +70,9 @@ async fn main() {
                         if let Err(e) = storage.repair_index() {
                             eprintln!("❌ Repair failed: {}", e);
                         } else {
-                            println!("✅ Repair successful. Please run --check-db again to verify.");
+                            println!(
+                                "✅ Repair successful. Please run --check-db again to verify."
+                            );
                         }
                     } else {
                         println!("💡 Tip: Run with --repair-db to attempt index reconstruction.");
@@ -88,6 +103,16 @@ async fn main() {
         budlum_core::core::chain_config::Network::Testnet => ConsensusType::PoS,
         budlum_core::core::chain_config::Network::Devnet => ConsensusType::PoW,
     });
+    let poa_validators = if consensus_type == ConsensusType::PoA {
+        config.load_validator_addresses()
+    } else {
+        Vec::new()
+    };
+    let local_signer_address = config
+        .validator_key_file
+        .as_ref()
+        .and_then(|path| load_signing_key(path))
+        .map(|key| Address::from(key.public_key_bytes()));
 
     println!("Budlum Node - v0.2.0 (Framework Edition)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -98,9 +123,12 @@ async fn main() {
     println!("   Consensus: {:?}", consensus_type);
     println!("   Privacy: {:?}", config.privacy);
     println!("   DB Path: {}", config.db_path);
-    println!("   Metrics: http://127.0.0.1:{}/metrics", config.metrics_port);
+    println!(
+        "   Metrics: http://127.0.0.1:{}/metrics",
+        config.metrics_port
+    );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    
+
     let consensus: Arc<dyn ConsensusEngine> = match consensus_type {
         ConsensusType::PoW => {
             println!(" PoW mode - difficulty: {}", config.difficulty);
@@ -127,13 +155,20 @@ async fn main() {
         }
         ConsensusType::PoA => {
             println!("PoA mode");
+            let poa_keypair = config
+                .validator_key_file
+                .as_ref()
+                .and_then(|path| load_signing_key(path));
             Arc::new(PoAEngine::new(
-                PoAConfig::default(),
-                None,
+                PoAConfig {
+                    validators_file: Some(config.validators_file.clone()),
+                    ..Default::default()
+                },
+                poa_keypair,
             ))
         }
     };
-    
+
     let storage = match Storage::new(&config.db_path) {
         Ok(s) => Some(s),
         Err(e) => {
@@ -144,12 +179,11 @@ async fn main() {
 
     let pruning_manager = PruningManager::new(1000, 100, "./data/snapshots".to_string());
 
-    let blockchain = Blockchain::new(
-        consensus,
-        storage,
-        chain_id,
-        Some(pruning_manager),
-    );
+    let mut blockchain = Blockchain::new(consensus, storage, chain_id, Some(pruning_manager));
+
+    for validator in &poa_validators {
+        blockchain.state.add_validator(*validator, 1);
+    }
 
     let (chain_actor, chain) = ChainActor::new(blockchain);
     tokio::spawn(async move {
@@ -158,30 +192,31 @@ async fn main() {
 
     if let Some(_keys) = match consensus_type {
         ConsensusType::PoS => {
-           if let Some(ref v_path) = config.validator_key_file {
-               if let Ok(keys) = budlum_core::crypto::primitives::ValidatorKeys::load(v_path) {
+            if let Some(ref v_path) = config.validator_key_file {
+                if let Ok(keys) = budlum_core::crypto::primitives::ValidatorKeys::load(v_path) {
                     let addr = Address::from(keys.sig_key.public_key_bytes());
                     println!("Auto-bootstrapping validator: {}", addr);
                     Some(keys)
-               } else { None }
-           } else { None }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         }
         _ => None,
-     } {
-       
-    }
+    } {}
 
-    if let Some(ConsensusType::PoA) = config.consensus {
-        let validators = config.load_validators();
-        if !validators.is_empty() {
-            println!("Initializing PoA validators: {:?}", validators);
+    if consensus_type == ConsensusType::PoA {
+        if !poa_validators.is_empty() {
+            println!("Initializing PoA validators: {:?}", poa_validators);
         } else {
             println!(" No validators configured!");
         }
     }
 
     let mut node = Node::new(chain.clone()).unwrap();
-    
+
     let mut bootstraps = Vec::new();
     if let Some(ref addr) = config.bootstrap {
         bootstraps.push(addr.clone());
@@ -202,6 +237,11 @@ async fn main() {
     let client = node.get_client();
     let peer_id = node.peer_id.to_string();
     println!("Node PeerID: {}", peer_id);
+    let cli_producer_address = config
+        .validator_address
+        .as_ref()
+        .and_then(|addr_str| Address::from_hex(addr_str).ok())
+        .or(local_signer_address);
 
     let rpc_addr = format!("{}:{}", config.rpc_host, config.rpc_port);
     let rpc_server = RpcServer::new(chain.clone(), node.get_client());
@@ -217,15 +257,19 @@ async fn main() {
     let metrics_clone = metrics.clone();
     let metrics_port = config.metrics_port;
     tokio::spawn(async move {
-        use hyper::service::service_fn;
-        use hyper::{Request, Response, body::Bytes};
         use http_body_util::Full;
+        use hyper::service::service_fn;
+        use hyper::{body::Bytes, Request, Response};
         use hyper_util::rt::TokioIo;
 
-        let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", metrics_port)).await {
-            Ok(l) => l,
-            Err(e) => { eprintln!("Metrics server bind error: {}", e); return; }
-        };
+        let listener =
+            match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", metrics_port)).await {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("Metrics server bind error: {}", e);
+                    return;
+                }
+            };
         println!("Prometheus metrics on :{}/metrics", metrics_port);
         loop {
             if let Ok((stream, _)) = listener.accept().await {
@@ -233,14 +277,17 @@ async fn main() {
                 tokio::spawn(async move {
                     let io = TokioIo::new(stream);
                     let _ = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(io, service_fn(move |_req: Request<hyper::body::Incoming>| {
-                            let body = m.encode();
-                            async move {
-                                Ok::<_, std::convert::Infallible>(
-                                    Response::new(Full::new(Bytes::from(body)))
-                                )
-                            }
-                        }))
+                        .serve_connection(
+                            io,
+                            service_fn(move |_req: Request<hyper::body::Incoming>| {
+                                let body = m.encode();
+                                async move {
+                                    Ok::<_, std::convert::Infallible>(Response::new(Full::new(
+                                        Bytes::from(body),
+                                    )))
+                                }
+                            }),
+                        )
                         .await;
                 });
             }
@@ -272,11 +319,7 @@ async fn main() {
                             client.broadcast("transactions".to_string(), NetworkMessage::Transaction(tx)).await;
                         }
                         "block" | "mine" => {
-                            let producer = if let Some(addr_str) = &config.validator_address {
-                                Address::from_hex(addr_str).unwrap_or(Address::zero())
-                            } else {
-                                Address::zero()
-                            };
+                            let producer = cli_producer_address.unwrap_or(Address::zero());
                             let _ = chain.produce_block(producer).await;
                         }
                         "chain" => {

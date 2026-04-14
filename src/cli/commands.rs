@@ -1,3 +1,4 @@
+use crate::core::address::Address;
 use crate::core::chain_config::Network;
 use clap::Parser;
 use std::path::Path;
@@ -141,30 +142,44 @@ impl NodeConfig {
     pub fn load_with_file(&mut self) {
         if let Some(ref path) = self.config {
             match std::fs::read_to_string(path) {
-                Ok(content) => {
-                    match toml::from_str::<FileConfig>(&content) {
-                        Ok(fc) => {
-                            if self.port.is_none() { self.port = fc.port; }
-                            if self.bootstrap.is_none() { self.bootstrap = fc.bootstrap; }
-                            if self.validator_key_file.is_none() { self.validator_key_file = fc.validator_key_file; }
-                            if self.validator_address.is_none() { self.validator_address = fc.validator_address; }
-                            if let Some(ref db) = fc.db_path {
-                                if self.db_path == "./data/budlum.db" || self.db_path.is_empty() { self.db_path = db.clone(); }
-                            }
-                            if let Some(ref host) = fc.rpc_host {
-                                if self.rpc_host == "127.0.0.1" || self.rpc_host.is_empty() { self.rpc_host = host.clone(); }
-                            }
-                            if let Some(rp) = fc.rpc_port {
-                                if self.rpc_port == 8545 { self.rpc_port = rp; }
-                            }
-                            if let Some(mp) = fc.metrics_port {
-                                if self.metrics_port == 9090 { self.metrics_port = mp; }
-                            }
-                            println!("Loaded config from: {}", path);
+                Ok(content) => match toml::from_str::<FileConfig>(&content) {
+                    Ok(fc) => {
+                        if self.port.is_none() {
+                            self.port = fc.port;
                         }
-                        Err(e) => println!("Failed to parse config file: {}", e),
+                        if self.bootstrap.is_none() {
+                            self.bootstrap = fc.bootstrap;
+                        }
+                        if self.validator_key_file.is_none() {
+                            self.validator_key_file = fc.validator_key_file;
+                        }
+                        if self.validator_address.is_none() {
+                            self.validator_address = fc.validator_address;
+                        }
+                        if let Some(ref db) = fc.db_path {
+                            if self.db_path == "./data/budlum.db" || self.db_path.is_empty() {
+                                self.db_path = db.clone();
+                            }
+                        }
+                        if let Some(ref host) = fc.rpc_host {
+                            if self.rpc_host == "127.0.0.1" || self.rpc_host.is_empty() {
+                                self.rpc_host = host.clone();
+                            }
+                        }
+                        if let Some(rp) = fc.rpc_port {
+                            if self.rpc_port == 8545 {
+                                self.rpc_port = rp;
+                            }
+                        }
+                        if let Some(mp) = fc.metrics_port {
+                            if self.metrics_port == 9090 {
+                                self.metrics_port = mp;
+                            }
+                        }
+                        println!("Loaded config from: {}", path);
                     }
-                }
+                    Err(e) => println!("Failed to parse config file: {}", e),
+                },
                 Err(e) => println!("Failed to read config file: {}", e),
             }
         }
@@ -195,6 +210,19 @@ impl NodeConfig {
                 vec![]
             }
         }
+    }
+
+    pub fn load_validator_addresses(&self) -> Vec<Address> {
+        self.load_validators()
+            .into_iter()
+            .filter_map(|validator| match Address::from_hex(&validator) {
+                Ok(address) => Some(address),
+                Err(err) => {
+                    println!("Skipping invalid validator address {}: {}", validator, err);
+                    None
+                }
+            })
+            .collect()
     }
 }
 #[derive(Debug, serde::Deserialize)]

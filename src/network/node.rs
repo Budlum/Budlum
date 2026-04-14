@@ -5,18 +5,17 @@ use libp2p::{
     kad::{
         store::MemoryStore, Behaviour as Kademlia, Config as KademliaConfig, Event as KademliaEvent,
     },
-    mdns, noise, ping,
-    request_response,
+    mdns, noise, ping, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, Swarm, StreamProtocol,
+    tcp, yamux, Multiaddr, PeerId, StreamProtocol, Swarm,
 };
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tracing::{info, warn};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(NetworkBehaviour)]
 pub struct BudlumBehaviour {
     ping: ping::Behaviour,
@@ -61,9 +60,9 @@ impl NodeClient {
 }
 #[tokio::test]
 async fn test_node_creation() {
-    use crate::consensus::pow::PoWEngine;
-    use crate::chain::chain_actor::ChainActor;
     use crate::chain::blockchain::Blockchain;
+    use crate::chain::chain_actor::ChainActor;
+    use crate::consensus::pow::PoWEngine;
     let consensus = std::sync::Arc::new(PoWEngine::new(2));
     let blockchain = Blockchain::new(consensus, None, 1337, None);
     let (chain_actor, chain) = ChainActor::new(blockchain);
@@ -122,7 +121,8 @@ impl Node {
                     key.public().to_peer_id(),
                 )?;
                 let kad_store = MemoryStore::new(key.public().to_peer_id());
-                let kad_config = KademliaConfig::new(libp2p::StreamProtocol::new("/budlum/kad/1.0.0"));
+                let kad_config =
+                    KademliaConfig::new(libp2p::StreamProtocol::new("/budlum/kad/1.0.0"));
                 let kademlia =
                     Kademlia::with_config(key.public().to_peer_id(), kad_store, kad_config);
                 let identify = identify::Behaviour::new(identify::Config::new(
@@ -459,7 +459,7 @@ impl Node {
                                             if let Some(our_block) = self.chain.get_block(block.index).await {
                                                 if our_block.hash != block.hash {
                                                     info!("Fork detected at height {} (ours: {}... theirs: {}...)", block.index, &our_block.hash[..8.min(our_block.hash.len())], &block.hash[..8.min(block.hash.len())]);
-                                                    
+
                                                     info!("Fork detected at height {} - initiating sync to resolve fork", block.index);
                                                     let locator = self.chain.get_locator().await;
                                                     let req = NetworkMessage::GetHeaders { locator, limit: 500 };
@@ -483,7 +483,7 @@ impl Node {
                                             }
                                             continue;
                                         }
-                                        info!("Broadcasted tx: {} from: {} to: {} amount: {}", 
+                                        info!("Broadcasted tx: {} from: {} to: {} amount: {}",
                             &tx.hash[..8], tx.from, tx.to, tx.amount);
                                         match self.chain.add_transaction(tx).await {
                                             Ok(_) => {
@@ -503,13 +503,13 @@ impl Node {
                                     NetworkMessage::GetHeaders { locator, limit } => {
                                         info!("GetHeaders request from {} (locator: {} hashes, limit: {})",
                                             peer_id, locator.len(), limit);
-                                        
+
                                         let start_idx_opt = self.chain.find_common_height(locator).await;
                                         let start_idx = start_idx_opt.map(|i| i + 1).unwrap_or(0) as usize;
 
                                         let height = self.chain.get_height().await + 1;
                                         let end_idx = (start_idx + limit as usize).min(height as usize);
-                                        
+
                                         let mut headers = Vec::new();
                                         for h in start_idx..end_idx {
                                             if let Some(block) = self.chain.get_block(h as u64).await {
@@ -656,7 +656,7 @@ impl Node {
                                                 full_data.extend(chunk.unwrap());
                                             }
                                             self.in_progress_snapshots.remove(&height);
-                                            
+
                                             match crate::chain::snapshot::StateSnapshot::from_bytes(&full_data) {
                                                 Ok(snapshot) => {
                                                     info!("Applying snapshot at height {}", snapshot.height);
@@ -885,7 +885,7 @@ impl Node {
                                                         let start_idx = start_idx_opt.map(|i| i + 1).unwrap_or(0) as usize;
                                                         let height = self.chain.get_height().await + 1;
                                                         let end_idx = (start_idx + limit as usize).min(height as usize);
-                                                        
+
                                                         let mut headers = Vec::new();
                                                         for h in start_idx..end_idx {
                                                             if let Some(block) = self.chain.get_block(h as u64).await {

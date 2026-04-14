@@ -4,7 +4,7 @@ pub mod account;
 pub mod block;
 pub mod chain_config;
 pub mod encoding;
+pub mod governance;
 pub mod hash;
 pub mod metrics;
 pub mod transaction;
-pub mod governance;

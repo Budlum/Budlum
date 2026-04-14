@@ -2,7 +2,7 @@
 
 Bu bölüm, ağa gelen işlemlerin bloklara girmeden önce beklediği "Bekleme Odası" olan Mempool'u, ücret piyasasını (Fee Market), sıralama algoritmalarını ve işlemlerin ağda nasıl yayıldığını (Gossip) analiz eder.
 
-Kaynak Dosya: `src/mempool.rs`
+Kaynak Dosya: `src/mempool/pool.rs`
 ---
 
 ## 1. Veri Yapıları: Çoklu Sıralama
@@ -30,7 +30,7 @@ pub struct Mempool {
 
 **Neden 3 Farklı Yapı?**
 -   `transactions`: İşlemin detayına hızlı erişim (O(1)).
--   `by_sender`: Aynı kullanıcıdan gelen işlemlerin sırasını (Nonce) korumak için. Nonce 5 gelmeden Nonce 6 işlenemez.
+-   `by_sender`: Aynı kullanıcıdan gelen işlemlerin sırasını (Nonce) korumak için. Mempool içinde nonce kuyruğu burada tutulur.
 -   `by_fee`: Bloğa sığacak en kârlı işlemleri (Greedy Algorithm) seçmek için.
 
 ---
@@ -66,31 +66,22 @@ pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
 }
 ```
 
-### Fonksiyon: `get_sorted_transactions` (Madenci Seçimi)
+### Fonksiyon: `get_sorted_transactions` ve Blok Seçimi (Madenci Seçimi)
 
 Madenci blok oluştururken bu fonksiyonu çağırır.
 
-```rust
-pub fn get_sorted_transactions(&self, limit: usize) -> Vec<Transaction> {
-    let mut selected = Vec::new();
-    
-    // En yüksek ücretliden (BTreeMap sondan başlar) en düşüğe doğru gez.
-    // (Rust BTreeMap keys are sorted ascending, so rev() gives descending)
-    for (fee, hashes) in self.by_fee.iter().rev() {
-        for hash in hashes {
-            if selected.len() >= limit { break; }
-            
-            // İşlemi al
-            let tx = self.transactions.get(hash).unwrap();
-            
-            // Basitlik için Nonce sırasını şimdilik göz ardı ediyoruz
-            // ama gerçekte burada Nonce gap kontrolü de yapılmalı.
-            selected.push(tx.clone());
-        }
-    }
-    selected
-}
-```
+`get_sorted_transactions` fonksiyonu hâlâ mempool'u ücret öncelikli sırayla sunar. Ancak asıl blok seçimi `Blockchain::collect_block_transactions()` içinde yapılır:
+
+1. İşlemler en yüksek ücretten aşağı doğru dolaşılır.
+2. Geçici bir `temp_state` oluşturulur.
+3. Bir işlem ancak o anki geçici state için geçerliyse bloğa alınır.
+4. Aynı göndericiden `nonce=1` işlemine sıra gelmeden `nonce=2` blok içine giremez.
+5. İlk turda atlanan bir işlem, önceki nonce bloğa eklendikten sonra sonraki geçişte tekrar değerlendirilebilir.
+
+Bu tasarım sayesinde Budlum:
+- ücret piyasasını korur,
+- nonce sıralamasını bozmadan seçim yapar,
+- aynı göndericiden ardışık pending işlemleri destekler.
 
 ---
 
@@ -143,16 +134,26 @@ Bu periyodik temizleyici sayesinde ağ, kendi hafızasını (Mempool'u) otomatik
 Normalde Mempool sadece RAM'dedir. Node kapandığında içindeki tüm bekleyen işlemler silinir. **Budlum Hardening Phase 2** ile birlikte artık tam kapsamlı **Mempool Persistence** ve hata denetimi (Error Handling) devrededir.
 
 ### Mekanizma:
-1. **Atomic Save-on-Arrival:** Bir işlem Mempool'a eklendiğinde aynı anda veritabanına da (`MEM_TX:{hash}`) yazılır. Bu işlem atomik olarak gerçekleşir.
-2. **Remove-on-Mined:** İşlem bir bloğa girdiğinde veya süresi dolduğunda (`cleanup_expired`) diskten de temizlenir.
-3. **Startup Recovery:** Node açılırken `Blockchain::new()` fonksiyonu diskteki tüm `MEM_TX:` önekli işlemleri tarar ve Mempool'u otomatik olarak doldurur.
+1. **Save-on-Arrival:** Bir işlem Mempool'a eklendiğinde aynı anda veritabanına da (`MEMPOOL:{hash}`) yazılır.
+2. **Remove-on-Mined / Evicted:** İşlem bir bloğa girdiğinde, RBF ile değiştirildiğinde veya süresi dolduğunda (`cleanup_expired`) diskten de temizlenir.
+3. **Startup Recovery:** Node açılırken `Blockchain::new()` fonksiyonu diskteki tüm `MEMPOOL:` önekli işlemleri tarar ve Mempool'u otomatik olarak doldurur.
 4. **Unwrap Audit (Güvenlik):** Mempool içindeki tüm `unwrap()` ve `expect()` çağrıları temizlenmiştir. Geçersiz bir işlem veya veritabanı hatası durumunda sistem çökmek (panic) yerine hatayı loglar ve güvenli bir şekilde çalışmaya devam eder.
 
 Bu sayede beklenmedik kapanmalarda kullanıcı işlemleri ağda kaybolmaz ve sistem dış saldırılara karşı çok daha dirençli hale gelir.
 
+## 6. Nonce Kuyruğu Semantiği
+
+Budlum'un güncel mempool tasarımında kabul mantığı zincirin anlık nonce'una körü körüne bakmaz. Aynı göndericiden zaten bekleyen işlemler varsa:
+
+- `projected_sender_state` yardımıyla bekleyen ardışık nonce'lar simüle edilir.
+- Yeni gelen işlem, bu öngörülen nonce ve elde kalan harcanabilir bakiye ile doğrulanır.
+- Böylece kullanıcı tek seferde `nonce=0`, `nonce=1`, `nonce=2` işlemlerini gönderebilir.
+
+Bu, özellikle cüzdanlar ve yüksek throughput testleri için önemlidir; aksi halde her işlem için önce bir blok beklemek gerekirdi.
+
 ---
 
-## 6. İşlem Yayılımı (Transaction Gossip)
+## 7. İşlem Yayılımı (Transaction Gossip)
 
 Bir işlem sadece tek bir node'da kalmaz. Tüm ağın bu işlemden haberdar olması gerekir ki, herhangi bir madenci onu bloğuna alabilsin.
 

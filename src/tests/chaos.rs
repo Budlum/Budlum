@@ -2,14 +2,14 @@
 mod chaos_tests {
     use crate::chain::blockchain::{Blockchain, MAX_REORG_DEPTH};
     use crate::consensus::pow::PoWEngine;
-    use crate::crypto::primitives::KeyPair;
-    use crate::core::transaction::Transaction;
     use crate::core::address::Address;
+    use crate::core::transaction::Transaction;
+    use crate::crypto::primitives::KeyPair;
     use std::sync::Arc;
 
     #[test]
     fn test_chaos_network_partition_recovery() {
-        let consensus_a = Arc::new(PoWEngine::new(0)); 
+        let consensus_a = Arc::new(PoWEngine::new(0));
         let mut chain_a = Blockchain::new(consensus_a, None, 1337, None);
 
         let consensus_b = Arc::new(PoWEngine::new(0));
@@ -32,18 +32,25 @@ mod chaos_tests {
         assert_eq!(chain_b.chain.len(), 6);
 
         let result = chain_a.try_reorg(chain_b.chain.clone());
-        
-        assert!(result.is_ok(), "Reorg should be successful: {:?}", result.err());
+
+        assert!(
+            result.is_ok(),
+            "Reorg should be successful: {:?}",
+            result.err()
+        );
         assert!(result.unwrap(), "Should have performed reorg");
         assert_eq!(chain_a.chain.len(), 6, "Chain A should now be length 6");
-        assert_eq!(chain_a.chain.last().unwrap().hash, chain_b.chain.last().unwrap().hash);
+        assert_eq!(
+            chain_a.chain.last().unwrap().hash,
+            chain_b.chain.last().unwrap().hash
+        );
     }
 
     #[test]
     fn test_chaos_mempool_flood_stress() {
         let consensus = Arc::new(PoWEngine::new(0));
         let mut blockchain = Blockchain::new(consensus, None, 1337, None);
-        
+
         println!("Flooding mempool with 1000 transactions from 1000 senders...");
         for i in 0..1000 {
             let sender = KeyPair::generate().unwrap();
@@ -64,9 +71,13 @@ mod chaos_tests {
 
         let miner = Address::from_hex(&"03".repeat(32)).unwrap();
         blockchain.produce_block(miner);
-        
+
         println!("Mempool size after block: {}", blockchain.mempool.len());
-        assert_eq!(blockchain.mempool.len(), 0, "Mempool should be empty after processing all txs");
+        assert_eq!(
+            blockchain.mempool.len(),
+            0,
+            "Mempool should be empty after processing all txs"
+        );
         assert_eq!(blockchain.chain.last().unwrap().transactions.len(), 1000);
     }
 
@@ -77,7 +88,7 @@ mod chaos_tests {
             adjustment_interval: 10000,
             ..Default::default()
         };
-        
+
         let consensus_a = Arc::new(PoWEngine::with_config(pow_config.clone()));
         let mut chain_a = Blockchain::new(consensus_a, None, 1337, None);
 
@@ -96,7 +107,7 @@ mod chaos_tests {
 
         let result = chain_a.try_reorg(chain_b.chain.clone());
         println!("Reorg result: {:?}", result);
-        
+
         assert!(result.is_err(), "Deep reorg should be rejected with Err");
         assert!(result.unwrap_err().contains("exceeds max"));
     }
@@ -105,13 +116,16 @@ mod chaos_tests {
     fn test_chaos_invalid_tx_rejection() {
         let consensus = Arc::new(PoWEngine::new(0));
         let mut blockchain = Blockchain::new(consensus, None, 1337, None);
-        
+
         let alice = Address::from_hex(&"01".repeat(32)).unwrap();
         let bob = Address::from_hex(&"02".repeat(32)).unwrap();
         let mut invalid_tx = Transaction::new(alice, bob, 100, vec![]);
-        invalid_tx.signature = Some(vec![0; 64]); 
+        invalid_tx.signature = Some(vec![0; 64]);
 
         let result = blockchain.add_transaction(invalid_tx);
-        assert!(result.is_err(), "Invalid signature should be rejected immediately");
+        assert!(
+            result.is_err(),
+            "Invalid signature should be rejected immediately"
+        );
     }
 }

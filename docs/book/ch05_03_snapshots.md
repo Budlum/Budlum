@@ -2,7 +2,7 @@
 
 Bu bölüm, blok zincirinin sonsuza kadar büyümesini engelleyen **Pruning (Budama)** mekanizmasını ve ağa yeni katılanların günlerce beklemeden senkronize olmasını sağlayan **Snapshot (Anlık Görüntü)** stratejisini analiz eder.
 
-Kaynak Dosya: `src/snapshot.rs` (Varsayımsal)
+Kaynak Dosya: `src/chain/snapshot.rs`
 
 ---
 
@@ -42,6 +42,7 @@ Bu yapı, `AccountState`'in serileştirilmiş (paketlemiş) halidir.
 **Hardening İyileştirmesi:**
 - **Validator Set:** Snapshot artık tüm aktif validatör setini ve stake miktarlarını içerir. Bu sayede Fast Sync ile ağa yeni katılan bir node, checkpoint imzalarını doğrulamak için genesis'ten beri gelen tüm validatör değişimlerini izlemek (replay) zorunda kalmaz.
 - **Sync Sürekliliği:** Snapshot uygulandığında, eksik kalan blok yükseklikleri için "stub block"lar oluşturularak veritabanı indeksleme bütünlüğü korunur.
+- **Finality Awareness:** Snapshot, finalized checkpoint bilgisini de taşıdığı için budama ve recovery sırasında kesinleşmiş kısmın altına inilmez.
 
 ---
 
@@ -101,6 +102,19 @@ if let Some(ref pruning_manager) = self.pruning_manager {
 
 **Neden Finalite Farkındalığı?**
 Eskiden sadece `min_blocks` (güvenlik tamponu) kullanılırken, artık **Finalized Checkpoint** asıl referans noktasıdır. Hiçbir budama işlemi, ağın %100 kesinlik verdiği (finalized) bir bloğu silecek kadar geri gidemez. Bu, veri bütünlüğü için en üst düzey sigortadır.
+
+## 3.5 Replay Semantiği
+
+Snapshot veya diskten zincir yüklenirken state yeniden inşası yalnızca "işlemleri sırayla uygula" şeklinde yapılmaz. Budlum'un güncel akışında:
+
+- blok ödülü,
+- slashing etkileri,
+- epoch geçişleri,
+- dinamik base fee güncellemeleri
+
+aynı zincir kabul yolunda olduğu gibi replay sırasında da tekrar uygulanır.
+
+Bu sayede node yeniden başlatıldığında veya reorg sonrası state yeniden kurulduğunda, çalışma anındaki state ile recovery sonrası state aynı kalır.
 
 ---
 

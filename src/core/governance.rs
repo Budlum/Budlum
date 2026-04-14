@@ -1,6 +1,6 @@
+use crate::core::address::Address;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::core::address::Address;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProposalType {
@@ -32,7 +32,13 @@ pub struct Proposal {
 }
 
 impl Proposal {
-    pub fn new(id: u64, proposer: Address, p_type: ProposalType, start_epoch: u64, duration: u64) -> Self {
+    pub fn new(
+        id: u64,
+        proposer: Address,
+        p_type: ProposalType,
+        start_epoch: u64,
+        duration: u64,
+    ) -> Self {
         Proposal {
             id,
             proposer,
@@ -64,7 +70,8 @@ impl Proposal {
     }
 
     pub fn finalize(&mut self, total_stake: u64, quorum_pct: u64) {
-        let reached_quorum = (self.votes_for + self.votes_against) * 100 >= total_stake * quorum_pct;
+        let reached_quorum =
+            (self.votes_for + self.votes_against) * 100 >= total_stake * quorum_pct;
         if reached_quorum && self.votes_for > self.votes_against {
             self.status = ProposalStatus::Passed;
         } else {
@@ -80,7 +87,13 @@ pub struct GovernanceState {
 }
 
 impl GovernanceState {
-    pub fn create_proposal(&mut self, proposer: Address, p_type: ProposalType, current_epoch: u64, duration: u64) -> u64 {
+    pub fn create_proposal(
+        &mut self,
+        proposer: Address,
+        p_type: ProposalType,
+        current_epoch: u64,
+        duration: u64,
+    ) -> u64 {
         let id = self.next_proposal_id;
         let proposal = Proposal::new(id, proposer, p_type, current_epoch, duration);
         self.proposals.push(proposal);
@@ -93,6 +106,9 @@ impl GovernanceState {
     }
 
     pub fn active_proposals(&self) -> Vec<&Proposal> {
-        self.proposals.iter().filter(|p| p.status == ProposalStatus::Active).collect()
+        self.proposals
+            .iter()
+            .filter(|p| p.status == ProposalStatus::Active)
+            .collect()
     }
 }

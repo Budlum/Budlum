@@ -1,6 +1,6 @@
+use crate::core::transaction::Transaction;
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::error::ErrorObjectOwned;
-use crate::core::transaction::Transaction;
 
 #[rpc(server)]
 pub trait BudlumApi {
@@ -11,7 +11,8 @@ pub trait BudlumApi {
     async fn block_number(&self) -> Result<String, ErrorObjectOwned>;
 
     #[method(name = "bud_getBlockByNumber")]
-    async fn get_block_by_number(&self, number: u64) -> Result<serde_json::Value, ErrorObjectOwned>;
+    async fn get_block_by_number(&self, number: u64)
+        -> Result<serde_json::Value, ErrorObjectOwned>;
 
     #[method(name = "bud_getBlockByHash")]
     async fn get_block_by_hash(&self, hash: String) -> Result<serde_json::Value, ErrorObjectOwned>;
@@ -26,10 +27,16 @@ pub trait BudlumApi {
     async fn send_raw_transaction(&self, tx: Transaction) -> Result<String, ErrorObjectOwned>;
 
     #[method(name = "bud_getTransactionByHash")]
-    async fn get_transaction_by_hash(&self, hash: String) -> Result<serde_json::Value, ErrorObjectOwned>;
+    async fn get_transaction_by_hash(
+        &self,
+        hash: String,
+    ) -> Result<serde_json::Value, ErrorObjectOwned>;
 
     #[method(name = "bud_getTransactionReceipt")]
-    async fn get_transaction_receipt(&self, hash: String) -> Result<serde_json::Value, ErrorObjectOwned>;
+    async fn get_transaction_receipt(
+        &self,
+        hash: String,
+    ) -> Result<serde_json::Value, ErrorObjectOwned>;
 
     #[method(name = "bud_gasPrice")]
     async fn gas_price(&self) -> Result<String, ErrorObjectOwned>;

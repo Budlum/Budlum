@@ -64,6 +64,7 @@ Tüm metotlar `bud_` ön eki ile başlar. Bu, ağa özgü metotları standart ol
 | `bud_getTransactionReceipt`| `[hash: string]`| İşlemin işlenme sonucunu (fişini) döner. (O(1) İndeksli) |
 | `bud_gasPrice` | `[]` | Ağdaki güncel `base_fee` değerini döner. |
 | `bud_estimateGas` | `[tx: object]` | Tahmini gas tüketimini döner. |
+| `bud_txPrecheck` | `[tx: object]` | İşlemi mempool ve chain bağlamında önceden simüle eder. |
 | `bud_syncing` | `[]` | Düğümün senkronizasyon durumunu döner. |
 | `bud_netVersion` | `[]` | Ağ versiyonunu (Network ID) döner. |
 | `bud_netListening` | `[]` | Düğümün dinleme durumunu döner. |
@@ -93,3 +94,25 @@ RPC sunucusu, asenkron bir `tokio` görevinde çalışır. **Mainnet Ready** aş
 2. **Payload Sınırı (Max Request Size):** Gelen her RPC isteği en fazla **2 MB** olabilir. Çok büyük JSON paketleri ile belleği şişirme saldırıları bu sayede engelenir.
 3. **İşlem Doğrulama (TX Validation):** `bud_sendRawTransaction` metodu, işlemi ağa yaymadan önce **transaction size** (Max 100KB) ve **kriptografik imza** kontrolü yapar. Hatalı veya devasa işlemler anında reddedilir.
 4. **Panic Prevention:** Sunucu kodundaki tüm kritik noktalar `Result` tipiyle yönetilir. Bozuk bir JSON veya ağ hatası tüm düğümü çökertemez.
+
+## 5. `bud_txPrecheck` Ne Kadar Gerçekçi?
+
+Budlum'un güncel `bud_txPrecheck` implementasyonu artık sadece kaba bir "imza ve bakiye" kontrolü değildir. İstek, doğrudan `ChainActor` üzerinden zincirin gerçek state'ine ve mempool bağlamına sorulur.
+
+Bu metot aşağıdaki durumları raporlayabilir:
+- `invalid_signature`
+- `invalid_chain_id`
+- `fee_too_low`
+- `nonce_too_low`
+- `nonce_too_high`
+- `insufficient_funds`
+- `missing_to_address`
+- `invalid_stake_amount`
+- `not_a_validator`
+- `insufficient_stake`
+- `duplicate_transaction`
+- `rbf_fee_too_low`
+- `sender_limit_reached`
+- `pool_full`
+
+Önemli nokta şudur: aynı göndericiden mempool'da zaten bekleyen ardışık işlemler varsa, precheck bunları da hesaba katar. Yani cüzdan tarafında "bir sonraki nonce ne olmalı?" sorusuna daha gerçekçi cevap verir.

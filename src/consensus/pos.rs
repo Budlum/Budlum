@@ -127,19 +127,23 @@ impl PoSEngine {
             .map_err(|_| ConsensusError("Failed to acquire read lock on checkpoints".into()))
     }
 
-    pub fn add_checkpoint(&self, block: &Block, storage: Option<&crate::storage::db::Storage>) -> Result<(), ConsensusError> {
+    pub fn add_checkpoint(
+        &self,
+        block: &Block,
+        storage: Option<&crate::storage::db::Storage>,
+    ) -> Result<(), ConsensusError> {
         let checkpoint = Checkpoint {
             block_index: block.index,
             block_hash: block.hash.clone(),
             timestamp: block.timestamp,
         };
-        
+
         let mut checkpoints = self
             .checkpoints
             .write()
             .map_err(|_| ConsensusError("Failed to acquire write lock on checkpoints".into()))?;
         checkpoints.push(checkpoint.clone());
-        
+
         if let Some(store) = storage {
             let _ = store.save_checkpoint(&checkpoint);
         }
@@ -181,19 +185,19 @@ impl PoSEngine {
         if total_stake == 0 || stake == 0 {
             return 0;
         }
-        
+
         // threshold = (stake * VRF_BASE_PROB * u64::MAX) / (total_stake * FIXED_POINT_SCALE)
         let base_threshold = (stake as u128).saturating_mul(u64::MAX as u128) / total_stake as u128;
 
-        let threshold = (base_threshold.saturating_mul(VRF_BASE_PROB as u128)) / FIXED_POINT_SCALE as u128;
-        
+        let threshold =
+            (base_threshold.saturating_mul(VRF_BASE_PROB as u128)) / FIXED_POINT_SCALE as u128;
+
         if threshold >= u64::MAX as u128 {
             u64::MAX
         } else {
             threshold as u64
         }
     }
-
 
     pub fn check_vrf_threshold(&self, vrf_output: &[u8], threshold: u64) -> bool {
         let mut hasher = Sha3_256::new();
@@ -211,12 +215,14 @@ impl PoSEngine {
     fn calculate_reward(&self, validator_stake: u64) -> u64 {
         use crate::core::chain_config::FIXED_POINT_SCALE;
         let slots_per_year = 365 * 24 * 60 * 60 / self.config.slot_duration;
-        if slots_per_year == 0 { return 1; }
-        
+        if slots_per_year == 0 {
+            return 1;
+        }
+
         // reward = (stake * rate) / (slots_per_year * SCALE)
         let numerator = validator_stake as u128 * self.config.annual_reward_rate as u128;
         let denominator = slots_per_year as u128 * FIXED_POINT_SCALE as u128;
-        
+
         let reward = (numerator / denominator) as u64;
         reward.max(1)
     }
@@ -290,9 +296,12 @@ impl PoSEngine {
         );
         Ok(())
     }
-}
-impl ConsensusEngine for PoSEngine {
-    fn prepare_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError> {
+
+    fn preview_common(
+        &self,
+        block: &mut Block,
+        state: &AccountState,
+    ) -> Result<(), ConsensusError> {
         let slot = block.index;
         let epoch = slot / crate::core::chain_config::EPOCH_LEN;
         block.epoch = epoch;
@@ -301,22 +310,28 @@ impl ConsensusEngine for PoSEngine {
         let active_validators = state.get_active_validators();
         let total_stake = state.get_total_stake();
 
-        if let Ok(mut evidences) = self.slashing_evidence.write() {
-            if !evidences.is_empty() {
-                block.slashing_evidence = Some(evidences.clone());
-                evidences.clear();
+        if block.slashing_evidence.is_none() {
+            if let Ok(mut evidences) = self.slashing_evidence.write() {
+                if !evidences.is_empty() {
+                    block.slashing_evidence = Some(evidences.clone());
+                    evidences.clear();
+                }
             }
         }
 
-        if !active_validators.is_empty() {
-            if let Some(keys) = &self.validator_keys {
-                let pubkey = Address::from(keys.sig_key.public_key_bytes());
+        if active_validators.is_empty() {
+            return Ok(());
+        }
 
-                if let Some(validator) = state.get_validator(&pubkey) {
-                    if validator.active
-                        && !validator.slashed
-                        && validator.stake >= self.config.min_stake
-                    {
+        if let Some(keys) = &self.validator_keys {
+            let pubkey = Address::from(keys.sig_key.public_key_bytes());
+
+            if let Some(validator) = state.get_validator(&pubkey) {
+                if validator.active
+                    && !validator.slashed
+                    && validator.stake >= self.config.min_stake
+                {
+                    if block.vrf_output.is_empty() || block.vrf_proof.is_empty() {
                         let seed = self.calculate_seed(
                             block.chain_id,
                             epoch,
@@ -330,19 +345,43 @@ impl ConsensusEngine for PoSEngine {
                         let proof_bytes = vrf_proof.to_bytes();
 
                         let threshold = self.calculate_vrf_threshold(validator.stake, total_stake);
-                        if self.check_vrf_threshold(&vrf_output, threshold) {
-                            block.vrf_output = vrf_output.to_vec();
-                            block.vrf_proof = proof_bytes.to_vec();
-                            block.sign(&keys.sig_key);
-                            return Ok(());
+                        if !self.check_vrf_threshold(&vrf_output, threshold) {
+                            return Err(ConsensusError(
+                                "Not selected as VRF leader for this slot".into(),
+                            ));
                         }
+
+                        block.vrf_output = vrf_output.to_vec();
+                        block.vrf_proof = proof_bytes.to_vec();
                     }
+
+                    block.producer = Some(pubkey);
+                    return Ok(());
                 }
             }
-            return Err(ConsensusError(
-                "Not selected as VRF leader for this slot".into(),
-            ));
-        } else {
+        }
+
+        Err(ConsensusError(
+            "Not selected as VRF leader for this slot".into(),
+        ))
+    }
+}
+impl ConsensusEngine for PoSEngine {
+    fn preview_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError> {
+        self.preview_common(block, state)
+    }
+
+    fn prepare_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError> {
+        self.preview_common(block, state)?;
+
+        if let Some(keys) = &self.validator_keys {
+            if block.producer == Some(Address::from(keys.sig_key.public_key_bytes())) {
+                block.sign(&keys.sig_key);
+                return Ok(());
+            }
+        }
+
+        if state.get_active_validators().is_empty() {
             block.hash = block.calculate_hash();
         }
         Ok(())
@@ -464,9 +503,7 @@ impl ConsensusEngine for PoSEngine {
 
             println!(
                 "PoS: Block {} validated (producer: {}, stake: {})",
-                block.index,
-                producer,
-                validator.stake
+                block.index, producer, validator.stake
             );
         } else {
             if block.hash != block.calculate_hash() {
@@ -504,7 +541,11 @@ impl ConsensusEngine for PoSEngine {
         (last_checkpoint_height as u128) * 1000 + chain.len() as u128
     }
 
-    fn record_block(&self, block: &Block, storage: Option<&crate::storage::db::Storage>) -> Result<(), ConsensusError> {
+    fn record_block(
+        &self,
+        block: &Block,
+        storage: Option<&crate::storage::db::Storage>,
+    ) -> Result<(), ConsensusError> {
         let producer = block
             .producer
             .as_ref()
@@ -516,18 +557,18 @@ impl ConsensusEngine for PoSEngine {
         if let Some(store) = storage {
             let _ = store.save_seen_block(&header, &signature);
         }
-        
+
         let block_hash_bytes =
             hex::decode(&block.hash).unwrap_or_else(|_| block.hash.as_bytes().to_vec());
         let mut block_contrib = Sha3_256::new();
         block_contrib.update(&block_hash_bytes);
         let contribution: [u8; 32] = block_contrib.finalize().into();
         if let Ok(mut seed) = self.epoch_seed.write() {
-             for (i, byte) in seed.iter_mut().enumerate() {
+            for (i, byte) in seed.iter_mut().enumerate() {
                 *byte ^= contribution[i];
             }
         }
-        
+
         let mut seen_blocks = self
             .seen_blocks
             .write()
@@ -562,7 +603,7 @@ impl ConsensusEngine for PoSEngine {
         }
         Ok(())
     }
-    
+
     fn load_state(&self, storage: &crate::storage::db::Storage) -> Result<(), ConsensusError> {
         if let Ok(seen) = storage.load_all_seen_blocks() {
             if let Ok(mut guard) = self.seen_blocks.write() {
@@ -581,9 +622,9 @@ impl ConsensusEngine for PoSEngine {
 mod tests {
     use super::*;
     use crate::core::account::AccountState;
-    use crate::crypto::primitives::{KeyPair, ValidatorKeys};
     use crate::core::address::Address;
     use crate::core::transaction::Transaction;
+    use crate::crypto::primitives::{KeyPair, ValidatorKeys};
     use crate::execution::executor::Executor;
 
     fn create_stake_tx(keypair: &KeyPair, amount: u64, nonce: u64) -> Transaction {

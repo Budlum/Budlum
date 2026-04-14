@@ -1,14 +1,14 @@
 use budlum_core::chain::blockchain::Blockchain;
 use budlum_core::chain::chain_actor::ChainActor;
-use budlum_core::consensus::pos::{PoSEngine, PoSConfig};
-use budlum_core::core::transaction::Transaction;
+use budlum_core::consensus::pos::{PoSConfig, PoSEngine};
 use budlum_core::core::address::Address;
+use budlum_core::core::transaction::Transaction;
 use budlum_core::crypto::primitives::{KeyPair, ValidatorKeys};
+use futures::stream::{FuturesUnordered, StreamExt};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use futures::stream::{StreamExt, FuturesUnordered};
-use std::pin::Pin;
-use std::future::Future;
 
 #[tokio::main]
 async fn main() {
@@ -24,55 +24,63 @@ async fn main() {
     let pos_config = PoSConfig::default();
     let validator_keys = ValidatorKeys::generate().unwrap();
     let consensus = Arc::new(PoSEngine::new(pos_config, Some(validator_keys.clone())));
-    
+
     let blockchain = Blockchain::new(consensus, None, 1337, None);
     let (chain_actor, chain) = ChainActor::new(blockchain);
-    
+
     tokio::spawn(async move {
         chain_actor.run().await;
     });
 
     // 2. Pre-generate Transactions & Fund Accounts
-    println!("Generating {} unique senders and funding them...", sender_count);
+    println!(
+        "Generating {} unique senders and funding them...",
+        sender_count
+    );
     let mut keypairs = Vec::new();
     for _ in 0..sender_count {
         let kp = KeyPair::generate().unwrap();
-        chain.add_balance(&Address::from(kp.public_key_bytes()), 1_000_000).await;
+        chain
+            .add_balance(&Address::from(kp.public_key_bytes()), 1_000_000)
+            .await;
         keypairs.push(kp);
     }
 
     println!("Generating {} transactions...", tx_count);
     let start_gen = Instant::now();
 
-    let txs: Vec<Transaction> = (0..tx_count).map(|i| {
-        let sender_idx = i % sender_count;
-        let mut tx = Transaction::new_with_fee(
-            Address::from(keypairs[sender_idx].public_key_bytes()),
-            Address::zero(),
-            1,
-            1,
-            (i / sender_count) as u64,
-            vec![],
-        );
-        tx.sign(&keypairs[sender_idx]);
-        tx
-    }).collect();
+    let txs: Vec<Transaction> = (0..tx_count)
+        .map(|i| {
+            let sender_idx = i % sender_count;
+            let mut tx = Transaction::new_with_fee(
+                Address::from(keypairs[sender_idx].public_key_bytes()),
+                Address::zero(),
+                1,
+                1,
+                (i / sender_count) as u64,
+                vec![],
+            );
+            tx.sign(&keypairs[sender_idx]);
+            tx
+        })
+        .collect();
     let gen_duration = start_gen.elapsed();
     println!("Generation time: {:?}", gen_duration);
 
     // 3. Measure INGEST TPS (Mempool Internal Throughput)
     println!("Starting Ingestion (Internal Channel)...");
     let start_ingest = Instant::now();
-    let mut futures: FuturesUnordered<Pin<Box<dyn Future<Output = Result<(), String>> + Send>>> = FuturesUnordered::new();
+    let mut futures: FuturesUnordered<Pin<Box<dyn Future<Output = Result<(), String>> + Send>>> =
+        FuturesUnordered::new();
     let mut tx_iter = txs.into_iter();
-    
+
     for _ in 0..concurrency {
         if let Some(tx) = tx_iter.next() {
             let c = chain.clone();
             futures.push(Box::pin(async move { c.add_transaction(tx).await }));
         }
     }
-    
+
     let mut ingested = 0;
     let mut ingest_failed = 0;
     while let Some(res) = futures.next().await {
@@ -80,7 +88,7 @@ async fn main() {
             Ok(_) => ingested += 1,
             Err(_) => ingest_failed += 1,
         }
-        
+
         if let Some(tx) = tx_iter.next() {
             let c = chain.clone();
             futures.push(Box::pin(async move { c.add_transaction(tx).await }));
@@ -100,7 +108,11 @@ async fn main() {
         if let Some(block) = chain.produce_block(producer).await {
             processed += block.transactions.len();
             blocks += 1;
-            if blocks % 2 == 0 { print!("."); use std::io::Write; std::io::stdout().flush().unwrap(); }
+            if blocks % 2 == 0 {
+                print!(".");
+                use std::io::Write;
+                std::io::stdout().flush().unwrap();
+            }
         } else {
             break;
         }
@@ -112,7 +124,10 @@ async fn main() {
     // 5. Results
     println!("\n--------------------------------------------------");
     println!("BENCHMARK RESULTS (Internal Pipeline):");
-    println!("Total Transactions: {} (Failed Ingest: {})", processed, ingest_failed);
+    println!(
+        "Total Transactions: {} (Failed Ingest: {})",
+        processed, ingest_failed
+    );
     println!("Total Blocks:       {}", blocks);
     println!("--------------------------------------------------");
     println!("TX Generation:      {:?}", gen_duration);

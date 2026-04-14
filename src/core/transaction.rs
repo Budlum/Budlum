@@ -1,8 +1,8 @@
-use crate::crypto::primitives::{verify_signature, KeyPair};
 use crate::core::address::Address;
+use crate::core::governance::ProposalType;
+use crate::crypto::primitives::{verify_signature, KeyPair};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
-use crate::core::governance::ProposalType;
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
 
@@ -59,7 +59,7 @@ impl Transaction {
         let mut data = Vec::new();
         data.extend_from_slice(&duration.to_le_bytes());
         data.extend_from_slice(&serde_json::to_vec(&p_type).unwrap_or_default());
-        
+
         Self::new_with_chain_id(
             from,
             Address::zero(),
@@ -76,7 +76,7 @@ impl Transaction {
         let mut data = Vec::new();
         data.push(if vote_for { 1 } else { 0 });
         data.extend_from_slice(&proposal_id.to_le_bytes());
-        
+
         Self::new_with_chain_id(
             from,
             Address::zero(),
@@ -185,8 +185,7 @@ impl Transaction {
         if self.from != expected_from {
             println!(
                 "Warning: TX.from ({}) doesn't match keypair pubkey ({})",
-                self.from,
-                expected_from
+                self.from, expected_from
             );
         }
         let signing_hash = self.signing_hash();
@@ -282,14 +281,7 @@ mod tests {
         let keypair = KeyPair::generate().unwrap();
         let alice = Address::from(keypair.public_key_bytes());
         let recipient = Address::from([1u8; 32]);
-        let mut tx = Transaction::new_with_fee(
-            alice,
-            recipient,
-            50,
-            1,
-            0,
-            vec![],
-        );
+        let mut tx = Transaction::new_with_fee(alice, recipient, 50, 1, 0, vec![]);
         assert!(!tx.verify());
         tx.sign(&keypair);
         assert!(tx.verify());

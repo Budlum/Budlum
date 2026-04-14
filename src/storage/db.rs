@@ -1,6 +1,6 @@
-use crate::core::block::Block;
 use crate::core::account::Account;
 use crate::core::address::Address;
+use crate::core::block::Block;
 use crate::core::transaction::Transaction;
 use sled::Db;
 use std::str::from_utf8;
@@ -28,27 +28,25 @@ impl Storage {
 
     pub fn commit_block(&self, block: &Block, state_root: &str) -> std::io::Result<()> {
         let mut batch = sled::Batch::default();
-        
+
         let block_bytes = serde_json::to_vec(block)?;
         batch.insert(block.hash.as_bytes(), block_bytes.as_slice());
-        
-    
+
         let height_key = format!("HEIGHT:{}", block.index);
         batch.insert(height_key.as_bytes(), block.hash.as_bytes());
-        
 
         batch.insert(b"LAST", block.hash.as_bytes());
-        
+
         let state_key = format!("STATE_ROOT:{}", block.index);
         batch.insert(state_key.as_bytes(), state_root.as_bytes());
 
         batch.insert(b"CANONICAL_HEIGHT", block.index.to_string().as_bytes());
-        
+
         for tx in &block.transactions {
             let tx_idx_key = format!("TX_IDX:{}", tx.hash);
             batch.insert(tx_idx_key.as_bytes(), block.index.to_string().as_bytes());
         }
-        
+
         self.db.apply_batch(batch)?;
         self.db.flush()?;
         Ok(())
@@ -199,7 +197,8 @@ impl Storage {
     }
     pub fn save_tx_index(&self, tx_hash: &str, block_height: u64) -> std::io::Result<()> {
         let key = format!("TX_IDX:{}", tx_hash);
-        self.db.insert(key.as_bytes(), block_height.to_string().as_bytes())?;
+        self.db
+            .insert(key.as_bytes(), block_height.to_string().as_bytes())?;
         Ok(())
     }
     pub fn get_tx_block_height(&self, tx_hash: &str) -> std::io::Result<Option<u64>> {
@@ -212,13 +211,20 @@ impl Storage {
             Ok(None)
         }
     }
+    pub fn delete_tx_index(&self, tx_hash: &str) -> std::io::Result<()> {
+        let key = format!("TX_IDX:{}", tx_hash);
+        self.db.remove(key.as_bytes())?;
+        Ok(())
+    }
     pub fn save_account(&self, pubkey: &Address, account: &Account) -> std::io::Result<()> {
         let key = format!("ACCT:{}", pubkey);
         let val = serde_json::to_vec(account)?;
         self.db.insert(key.as_bytes(), val)?;
         Ok(())
     }
-    pub fn load_all_accounts(&self) -> std::io::Result<std::collections::HashMap<Address, Account>> {
+    pub fn load_all_accounts(
+        &self,
+    ) -> std::io::Result<std::collections::HashMap<Address, Account>> {
         let mut accounts = std::collections::HashMap::new();
         for item in self.db.scan_prefix(b"ACCT:") {
             let (key, val) = item?;
@@ -252,7 +258,10 @@ impl Storage {
         }
         Ok(txs)
     }
-    pub fn save_checkpoint(&self, checkpoint: &crate::consensus::pos::Checkpoint) -> std::io::Result<()> {
+    pub fn save_checkpoint(
+        &self,
+        checkpoint: &crate::consensus::pos::Checkpoint,
+    ) -> std::io::Result<()> {
         let key = format!("CP:{}", checkpoint.block_index);
         let val = serde_json::to_vec(checkpoint)?;
         self.db.insert(key.as_bytes(), val)?;
@@ -268,23 +277,40 @@ impl Storage {
         cps.sort_by_key(|c| c.block_index);
         Ok(cps)
     }
-    pub fn save_seen_block(&self, header: &crate::core::block::BlockHeader, sig: &[u8]) -> std::io::Result<()> {
-        let producer_str = header.producer.map(|p| p.to_string()).unwrap_or_else(|| "unknown".to_string());
+    pub fn save_seen_block(
+        &self,
+        header: &crate::core::block::BlockHeader,
+        sig: &[u8],
+    ) -> std::io::Result<()> {
+        let producer_str = header
+            .producer
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         let key = format!("SEEN:{}:{}", producer_str, header.index);
         let val = serde_json::to_vec(&(header, sig))?;
         self.db.insert(key.as_bytes(), val)?;
         Ok(())
     }
-    pub fn load_all_seen_blocks(&self) -> std::io::Result<std::collections::HashMap<(Address, u64), (crate::core::block::BlockHeader, Vec<u8>)>> {
+    pub fn load_all_seen_blocks(
+        &self,
+    ) -> std::io::Result<
+        std::collections::HashMap<(Address, u64), (crate::core::block::BlockHeader, Vec<u8>)>,
+    > {
         let mut seen = std::collections::HashMap::new();
         for item in self.db.scan_prefix(b"SEEN:") {
             let (key, val) = item?;
             let key_str = from_utf8(&key).unwrap_or("");
-            let parts: Vec<&str> = key_str.strip_prefix("SEEN:").unwrap_or(key_str).split(':').collect();
+            let parts: Vec<&str> = key_str
+                .strip_prefix("SEEN:")
+                .unwrap_or(key_str)
+                .split(':')
+                .collect();
             if parts.len() == 2 {
-                let producer = Address::from_hex(parts[0]).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                let producer = Address::from_hex(parts[0])
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let index = parts[1].parse().unwrap_or(0);
-                let data: (crate::core::block::BlockHeader, Vec<u8>) = serde_json::from_slice(&val)?;
+                let data: (crate::core::block::BlockHeader, Vec<u8>) =
+                    serde_json::from_slice(&val)?;
                 seen.insert((producer, index), data);
             }
         }
@@ -297,25 +323,29 @@ impl Storage {
     pub fn check_integrity(&self) -> Result<Vec<String>, String> {
         let mut errors = Vec::new();
         let height = self.get_canonical_height().map_err(|e| e.to_string())?;
-        
+
         info!("Starting integrity audit up to height {}", height);
-        
+
         let mut prev_hash = "0".repeat(64);
         for i in 0..=height {
             let block_res = self.get_block_by_height(i);
             match block_res {
                 Ok(Some(block)) => {
-                    // Check hash
                     let calc_hash = block.calculate_hash();
                     if block.hash != calc_hash {
-                        errors.push(format!("Block {}: hash mismatch (stored: {}, calc: {})", i, block.hash, calc_hash));
+                        errors.push(format!(
+                            "Block {}: hash mismatch (stored: {}, calc: {})",
+                            i, block.hash, calc_hash
+                        ));
                     }
-                    
-                    // Check linkage
+
                     if i > 0 && block.previous_hash != prev_hash {
-                        errors.push(format!("Block {}: linkage error (expected prev: {}, got: {})", i, prev_hash, block.previous_hash));
+                        errors.push(format!(
+                            "Block {}: linkage error (expected prev: {}, got: {})",
+                            i, prev_hash, block.previous_hash
+                        ));
                     }
-                    
+
                     prev_hash = block.hash.clone();
                 }
                 Ok(None) => {
@@ -326,7 +356,7 @@ impl Storage {
                 }
             }
         }
-        
+
         Ok(errors)
     }
 
@@ -344,15 +374,21 @@ impl Storage {
             if let Ok(Some(data)) = self.db.get(format!("BLOCK:{}", current_hash)) {
                 let block: crate::core::block::Block = serde_json::from_slice(&data)
                     .map_err(|e| format!("De-serial error during repair: {}", e))?;
-                
+
                 let height_key = format!("BLOCK_HEIGHT:{}", block.index);
-                self.db.insert(height_key, block.hash.as_bytes()).map_err(|e| e.to_string())?;
-                
+                self.db
+                    .insert(height_key, block.hash.as_bytes())
+                    .map_err(|e| e.to_string())?;
+
                 let hash_key = format!("BLOCK_HASH:{}", block.index);
-                self.db.insert(hash_key, block.hash.as_bytes()).map_err(|e| e.to_string())?;
+                self.db
+                    .insert(hash_key, block.hash.as_bytes())
+                    .map_err(|e| e.to_string())?;
 
                 for tx in &block.transactions {
-                    self.db.insert(format!("TX_BLOCK:{}", tx.hash), &block.index.to_le_bytes()).map_err(|e| e.to_string())?;
+                    self.db
+                        .insert(format!("TX_BLOCK:{}", tx.hash), &block.index.to_le_bytes())
+                        .map_err(|e| e.to_string())?;
                 }
 
                 count += 1;

@@ -35,7 +35,7 @@ impl Executor {
 
                 let stake_amount = tx.amount;
                 let validator = state.get_validator_mut(&tx.from);
-                
+
                 if let Some(v) = validator {
                     v.stake = v.stake.saturating_add(stake_amount);
                     v.active = true;
@@ -61,11 +61,13 @@ impl Executor {
                     return Err("Not a validator".into());
                 }
 
-                state.unbonding_queue.push(crate::core::account::UnbondingEntry {
-                    address: tx.from,
-                    amount: tx.amount,
-                    release_epoch: state.epoch_index + crate::core::account::UNBONDING_EPOCHS,
-                });
+                state
+                    .unbonding_queue
+                    .push(crate::core::account::UnbondingEntry {
+                        address: tx.from,
+                        amount: tx.amount,
+                        release_epoch: state.epoch_index + crate::core::account::UNBONDING_EPOCHS,
+                    });
 
                 let sender = state.get_or_create(&tx.from);
                 sender.balance = sender.balance.saturating_sub(tx.fee);
@@ -92,15 +94,21 @@ impl Executor {
                             let mut id_bytes = [0u8; 8];
                             id_bytes.copy_from_slice(&tx.data[1..9]);
                             let proposal_id = u64::from_le_bytes(id_bytes);
-                            
-                            let voter_stake = state.get_validator(&tx.from).map(|v| v.stake).unwrap_or(0);
+
+                            let voter_stake =
+                                state.get_validator(&tx.from).map(|v| v.stake).unwrap_or(0);
                             if voter_stake == 0 {
                                 return Err("Only validators can vote in governance".into());
                             }
-                            
-                            if let Some(proposal) = state.governance.find_proposal_mut(proposal_id) {
+
+                            if let Some(proposal) = state.governance.find_proposal_mut(proposal_id)
+                            {
                                 proposal.add_vote(tx.from, voter_stake, vote_for)?;
-                                tracing::info!("Governance Vote: Proposal {} from {}", proposal_id, tx.from);
+                                tracing::info!(
+                                    "Governance Vote: Proposal {} from {}",
+                                    proposal_id,
+                                    tx.from
+                                );
                             } else {
                                 return Err("Proposal not found".into());
                             }
@@ -109,12 +117,22 @@ impl Executor {
                             let mut dur_bytes = [0u8; 8];
                             dur_bytes.copy_from_slice(&tx.data[0..8]);
                             let duration = u64::from_le_bytes(dur_bytes);
-                            
-                            let p_type: crate::core::governance::ProposalType = serde_json::from_slice(&tx.data[8..])
-                                .map_err(|e| format!("Invalid proposal data: {}", e))?;
-                            
-                            let id = state.governance.create_proposal(tx.from, p_type, state.epoch_index, duration);
-                            tracing::info!("Governance Proposal Created: ID {} from {}", id, tx.from);
+
+                            let p_type: crate::core::governance::ProposalType =
+                                serde_json::from_slice(&tx.data[8..])
+                                    .map_err(|e| format!("Invalid proposal data: {}", e))?;
+
+                            let id = state.governance.create_proposal(
+                                tx.from,
+                                p_type,
+                                state.epoch_index,
+                                duration,
+                            );
+                            tracing::info!(
+                                "Governance Proposal Created: ID {} from {}",
+                                id,
+                                tx.from
+                            );
                         }
                     }
                 }
@@ -144,7 +162,13 @@ impl Executor {
             if reward > 0 {
                 let producer_account = state.get_or_create(producer);
                 producer_account.balance = producer_account.balance.saturating_add(reward);
-                tracing::info!("Producer {} received reward: {} (fees: {}, block: {})", producer, reward, total_fees, state.block_reward);
+                tracing::info!(
+                    "Producer {} received reward: {} (fees: {}, block: {})",
+                    producer,
+                    reward,
+                    total_fees,
+                    state.block_reward
+                );
             }
         }
         Ok(())
@@ -162,9 +186,9 @@ mod tests {
         let mut state = AccountState::new();
         let producer = Address::from_hex(&"0".repeat(64)).unwrap();
         let txs = vec![];
-        
+
         Executor::apply_block(&mut state, &txs, Some(&producer)).unwrap();
-        
+
         let reward = state.block_reward;
         let account = state.get_or_create(&producer);
         assert_eq!(account.balance, reward);
@@ -176,17 +200,17 @@ mod tests {
         let producer = Address::from_hex(&"01".repeat(32)).unwrap();
         let alice = Address::from_hex(&"02".repeat(32)).unwrap();
         state.add_balance(&alice, 100);
-        
+
         let mut tx = Transaction::new(alice, Address::zero(), 10, vec![]);
         tx.fee = 5;
         tx.nonce = 0;
-        
+
         Executor::apply_block(&mut state, &[tx], Some(&producer)).unwrap();
-        
+
         let reward = state.block_reward;
         let producer_acc = state.get_or_create(&producer);
         assert_eq!(producer_acc.balance, reward + 5);
-        
+
         let alice_acc = state.get_or_create(&alice);
         assert_eq!(alice_acc.balance, 100 - 15);
     }
@@ -196,20 +220,20 @@ mod tests {
         let mut state = AccountState::new();
         let alice = Address::from_hex(&"01".repeat(32)).unwrap();
         let val_pubkey = Address::from_hex(&"02".repeat(32)).unwrap();
-        
+
         state.add_balance(&alice, 100);
         state.add_validator(val_pubkey, 1000);
-        
+
         let mut tx = Transaction::new(alice, val_pubkey, 1, vec![]);
         tx.tx_type = TransactionType::Vote;
         tx.fee = 2;
-        
+
         Executor::apply_transaction(&mut state, &tx).unwrap();
-        
+
         let validator = state.get_validator(&val_pubkey).unwrap();
         assert_eq!(validator.votes_for, 1);
         assert_eq!(validator.votes_against, 0);
-        
+
         let alice_acc = state.get_or_create(&alice);
         assert_eq!(alice_acc.balance, 98);
     }
@@ -219,16 +243,16 @@ mod tests {
         let mut state = AccountState::new();
         let alice = Address::from_hex(&"01".repeat(32)).unwrap();
         let val_pubkey = Address::from_hex(&"02".repeat(32)).unwrap();
-        
+
         state.add_balance(&alice, 100);
         state.add_validator(val_pubkey, 1000);
-        
+
         let mut tx = Transaction::new(alice, val_pubkey, 0, vec![]);
         tx.tx_type = TransactionType::Vote;
         tx.fee = 2;
-        
+
         Executor::apply_transaction(&mut state, &tx).unwrap();
-        
+
         let validator = state.get_validator(&val_pubkey).unwrap();
         assert_eq!(validator.votes_for, 0);
         assert_eq!(validator.votes_against, 1);

@@ -2,7 +2,7 @@
 
 Bu bölüm, blok zincirinin "hafızası" olan `AccountState` yapısını, validatör yönetimini ve `epoch` mantığını en ince detayına kadar açıklar.
 
-Kaynak Dosya: `src/account.rs`
+Kaynak Dosya: `src/core/account.rs`
 
 ---
 
@@ -23,7 +23,7 @@ pub struct Account {
 
 **Satır Satır Analiz:**
 -   `balance`: Neden `i64` (negatif olabilir) değil de `u64`? Çünkü bakiye asla negatif olamaz. Bu tip seçimi, kodun güvenliğini matematiksel olarak artırır (Underflow koruması).
--   `nonce`: Her giden işlemde (`outgoing tx`) bu sayı 1 artar. Ağ, gelen işlemin nonce'u ile hesaptaki nonce'u kıyaslar. Eşit değilse işlemi reddeder. Bu, **sıralı işlem garantisi** ve **replay koruması** sağlar.
+-   `nonce`: Her giden işlemde (`outgoing tx`) bu sayı 1 artar. State katmanı bir işlemi tek başına doğrularken ağ, gelen işlemin nonce'u ile hesaptaki nonce'u kıyaslar. Eşit değilse işlemi reddeder. Bu, **sıralı işlem garantisi** ve **replay koruması** sağlar.
 
 ---
 
@@ -100,26 +100,37 @@ Budlum'un üretim sürümünde, ağ parametreleri artık statik kod sabitleri de
 
 ## 3. Fonksiyonlar ve İş Mantığı
 
-### Fonksiyon: `validate_transaction` (Kural Kontrolü)
+### Fonksiyon: `validate_transaction` ve `validate_transaction_with_context` (Kural Kontrolü)
 
 Bir işlemin geçerli olup olmadığına sadece kryptografik olarak değil, **ekonomik** olarak da karar verilir.
 
 ```rust
 pub fn validate_transaction(&self, tx: &Transaction) -> Result<(), String> {
+    self.validate_transaction_with_context(
+        tx,
+        self.get_nonce(&tx.from),
+        self.get_balance(&tx.from),
+    )
+}
+
+pub fn validate_transaction_with_context(
+    &self,
+    tx: &Transaction,
+    expected_nonce: u64,
+    spendable_balance: u64,
+) -> Result<(), String> {
     // 1. İmza kontrolü (Transaction üzerindeki verify)
     if !tx.verify() { return Err("İmza geçersiz".into()); }
 
     // 2. Nonce Kontrolü (Sıra Takibi)
-    let expected_nonce = self.get_nonce(&tx.from);
     if tx.nonce != expected_nonce {
-        // "Senin sıradaki işlemin 5 olmalıydı ama sen 6 gönderdin (aradaki kayıp) 
+        // "Senin sıradaki işlemin 5 olmalıydı ama sen 6 gönderdin
         // veya 4 gönderdin (tekrar ediyorsun)".
         return Err(format!("Nonce hatası: Beklenen {}, Gelen {}", expected_nonce, tx.nonce));
     }
 
     // 3. Bakiye Kontrolü (Yetersiz Bakiye)
-    let balance = self.get_balance(&tx.from);
-    if balance < tx.total_cost() { // total_cost = amount + fee
+    if spendable_balance < tx.total_cost() { // total_cost = amount + fee
         return Err("Yetersiz Bakiye".into());
     }
 
@@ -129,6 +140,12 @@ pub fn validate_transaction(&self, tx: &Transaction) -> Result<(), String> {
     Ok(())
 }
 ```
+
+**Neden iki fonksiyon var?**
+-   `validate_transaction`: Zincir state'i üzerinden "şu anki gerçek bakiye ve nonce" ile doğrular.
+-   `validate_transaction_with_context`: Mempool katmanında, aynı göndericiden bekleyen işlemler hesaba katıldıktan sonraki **öngörülen nonce/bakiye** ile doğrular.
+
+Bu ayrım sayesinde Budlum artık tek bir hesaptan `nonce=0`, `nonce=1`, `nonce=2` gibi **ardışık bekleyen işlemleri** mempool'da tutabilir. Yani zincir katmanı hâlâ deterministik ve katı kalırken, mempool daha gerçekçi bir kullanıcı deneyimi sunar.
 
 **Neden Bu Sıra?**
 En ucuz kontroller (imza, nonce) önce yapılır. Veritabanı okuması gerektiren veya daha karmaşık mantıklar sonra gelir. Hatayı ne kadar erken yakalarsak sistem o kadar az yorulur (Fail Fast).

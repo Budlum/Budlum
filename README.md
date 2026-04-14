@@ -1,8 +1,8 @@
 # Budlum Blockchain Core
 
-**Budlum Core** is a production-grade, modular blockchain framework written in Rust. It serves as a high-performance Layer-1 blockchain featuring pluggable consensus engines (PoW, PoS, PoA), a hardened libp2p-based networking stack, and an atomic, account-based state model.
+**Budlum Core** is a modular blockchain framework written in Rust. It serves as a high-performance Layer-1 blockchain featuring pluggable consensus engines (PoW, PoS, PoA), a hardened libp2p-based networking stack, and an atomic, account-based state model.
 
-The architecture emphasizes **security**, **modularity**, and **readability**, making it an ideal foundation for custom blockchain networks or educational study of advanced distributed ledger technology. With the latest Mainnet Hardening phases, the framework is incredibly robust against spam, DDOS, and chain manipulation.
+The architecture emphasizes **security**, **modularity**, and **readability**, making it an ideal foundation for custom blockchain networks, protocol experiments, or educational study of advanced distributed ledger technology. With the latest hardening passes, the framework is robust against spam, malformed payloads, inconsistent replay, and stale canonical metadata after reorgs.
 
 ---
 
@@ -10,7 +10,7 @@ The architecture emphasizes **security**, **modularity**, and **readability**, m
 
 - [Architecture Overview](#architecture-overview)
 - [Quick Start](#quick-start)
-- [Mainnet Hardening (Production Ready)](#mainnet-hardening-features)
+- [Production Hardening](#-production-hardening)
 - [Core Components Deep Dive](#core-components-deep-dive)
     - [1. Data Structures](#1-data-structures)
     - [2. Consensus Engines](#2-consensus-engines)
@@ -109,7 +109,7 @@ cargo build --release
 
 ---
 
-### 🟢 Production Hardening (Mainnet Ready)
+### 🟢 Production Hardening
 
 Budlum Core has undergone a rigorous production-readiness audit and is now equipped with advanced features for scale, security, and governance:
 
@@ -119,17 +119,27 @@ Budlum Core has undergone a rigorous production-readiness audit and is now equip
 -   **Database Integrity Audit (FSCK)**: Built-in tool for verifying blockchain data consistency (`--check-db`) and self-repairing index corruptions (`--repair-db`). (See [Ch 5.1](docs/book/ch05_01_storage.md))
 -   **Deterministic Economics**: All reward and slashing calculations use **Saturating Fixed-Point Math** (`u64`).
 -   **Deterministic Slot-Timestamps**: Block timestamps are derived from `genesis_time + (index * SLOT_MS)`.
+-   **Deterministic Replay / Reorg Recovery**:
+    *   Restart and reorg state rebuilds now replay the same block-level effects as live execution.
+    *   Rewards, slashing, epoch transitions, and dynamic fee updates remain consistent across recovery paths.
 -   **Atomic Persistence & State Resilience**:
     *   Consensus state (seen blocks, checkpoints, seeds) is persisted to `sled`.
     *   Mempool transactions are persisted to disk to survive reboots.
+    *   Reorgs rewrite canonical metadata through the same commit path used for normal blocks, including `TX_IDX`, `STATE_ROOT`, and tip tracking.
     *   **Unwrap Audit**: 50+ potential panic points were replaced with robust error handling for 24/7 uptime.
+-   **Queued Nonce Mempool**:
+    *   The mempool accepts sequential pending nonces from the same sender.
+    *   Block assembly simulates transactions against a temporary state so nonce order remains valid while fees still drive selection.
+-   **PoA Wiring**:
+    *   `validators.json` is loaded into the in-state validator set at node startup.
+    *   Local signer keys are reused by the CLI mining path so the reward address and block producer stay aligned.
 -   **Merkle Tree Security (Incremental & Optimized)**:
     *   **Domain Separation**: Uses `0x00` prefixes for leaves and `0x01` for internal nodes.
     *   **Incremental Updates**: State root calculation is $O(\log N)$ using a cached Merkle Tree and dirty-account tracking.
 -   **Binary Optimization**:
     *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
     *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.
--   **RPC Hardening**: Strict input validation for transaction sizes, signatures, and payload limits (2MB).
+-   **RPC Hardening**: Strict input validation for transaction sizes, signatures, payload limits (2MB), and mempool-aware prechecks via `bud_txPrecheck`.
 
 ---
 
@@ -179,8 +189,9 @@ Budlum abstracts consensus into the `ConsensusEngine` trait.
 - **Validation**: Ensures blocks compute properly, and `cumulative difficulty` overrides trivial chain lengths for more sophisticated fork choices. Adaptive retargeting applies block delays.
 
 #### Proof of Authority (PoA) (`src/consensus/poa.rs`)
-- **Permissioned**: Only keys in `validators.json` can sign.
+- **Permissioned**: Validators are loaded from `validators.json` into the in-memory validator set at startup.
 - **Round-Robin**: Validators produce blocks in a strict rotation (`height % validator_count`).
+- **Signer-Aware CLI**: Local validator keys can be loaded so manual block production uses the same producer identity as the consensus signer.
 
 ---
 
@@ -191,6 +202,7 @@ A structured transaction pool with advanced spam protection.
 #### Features
 - **Fee-Based Ordering**: Transactions sorted by fee (highest first).
 - **Replace-By-Fee (RBF)**: Higher-fee tx replaces same-nonce tx (+10% bump required).
+- **Queued Nonces**: Sequential pending transactions from the same sender are accepted and evaluated against projected sender state.
 - **Anti-Spam Rules**:
   - Max 16 pending transactions per sender.
   - Minimum fee enforcement.
@@ -256,13 +268,16 @@ Budlum uses an Account-based model (like Ethereum), not UTXO (like Bitcoin).
 
 #### Storage (`src/storage.rs`)
 Data is persisted in **sled**, a high-performance embedded database.
-- **`BLOCK:{hash}`**: Stores serialized block data.
+- **`{hash}`**: Stores serialized block data.
 - **`LAST`**: Stores the hash of the chain tip.
-- **`SNAPSHOT:{height}`**: Stores compressed `AccountState`.
+- **`STATE_ROOT:{height}`**: Stores canonical state roots.
+- **`TX_IDX:{hash}`**: Stores transaction-to-height lookup entries.
+- **Snapshots**: Stored separately by the snapshot/pruning subsystem.
 
 #### Snapshots & Pruning (`src/snapshot.rs`)
 - **Snapshot Loop**: Every 1000 blocks, the node saves a snapshot of all balances.
 - **Pruning**: Blocks older than `2 * max_reorg_depth` (200 blocks) can be pruned to save disk space, as long as a valid snapshot exists ahead of them.
+- **Replay Safety**: Restart and reorg recovery reuse the same block-effect pipeline as live execution, keeping replayed state deterministic.
 
 ---
 

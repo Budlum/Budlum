@@ -26,6 +26,13 @@ pub const MAX_REORG_DEPTH: usize = 100;
 use crate::core::account::AccountState;
 
 pub trait ConsensusEngine: Send + Sync {
+    fn preview_block(
+        &self,
+        _block: &mut Block,
+        _state: &AccountState,
+    ) -> Result<(), ConsensusError> {
+        Ok(())
+    }
     fn prepare_block(&self, block: &mut Block, state: &AccountState) -> Result<(), ConsensusError>;
     fn validate_block(
         &self,

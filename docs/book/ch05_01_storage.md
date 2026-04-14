@@ -2,7 +2,7 @@
 
 Bu bölüm, verilerin RAM'den diske nasıl aktarıldığını, `sled` veritabanı yapısını ve "Key-Value" tasarımını analiz eder.
 
-Kaynak Dosya: `src/storage.rs`
+Kaynak Dosya: `src/storage/db.rs`
 
 ---
 
@@ -32,13 +32,15 @@ Veritabanında tablolar yoktur, sadece Anahtarlar (Key) ve Değerler (Value) var
 
 | Veri Tipi | Anahtar Formatı (Key) | Değer (Value) | Açıklama |
 | :--- | :--- | :--- | :--- |
-| **Blok** | `BLOCK:{Hash}` | `Serialized(Block)` | Blok verilerini hash ile saklarız. |
+| **Blok** | `{Hash}` | `Serialized(Block)` | Blok verilerini hash ile saklarız. |
 | **Yükseklik** | `HEIGHT:{Number}` | `Hash` | Indexing: Numaradan Hash bulmak için. |
 | **İşlem** | `TX_IDX:{Hash}` | `u64` | Indexing: Hash'ten Blok Numarası bulmak için. |
 | **Hesap** | `ACCT:{PubKey}` | `Serialized(Account)` | Granular bakiye ve nonce saklama. |
-| **Mempool** | `MEM:{Hash}` | `Serialized(Tx)` | Persistence: Bekleyen işlemlerin disk yedeği. |
-| **QC Blob** | `QC:{Height}` | `Serialized(QcBlob)` | Audit: Checkpoint imzalarının yedeklenmesi. |
-| **Sertifika**| `CERT:{Height}` | `Serialized(FinalityCert)` | Proof: Finalize edilmiş blokların kanıtı. |
+| **Mempool** | `MEMPOOL:{Hash}` | `Serialized(Tx)` | Persistence: Bekleyen işlemlerin disk yedeği. |
+| **QC Blob** | `QC_BLOB:{Height}` | `Serialized(QcBlob)` | Audit: Checkpoint imzalarının yedeklenmesi. |
+| **Sertifika**| `FINALITY_CERT:{Height}` | `Serialized(FinalityCert)` | Proof: Finalize edilmiş blokların kanıtı. |
+| **State Root** | `STATE_ROOT:{Height}` | `Hash` | Her canonical blok için state root kaydı. |
+| **Canonical Height** | `CANONICAL_HEIGHT` | `u64` | Zincirin canonical ucunu gösteren yükseklik. |
 | **Son Blok**| `LAST` | `Hash` (String) | Zincirin en ucunu (Tip) gösteren işaretçidir. |
 
 ---
@@ -55,16 +57,16 @@ pub fn commit_block(&self, block: &Block, state_root: &str) -> io::Result<()> {
     
     // 1. Bloğu hazırla
     let serialized = serde_json::to_vec(block)?;
-    batch.insert(format!("BLOCK:{}", block.hash), serialized);
+    batch.insert(block.hash.as_bytes(), serialized);
     
     // 2. Yükseklik indexini hazırla
     batch.insert(format!("HEIGHT:{}", block.index), block.hash.as_bytes());
-    batch.insert("LAST_BLOCK", block.hash.as_bytes());
+    batch.insert("LAST", block.hash.as_bytes());
 
     // 3. State Root ve TX indexlerini hazırla
-    batch.insert(format!("STATE:{}", block.index), state_root.as_bytes());
+    batch.insert(format!("STATE_ROOT:{}", block.index), state_root.as_bytes());
     for tx in &block.transactions {
-        batch.insert(format!("TX_IDX:{}", tx.hash), block.index.to_le_bytes());
+        batch.insert(format!("TX_IDX:{}", tx.hash), block.index.to_string().as_bytes());
     }
 
     // 4. KRİTİK: Hepsini tek seferde (Atomik) diske yaz.
@@ -95,8 +97,8 @@ pub fn load_chain(&self) -> Vec<Block> {
     let mut chain = Vec::new();
 
     // 1. En son nerede kaldığımızı öğren.
-    // "LAST_BLOCK" anahtarına bak.
-    if let Some(last_hash_bytes) = self.db.get("LAST_BLOCK").unwrap() {
+    // "LAST" anahtarına bak.
+    if let Some(last_hash_bytes) = self.db.get("LAST").unwrap() {
         let mut current_hash = String::from_utf8(last_hash_bytes.to_vec()).unwrap();
 
         // 2. Geriye doğru (Backtracking) yürü.
@@ -126,3 +128,14 @@ pub fn load_chain(&self) -> Vec<Block> {
 
 **Tasarım Notu:**
 Blockchain, aslında bir **Linked List** (Bağlı Liste) veri yapısıdır. Veritabanında her eleman bir öncekini işaret eder. Bu fonksiyon, bu bağlı listeyi takip ederek bütün zinciri yeniden inşa eder.
+
+## 5. Reorg Sonrası Metadata Tutarlılığı
+
+Budlum'da reorg artık sadece blok gövdelerini yazmakla kalmaz; canonical metadata da güncellenir.
+
+- Eski dalın `HEIGHT`, `STATE_ROOT`, `FINALITY_CERT`, `QC_BLOB` kayıtları temizlenir.
+- O dallara ait `TX_IDX` girişleri silinir.
+- Yeni canonical dal `commit_block` üzerinden yeniden yazılır.
+- `LAST` işaretçisi yeni ucun hash'ine taşınır.
+
+Bu önemli bir ayrıntıdır, çünkü aksi halde node yeniden başlatıldığında disk üzerinde eski canonical bilgi ile yeni chain body birbirine karışabilir.

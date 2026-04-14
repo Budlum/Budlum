@@ -1,15 +1,15 @@
 #[cfg(test)]
 mod integration_tests {
-    use crate::core::account::{AccountState, Validator};
-    use crate::core::block::Block;
     use crate::chain::blockchain::Blockchain;
     use crate::consensus::poa::PoAConfig;
     use crate::consensus::pos::PoSConfig;
-    use crate::consensus::{ConsensusEngine, poa::PoAEngine, pos::PoSEngine, pow::PoWEngine};
-    use crate::crypto::primitives::KeyPair;
-    use crate::core::transaction::Transaction;
+    use crate::consensus::{poa::PoAEngine, pos::PoSEngine, pow::PoWEngine, ConsensusEngine};
+    use crate::core::account::{AccountState, Validator};
     use crate::core::address::Address;
+    use crate::core::block::Block;
     use crate::core::governance::ProposalType;
+    use crate::core::transaction::Transaction;
+    use crate::crypto::primitives::KeyPair;
     use crate::execution::executor::Executor;
     use std::sync::Arc;
 
@@ -18,27 +18,30 @@ mod integration_tests {
         let mut state = AccountState::new();
         let val_kp = KeyPair::generate().unwrap();
         let val_addr = Address::from(val_kp.public_key_bytes());
-        
+
         state.add_balance(&val_addr, 1000);
         state.add_validator(val_addr, 1000);
-        
+
         let p_type = ProposalType::ChangeBaseFee(10);
         let mut prop_tx = Transaction::new_proposal(val_addr, p_type, 1, 0);
         prop_tx.sign(&val_kp);
-        
+
         Executor::apply_transaction(&mut state, &prop_tx).unwrap();
         assert_eq!(state.governance.proposals.len(), 1);
         let prop_id = state.governance.proposals[0].id;
-        
+
         let mut vote_tx = Transaction::new_vote(val_addr, prop_id, true, 1);
         vote_tx.sign(&val_kp);
-        
+
         Executor::apply_transaction(&mut state, &vote_tx).unwrap();
-        
+
         state.advance_epoch(1000); // 0 -> 1
         state.advance_epoch(2000); // 1 -> 2
-        
-        assert_eq!(state.governance.proposals[0].status, crate::core::governance::ProposalStatus::Executed);
+
+        assert_eq!(
+            state.governance.proposals[0].status,
+            crate::core::governance::ProposalStatus::Executed
+        );
     }
 
     #[test]
@@ -47,10 +50,9 @@ mod integration_tests {
         let validator_pubkey = Address::from(keypair.public_key_bytes());
 
         let mut state = AccountState::new();
-        state.validators.insert(
-            validator_pubkey,
-            Validator::new(validator_pubkey, 0),
-        );
+        state
+            .validators
+            .insert(validator_pubkey, Validator::new(validator_pubkey, 0));
         state.validators.get_mut(&validator_pubkey).unwrap().active = true;
 
         let config = PoAConfig::default();
@@ -68,10 +70,9 @@ mod integration_tests {
         let validator_pubkey = Address::from(validator_keypair.public_key_bytes());
 
         let mut state = AccountState::new();
-        state.validators.insert(
-            validator_pubkey,
-            Validator::new(validator_pubkey, 0),
-        );
+        state
+            .validators
+            .insert(validator_pubkey, Validator::new(validator_pubkey, 0));
         state.validators.get_mut(&validator_pubkey).unwrap().active = true;
 
         let config = PoAConfig::default();
@@ -217,12 +218,9 @@ mod integration_tests {
         assert!(block.verify_signature());
 
         let attacker = Address::from_hex(&"04".repeat(32)).unwrap();
-        block.transactions.push(Transaction::new(
-            attacker,
-            attacker,
-            1000000,
-            vec![],
-        ));
+        block
+            .transactions
+            .push(Transaction::new(attacker, attacker, 1000000, vec![]));
         block.tx_root = block.calculate_tx_root();
         block.hash = block.calculate_hash();
 
@@ -240,12 +238,8 @@ mod integration_tests {
         let pubkey2 = Address::from(keypair2.public_key_bytes());
 
         let mut state = AccountState::new();
-        state
-            .validators
-            .insert(pubkey1, Validator::new(pubkey1, 0));
-        state
-            .validators
-            .insert(pubkey2, Validator::new(pubkey2, 0));
+        state.validators.insert(pubkey1, Validator::new(pubkey1, 0));
+        state.validators.insert(pubkey2, Validator::new(pubkey2, 0));
         state.validators.get_mut(&pubkey1).unwrap().active = true;
         state.validators.get_mut(&pubkey2).unwrap().active = true;
 
@@ -297,19 +291,16 @@ mod integration_tests {
 
         let mut validator = crate::core::account::Validator::new(pubkey, 1000);
         validator.active = true;
-        
+
         let mut sk_bytes = [0u8; 64];
         sk_bytes[0] = 42;
         let bls_sk = bls12_381::Scalar::from_bytes_wide(&sk_bytes);
         let bls_pk_point = bls12_381::G2Affine::from(bls12_381::G2Projective::generator() * bls_sk);
         let bls_pk = bls_pk_point.to_compressed().to_vec();
-        
+
         validator.bls_public_key = bls_pk.clone();
         validator.pop_signature = vec![0u8; 48];
-        blockchain
-            .state
-            .validators
-            .insert(pubkey, validator);
+        blockchain.state.validators.insert(pubkey, validator);
 
         for _ in 1..=10 {
             blockchain.produce_block(pubkey);
@@ -335,11 +326,13 @@ mod integration_tests {
             bitmap: vec![0b0000_0001],
             set_hash: blockchain.get_validator_set_hash(),
         };
-        
+
         let msg = cert.signing_message();
         let h_msg_point = crate::chain::finality::hash_to_g1(&msg);
         let sig_point = bls12_381::G1Projective::from(h_msg_point) * bls_sk;
-        cert.agg_sig_bls = bls12_381::G1Affine::from(sig_point).to_compressed().to_vec();
+        cert.agg_sig_bls = bls12_381::G1Affine::from(sig_point)
+            .to_compressed()
+            .to_vec();
 
         blockchain.handle_finality_cert(cert).unwrap();
         assert_eq!(blockchain.finalized_height, 10);

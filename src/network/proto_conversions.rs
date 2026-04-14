@@ -1,8 +1,8 @@
 use crate::consensus::pos::SlashingEvidence;
-use crate::network::protocol::NetworkMessage;
 use crate::core::address::Address;
 use crate::core::block::{Block, BlockHeader};
 use crate::core::transaction::{Transaction, TransactionType};
+use crate::network::protocol::NetworkMessage;
 
 pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/budlum.network.rs"));
@@ -22,15 +22,9 @@ impl From<&Transaction> for pb::ProtoTransaction {
             signature: tx.signature.clone().unwrap_or_default(),
             chain_id: tx.chain_id,
             tx_type: match tx.tx_type {
-                TransactionType::Transfer => {
-                    pb::ProtoTransactionType::Transfer as i32
-                }
-                TransactionType::Stake => {
-                    pb::ProtoTransactionType::Stake as i32
-                }
-                TransactionType::Unstake => {
-                    pb::ProtoTransactionType::Unstake as i32
-                }
+                TransactionType::Transfer => pb::ProtoTransactionType::Transfer as i32,
+                TransactionType::Stake => pb::ProtoTransactionType::Stake as i32,
+                TransactionType::Unstake => pb::ProtoTransactionType::Unstake as i32,
                 TransactionType::Vote => pb::ProtoTransactionType::Vote as i32,
             },
         }
@@ -58,7 +52,8 @@ impl TryFrom<pb::ProtoTransaction> for Transaction {
         };
 
         Ok(Transaction {
-            from: Address::from_hex(&proto.from).map_err(|e| format!("Invalid from address: {}", e))?,
+            from: Address::from_hex(&proto.from)
+                .map_err(|e| format!("Invalid from address: {}", e))?,
             to: Address::from_hex(&proto.to).map_err(|e| format!("Invalid to address: {}", e))?,
             amount: proto.amount,
             fee: proto.fee,
@@ -136,7 +131,10 @@ impl TryFrom<pb::ProtoBlockHeader> for BlockHeader {
         let producer = if proto.producer.is_empty() {
             None
         } else {
-            Some(Address::from_hex(&proto.producer).map_err(|e| format!("Invalid producer address: {}", e))?)
+            Some(
+                Address::from_hex(&proto.producer)
+                    .map_err(|e| format!("Invalid producer address: {}", e))?,
+            )
         };
         let mut evidence = Vec::new();
         for ev in proto.slashing_evidence {
@@ -211,7 +209,10 @@ impl TryFrom<pb::ProtoBlock> for Block {
         let producer = if proto.producer.is_empty() {
             None
         } else {
-            Some(Address::from_hex(&proto.producer).map_err(|e| format!("Invalid producer address: {}", e))?)
+            Some(
+                Address::from_hex(&proto.producer)
+                    .map_err(|e| format!("Invalid producer address: {}", e))?,
+            )
         };
         let signature = if proto.signature.is_empty() {
             None
@@ -573,14 +574,7 @@ mod tests {
     fn test_transaction_proto_conversion() {
         let keypair = KeyPair::generate().unwrap();
         let from = Address::from(keypair.public_key_bytes());
-        let mut tx = Transaction::new_with_fee(
-            from,
-            Address::zero(),
-            100,
-            1,
-            42,
-            vec![1, 2, 3, 4],
-        );
+        let mut tx = Transaction::new_with_fee(from, Address::zero(), 100, 1, 42, vec![1, 2, 3, 4]);
         tx.sign(&keypair);
 
         let proto_tx = pb::ProtoTransaction::from(&tx);
@@ -595,12 +589,7 @@ mod tests {
     fn test_block_proto_conversion() {
         let keypair = KeyPair::generate().unwrap();
         let from = Address::from(keypair.public_key_bytes());
-        let mut tx = Transaction::new(
-            from,
-            Address::zero(),
-            50,
-            vec![],
-        );
+        let mut tx = Transaction::new(from, Address::zero(), 50, vec![]);
         tx.sign(&keypair);
 
         let mut block = Block::new(10, "PREV_HASH".to_string(), vec![tx]);

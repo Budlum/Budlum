@@ -1,14 +1,14 @@
+use crate::chain::finality::{ValidatorEntry, ValidatorSetSnapshot};
+use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
+use crate::chain::snapshot::PruningManager;
+use crate::consensus::ConsensusEngine;
 use crate::core::account::AccountState;
 use crate::core::address::Address;
-use crate::chain::finality::{ValidatorEntry, ValidatorSetSnapshot};
-use crate::consensus::ConsensusEngine;
-use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
-use crate::mempool::pool::{Mempool, MempoolConfig};
-use crate::chain::snapshot::PruningManager;
-use crate::storage::db::Storage;
 use crate::core::block::Block;
 use crate::core::transaction::Transaction;
 use crate::execution::executor::Executor;
+use crate::mempool::pool::{Mempool, MempoolConfig};
+use crate::storage::db::Storage;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
@@ -106,10 +106,13 @@ impl Blockchain {
         );
 
         for block in chain_vec.iter().skip(start_index) {
-            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_ref()) {
-                println!("CRITICAL: Failed to apply block {} during init: {}. Corrupted database, exiting.", block.index, e);
-                std::process::exit(1);
-            }
+            state = match Self::apply_block_effects(&state, block) {
+                Ok(next_state) => next_state,
+                Err(e) => {
+                    println!("CRITICAL: Failed to apply block {} during init: {}. Corrupted database, exiting.", block.index, e);
+                    std::process::exit(1);
+                }
+            };
         }
 
         let mut mempool = Mempool::new(MempoolConfig::default());
@@ -137,13 +140,16 @@ impl Blockchain {
             finalized_hash: restored_finalized_hash,
             genesis_time: 0,
         };
-        
+
         if let Some(first) = bc.chain.first() {
             bc.genesis_time = first.timestamp;
         } else {
-            bc.genesis_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+            bc.genesis_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
         }
-        
+
         bc
     }
 
@@ -241,47 +247,252 @@ impl Blockchain {
             .collect();
         ValidatorSetSnapshot::compute_hash(&entries)
     }
-    pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
-        let index = self.chain.len() as u64;
-        let previous_hash = self.chain.last().unwrap().hash.clone();
 
+    fn projected_sender_state(&self, tx: &Transaction) -> (u64, u64) {
+        let mut expected_nonce = self.state.get_nonce(&tx.from);
+        let mut spendable_balance = self.state.get_balance(&tx.from);
+
+        for pending in self.mempool.sender_transactions(&tx.from) {
+            if pending.nonce == tx.nonce {
+                continue;
+            }
+            if pending.nonce < expected_nonce {
+                continue;
+            }
+            if pending.nonce != expected_nonce {
+                break;
+            }
+
+            let pending_cost = pending.total_cost();
+            if spendable_balance < pending_cost {
+                break;
+            }
+
+            spendable_balance = spendable_balance.saturating_sub(pending_cost);
+            expected_nonce = expected_nonce.saturating_add(1);
+        }
+
+        (expected_nonce, spendable_balance)
+    }
+
+    fn validate_pool_transaction(&self, tx: &Transaction) -> Result<(), String> {
+        if tx.chain_id != self.chain_id {
+            return Err(format!(
+                "Invalid Chain ID: expected {}, got {}",
+                self.chain_id, tx.chain_id
+            ));
+        }
+        if tx.from == Address::zero() {
+            return Err("Genesis transactions cannot be submitted to the mempool".into());
+        }
+
+        let (expected_nonce, spendable_balance) = self.projected_sender_state(tx);
+        self.state
+            .validate_transaction_with_context(tx, expected_nonce, spendable_balance)
+    }
+
+    pub fn tx_precheck(&self, tx: &Transaction) -> serde_json::Value {
+        let mut reasons = Vec::new();
+
+        if tx.chain_id != self.chain_id {
+            reasons.push("invalid_chain_id".to_string());
+        }
+        if tx.from == Address::zero() {
+            reasons.push("genesis_transaction_forbidden".to_string());
+        }
+        if !tx.verify() {
+            reasons.push("invalid_signature".to_string());
+        }
+        if tx.fee < self.state.base_fee {
+            reasons.push("fee_too_low".to_string());
+        }
+
+        let (expected_nonce, spendable_balance) = self.projected_sender_state(tx);
+        if tx.nonce < expected_nonce {
+            reasons.push("nonce_too_low".to_string());
+        } else if tx.nonce > expected_nonce {
+            reasons.push("nonce_too_high".to_string());
+        }
+        if spendable_balance < tx.total_cost() {
+            reasons.push("insufficient_funds".to_string());
+        }
+
+        match tx.tx_type {
+            crate::core::transaction::TransactionType::Transfer => {
+                if tx.to == Address::zero() {
+                    reasons.push("missing_to_address".to_string());
+                }
+            }
+            crate::core::transaction::TransactionType::Stake => {
+                if tx.amount == 0 {
+                    reasons.push("invalid_stake_amount".to_string());
+                }
+            }
+            crate::core::transaction::TransactionType::Unstake => {
+                match self.state.get_validator(&tx.from) {
+                    Some(validator) if validator.stake >= tx.amount => {}
+                    Some(_) => reasons.push("insufficient_stake".to_string()),
+                    None => reasons.push("not_a_validator".to_string()),
+                }
+            }
+            crate::core::transaction::TransactionType::Vote => {
+                if self.state.get_validator(&tx.from).is_none() {
+                    reasons.push("not_a_validator".to_string());
+                }
+            }
+        }
+
+        if reasons.is_empty() {
+            let mut probe = self.mempool.clone();
+            if let Err(err) = probe.add_transaction(tx.clone()) {
+                let reason = match err {
+                    crate::mempool::pool::MempoolError::PoolFull => "pool_full",
+                    crate::mempool::pool::MempoolError::DuplicateTransaction => {
+                        "duplicate_transaction"
+                    }
+                    crate::mempool::pool::MempoolError::FeeTooLow => "fee_too_low",
+                    crate::mempool::pool::MempoolError::SenderLimitReached => {
+                        "sender_limit_reached"
+                    }
+                    crate::mempool::pool::MempoolError::InvalidNonce => "invalid_nonce",
+                    crate::mempool::pool::MempoolError::TransactionExpired => "transaction_expired",
+                    crate::mempool::pool::MempoolError::RbfFeeTooLow => "rbf_fee_too_low",
+                    crate::mempool::pool::MempoolError::InvalidTransaction(_) => {
+                        "invalid_transaction"
+                    }
+                };
+                reasons.push(reason.to_string());
+            }
+        }
+
+        serde_json::json!({
+            "accepted": reasons.is_empty(),
+            "reasons": reasons
+        })
+    }
+
+    fn collect_block_transactions(&self) -> Vec<Transaction> {
+        let pending_txs = self.mempool.get_sorted_transactions(10000);
         let mut valid_txs = Vec::new();
         let mut temp_state = self.state.clone();
+        let mut included = std::collections::HashSet::new();
+        let mut progress = true;
 
-        let pending_txs = self.mempool.get_sorted_transactions(10000);
-        for tx in &pending_txs {
-            if let Ok(_) = temp_state.validate_transaction(tx) {
-                if let Ok(_) = Executor::apply_transaction(&mut temp_state, tx) {
-                    valid_txs.push(tx.clone());
+        while progress {
+            progress = false;
+            for tx in &pending_txs {
+                if included.contains(&tx.hash) {
+                    continue;
                 }
-            } else {
+                if temp_state.validate_transaction(tx).is_err() {
+                    continue;
+                }
+                if Executor::apply_transaction(&mut temp_state, tx).is_ok() {
+                    valid_txs.push(tx.clone());
+                    included.insert(tx.hash.clone());
+                    progress = true;
+                }
+            }
+        }
+
+        for tx in &pending_txs {
+            if !included.contains(&tx.hash) && self.state.validate_transaction(tx).is_err() {
                 println!("Discarding invalid transaction: {}", tx.hash);
             }
         }
 
+        valid_txs
+    }
+
+    fn adjust_base_fee(state: &mut AccountState, tx_count: usize) {
+        let tx_count = tx_count as u64;
+        let target = 50u64;
+        let max_base_fee = 10_000_000;
+
+        if tx_count > target {
+            state.base_fee = state
+                .base_fee
+                .saturating_add(state.base_fee / 8)
+                .min(max_base_fee);
+        } else if tx_count < target {
+            state.base_fee = state.base_fee.saturating_sub(state.base_fee / 8).max(1);
+        }
+    }
+
+    fn apply_system_effects(state: &mut AccountState, block: &Block) {
+        if let Some(evidences) = &block.slashing_evidence {
+            let slash_ratio_fixed = (10 * crate::core::chain_config::FIXED_POINT_SCALE) / 100;
+            state.apply_slashing(evidences, slash_ratio_fixed);
+        }
+
+        if block.index > 0 && block.index % EPOCH_LENGTH == 0 {
+            state.advance_epoch(block.timestamp);
+        }
+
+        if block.index > 0 {
+            Self::adjust_base_fee(state, block.transactions.len());
+        }
+    }
+
+    fn apply_block_effects(
+        base_state: &AccountState,
+        block: &Block,
+    ) -> Result<AccountState, String> {
+        let mut next_state = base_state.clone();
+        Executor::apply_block(
+            &mut next_state,
+            &block.transactions,
+            block.producer.as_ref(),
+        )
+        .map_err(|e| format!("Failed to apply block: {}", e))?;
+        Self::apply_system_effects(&mut next_state, block);
+        Ok(next_state)
+    }
+
+    pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
+        let index = self.chain.len() as u64;
+        let previous_hash = self.chain.last().unwrap().hash.clone();
+        let valid_txs = self.collect_block_transactions();
         let mut block = Block::new(index, previous_hash, valid_txs);
         block.producer = Some(producer_address);
-        block.timestamp = self.genesis_time + (index as u128 * crate::core::chain_config::SLOT_MS as u128);
+        block.timestamp =
+            self.genesis_time + (index as u128 * crate::core::chain_config::SLOT_MS as u128);
+        block.validator_set_hash = self.get_validator_set_hash();
 
-        if let Err(_e) = Executor::apply_block(&mut self.state, &block.transactions, block.producer.as_ref()) {
+        if self
+            .consensus
+            .preview_block(&mut block, &self.state)
+            .is_err()
+        {
             return None;
         }
-        block.state_root = self.state.calculate_state_root();
+
+        let mut committed_state = match Self::apply_block_effects(&self.state, &block) {
+            Ok(state) => state,
+            Err(_) => return None,
+        };
+        block.state_root = committed_state.calculate_state_root();
 
         if let Err(_e) = self.consensus.prepare_block(&mut block, &self.state) {
             return None;
         }
 
+        self.state = committed_state;
+
         if let Some(ref store) = self.storage {
             let _ = store.commit_block(&block, &block.state_root);
         }
 
-        if block.index > 0 && block.index % EPOCH_LENGTH == 0 {
-            self.state.advance_epoch(block.timestamp);
-            self.mempool.set_min_fee(self.state.base_fee);
-        }
-
         self.chain.push(block.clone());
+
+        if let Some(last_block) = self.chain.last() {
+            if let Err(e) = self
+                .consensus
+                .record_block(last_block, self.storage.as_ref())
+            {
+                println!("Engine record block error: {}", e);
+            }
+        }
 
         for tx in &block.transactions {
             self.mempool.remove_transaction(&tx.hash);
@@ -290,35 +501,15 @@ impl Blockchain {
             }
         }
 
-        let tx_count = block.transactions.len() as u64;
-        let target = 50u64;
-        let max_base_fee = 10_000_000; // 10 BDLM cap
-        if tx_count > target {
-            self.state.base_fee = self.state.base_fee.saturating_add(self.state.base_fee / 8).min(max_base_fee);
-        } else if tx_count < target {
-            self.state.base_fee = self.state.base_fee.saturating_sub(self.state.base_fee / 8).max(1);
-        }
+        self.mempool.set_min_fee(self.state.base_fee);
         Some(block)
     }
     pub fn mine_pending_transactions(&mut self, miner_address: Address) {
         self.produce_block(miner_address);
     }
     pub fn add_transaction(&mut self, transaction: Transaction) -> Result<(), String> {
-        if transaction.chain_id != self.chain_id {
-            return Err(format!(
-                "Invalid Chain ID: expected {}, got {}",
-                self.chain_id, transaction.chain_id
-            ));
-        }
-        if transaction.from == Address::zero() {
-            return Err("Genesis transactions cannot be submitted to the mempool".into());
-        }
-        if !transaction.verify() {
-            return Err("Invalid transaction signature".into());
-        }
-        if let Err(e) = self.state.validate_transaction(&transaction) {
-            return Err(format!("Invalid transaction: {}", e));
-        }
+        self.validate_pool_transaction(&transaction)
+            .map_err(|e| format!("Invalid transaction: {}", e))?;
 
         self.mempool
             .add_transaction(transaction.clone())
@@ -407,10 +598,7 @@ impl Blockchain {
             }
         }
 
-        let mut commit_state = self.state.clone();
-        if let Err(e) = Executor::apply_block(&mut commit_state, &block.transactions, block.producer.as_ref()) {
-            return Err(format!("Failed to apply block: {}", e));
-        }
+        let mut commit_state = Self::apply_block_effects(&self.state, &block)?;
 
         if block.index > 0 {
             let computed_root = commit_state.calculate_state_root();
@@ -426,22 +614,16 @@ impl Blockchain {
             let _ = store.commit_block(&block, &block.state_root);
         }
 
-        if let Some(evidences) = &block.slashing_evidence {
-            let slash_ratio_fixed = (10 * crate::core::chain_config::FIXED_POINT_SCALE) / 100; // 0.1
-            commit_state.apply_slashing(evidences, slash_ratio_fixed);
-        }
-
-        if block.index > 0 && block.index % EPOCH_LENGTH == 0 {
-            commit_state.advance_epoch(block.timestamp);
-            self.mempool.set_min_fee(commit_state.base_fee);
-        }
-
         self.state = commit_state;
+        self.mempool.set_min_fee(self.state.base_fee);
 
         self.chain.push(block);
 
         if let Some(last_block) = self.chain.last() {
-            if let Err(e) = self.consensus.record_block(last_block, self.storage.as_ref()) {
+            if let Err(e) = self
+                .consensus
+                .record_block(last_block, self.storage.as_ref())
+            {
                 println!("Engine record block error: {}", e);
             }
         }
@@ -455,7 +637,9 @@ impl Blockchain {
             }
         }
 
-        if let (Some(pruning_manager), Some(last_block)) = (self.pruning_manager.as_ref(), self.chain.last()) {
+        if let (Some(pruning_manager), Some(last_block)) =
+            (self.pruning_manager.as_ref(), self.chain.last())
+        {
             let height = last_block.index;
             if pruning_manager.should_create_snapshot(height) {
                 let snapshot = crate::chain::snapshot::StateSnapshot::from_state(
@@ -573,6 +757,7 @@ impl Blockchain {
             reorg_depth, fork_point
         );
 
+        let old_chain = self.chain.clone();
         let new_state = Blockchain::rebuild_state(&new_chain)?;
 
         self.chain = new_chain;
@@ -593,36 +778,42 @@ impl Blockchain {
             }
         }
 
-        self.mempool = crate::mempool::pool::Mempool::new(crate::mempool::pool::MempoolConfig::default());
+        self.mempool =
+            crate::mempool::pool::Mempool::new(crate::mempool::pool::MempoolConfig::default());
         for tx in new_pending {
             let _ = self.mempool.add_transaction(tx);
         }
 
         if let Some(ref store) = self.storage {
+            for block in &old_chain[fork_point..] {
+                let _ = store.delete_block(block.index);
+                for tx in &block.transactions {
+                    let _ = store.delete_tx_index(&tx.hash);
+                }
+            }
             for block in &self.chain[fork_point..] {
-                let _ = store.insert_block(block);
+                let _ = store.commit_block(block, &block.state_root);
             }
             if let Some(last) = self.chain.last() {
                 let _ = store.save_last_hash(&last.hash);
             }
         }
 
+        self.mempool.set_min_fee(self.state.base_fee);
         Ok(true)
     }
 
     pub fn get_state_root(&self, height: u64) -> Option<String> {
-        self.storage.as_ref().and_then(|store| store.get_state_root(height).unwrap_or(None))
+        self.storage
+            .as_ref()
+            .and_then(|store| store.get_state_root(height).unwrap_or(None))
     }
 
     fn rebuild_state(chain: &[Block]) -> Result<AccountState, String> {
         let mut state = AccountState::new();
         for block in chain.iter() {
-            if let Err(e) = Executor::apply_block(&mut state, &block.transactions, block.producer.as_ref()) {
-                return Err(format!(
-                    "Failed to rebuild state at block {}: {}",
-                    block.index, e
-                ));
-            }
+            state = Self::apply_block_effects(&state, block)
+                .map_err(|e| format!("Failed to rebuild state at block {}: {}", block.index, e))?;
         }
         Ok(state)
     }
@@ -653,7 +844,10 @@ impl Blockchain {
         ))
     }
 
-    pub fn apply_state_snapshot(&mut self, snapshot: crate::chain::snapshot::StateSnapshot) -> Result<(), String> {
+    pub fn apply_state_snapshot(
+        &mut self,
+        snapshot: crate::chain::snapshot::StateSnapshot,
+    ) -> Result<(), String> {
         if !snapshot.verify() {
             return Err("Snapshot verification failed".into());
         }
@@ -676,7 +870,7 @@ impl Blockchain {
             }
             self.chain.extend(stubs);
         }
-        
+
         Ok(())
     }
 
@@ -763,8 +957,11 @@ impl Clone for Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::poa::{PoAConfig, PoAEngine};
     use crate::consensus::PoWEngine;
     use crate::crypto::primitives::KeyPair;
+    use crate::storage::db::Storage;
+    use tempfile::tempdir;
 
     #[test]
     fn test_blockchain_with_pow() {
@@ -827,9 +1024,9 @@ mod tests {
 
     #[test]
     fn test_slashing_execution() {
-        use crate::core::block::BlockHeader;
         use crate::consensus::pos::{PoSConfig, SlashingEvidence};
         use crate::consensus::PoSEngine;
+        use crate::core::block::BlockHeader;
 
         let alice_keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
         let alice_key = alice_keys.sig_key.clone();
@@ -839,7 +1036,7 @@ mod tests {
         let mut config = PoSConfig::default();
         config.slashing_penalty = (50 * crate::core::chain_config::FIXED_POINT_SCALE) / 100;
 
-        let engine = Arc::new(PoSEngine::new(config, Some(alice_keys)));
+        let engine = Arc::new(PoSEngine::new(config.clone(), Some(alice_keys.clone())));
 
         let mut blockchain = Blockchain::new(engine.clone(), None, 1337, None);
 
@@ -880,7 +1077,8 @@ mod tests {
         );
         assert_eq!(produced_block.slashing_evidence.as_ref().unwrap().len(), 1);
 
-        let mut blockchain2 = Blockchain::new(engine.clone(), None, 1337, None);
+        let fresh_engine = Arc::new(PoSEngine::new(config, Some(alice_keys)));
+        let mut blockchain2 = Blockchain::new(fresh_engine, None, 1337, None);
         blockchain2.state.add_validator(alice_pub.clone(), 2000);
         if let Some(v) = blockchain2.state.get_validator_mut(&alice_pub) {
             v.vrf_public_key = alice_vrf_pub.clone();
@@ -914,6 +1112,71 @@ mod tests {
         let miner_addr = Address::from(miner_bytes);
         bc.produce_block(miner_addr);
         assert_eq!(bc.state.get_balance(&miner_addr), 55);
+    }
+
+    #[test]
+    fn test_fee_reaches_actual_poa_signer() {
+        let signer = KeyPair::generate().unwrap();
+        let signer_addr = Address::from(signer.public_key_bytes());
+        let consensus = Arc::new(PoAEngine::new(PoAConfig::default(), Some(signer)));
+        let mut bc = Blockchain::new(consensus, None, 1337, None);
+        bc.state.add_validator(signer_addr, 1);
+
+        bc.produce_block(Address::zero()).unwrap();
+
+        assert_eq!(bc.state.get_balance(&signer_addr), bc.state.block_reward);
+        assert_eq!(bc.state.get_balance(&Address::zero()), 0);
+    }
+
+    #[test]
+    fn test_accepts_queued_sender_nonces() {
+        let consensus = Arc::new(PoWEngine::new(0));
+        let sender = KeyPair::generate().unwrap();
+        let sender_pub = Address::from(sender.public_key_bytes());
+        let recipient = Address::from([7u8; 32]);
+        let mut bc = Blockchain::new(consensus, None, 1337, None);
+        bc.state.add_balance(&sender_pub, 1_000);
+
+        let mut tx0 = Transaction::new_with_fee(sender_pub, recipient, 10, 1, 0, vec![]);
+        tx0.sign(&sender);
+        bc.add_transaction(tx0).unwrap();
+
+        let mut tx1 = Transaction::new_with_fee(sender_pub, recipient, 15, 2, 1, vec![]);
+        tx1.sign(&sender);
+        bc.add_transaction(tx1).unwrap();
+
+        let block = bc.produce_block(Address::from([9u8; 32])).unwrap();
+        assert_eq!(block.transactions.len(), 2);
+        assert_eq!(bc.state.get_nonce(&sender_pub), 2);
+        assert_eq!(bc.state.get_balance(&recipient), 25);
+    }
+
+    #[test]
+    fn test_restart_replays_epoch_state() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("budlum.db");
+        let db_path = db_path.to_string_lossy().to_string();
+        let storage = Storage::new(&db_path).unwrap();
+        let consensus = Arc::new(PoWEngine::new(0));
+        let mut bc = Blockchain::new(consensus, Some(storage), 1337, None);
+
+        for _ in 0..EPOCH_LENGTH {
+            bc.produce_block(Address::from([3u8; 32])).unwrap();
+        }
+
+        assert_eq!(bc.state.epoch_index, 1);
+        let expected_height = bc.last_block().index;
+        drop(bc);
+
+        let restarted = Blockchain::new(
+            Arc::new(PoWEngine::new(0)),
+            Some(Storage::new(&db_path).unwrap()),
+            1337,
+            None,
+        );
+
+        assert_eq!(restarted.state.epoch_index, 1);
+        assert_eq!(restarted.last_block().index, expected_height);
     }
 
     #[test]

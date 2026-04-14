@@ -1,8 +1,8 @@
 #[cfg(test)]
-pub mod chaos;
+pub mod bench_performance;
 #[cfg(test)]
-pub mod integration;
+pub mod chaos;
 #[cfg(test)]
 pub mod hardening;
 #[cfg(test)]
-pub mod bench_performance;
+pub mod integration;

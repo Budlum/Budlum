@@ -1,7 +1,7 @@
-use crate::crypto::primitives::{verify_signature, KeyPair};
 use crate::core::address::Address;
 use crate::core::hash::hash_fields_bytes;
 use crate::core::transaction::Transaction;
+use crate::crypto::primitives::{verify_signature, KeyPair};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
@@ -50,7 +50,7 @@ impl BlockHeader {
     pub fn calculate_hash(&self) -> String {
         hex::encode(self.calculate_hash_bytes())
     }
-    
+
     pub fn calculate_hash_bytes(&self) -> [u8; 32] {
         let producer_bytes = self
             .producer
@@ -166,11 +166,15 @@ impl Block {
     }
 
     pub fn calculate_tx_root(&self) -> String {
-        let mut tx_hashes: Vec<[u8; 32]> = self.transactions.iter()
+        let mut tx_hashes: Vec<[u8; 32]> = self
+            .transactions
+            .iter()
             .map(|tx| {
                 let mut leaf = Vec::with_capacity(1 + 32);
                 leaf.push(0x00);
-                leaf.extend_from_slice(&hex::decode(&tx.hash).unwrap_or_else(|_| tx.hash.as_bytes().to_vec()));
+                leaf.extend_from_slice(
+                    &hex::decode(&tx.hash).unwrap_or_else(|_| tx.hash.as_bytes().to_vec()),
+                );
                 crate::core::hash::calculate_hash_bytes(&leaf)
             })
             .collect();
@@ -184,12 +188,12 @@ impl Block {
             for chunk in tx_hashes.chunks(2) {
                 let left = &chunk[0];
                 let right = if chunk.len() > 1 { &chunk[1] } else { left };
-                
+
                 let mut combined = Vec::with_capacity(1 + 64);
                 combined.push(0x01);
                 combined.extend_from_slice(left);
                 combined.extend_from_slice(right);
-                
+
                 next_level.push(crate::core::hash::calculate_hash_bytes(&combined));
             }
             tx_hashes = next_level;
@@ -285,8 +289,7 @@ impl Block {
         if producer != expected_pubkey {
             println!(
                 "Wrong producer. Expected: {}, Got: {}",
-                expected_pubkey,
-                producer
+                expected_pubkey, producer
             );
             return false;
         }

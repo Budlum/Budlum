@@ -1,10 +1,10 @@
-use crate::core::address::Address;
-use crate::storage::db::Storage;
-use crate::core::transaction::{Transaction, TransactionType};
 use crate::consensus::pos::SlashingEvidence;
+use crate::core::address::Address;
+use crate::core::governance::GovernanceState;
+use crate::core::transaction::{Transaction, TransactionType};
+use crate::storage::db::Storage;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use crate::core::governance::GovernanceState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 pub const MIN_TX_FEE: u64 = 1;
 pub const GENESIS_BALANCE: u64 = 1_000_000_000;
@@ -216,8 +216,7 @@ impl AccountState {
     }
     pub fn get_or_create(&mut self, public_key: &Address) -> &mut Account {
         if !self.accounts.contains_key(public_key) {
-            self.accounts
-                .insert(*public_key, Account::new(*public_key));
+            self.accounts.insert(*public_key, Account::new(*public_key));
             self.keys_dirty = true;
         }
         self.mark_dirty(public_key);
@@ -227,6 +226,19 @@ impl AccountState {
         self.dirty_accounts.insert(*public_key);
     }
     pub fn validate_transaction(&self, tx: &Transaction) -> Result<(), String> {
+        self.validate_transaction_with_context(
+            tx,
+            self.get_nonce(&tx.from),
+            self.get_balance(&tx.from),
+        )
+    }
+
+    pub fn validate_transaction_with_context(
+        &self,
+        tx: &Transaction,
+        expected_nonce: u64,
+        spendable_balance: u64,
+    ) -> Result<(), String> {
         if tx.from == Address::zero() {
             return Ok(());
         }
@@ -236,19 +248,17 @@ impl AccountState {
         if tx.fee < self.base_fee {
             return Err(format!("Fee too low: {} < {}", tx.fee, self.base_fee));
         }
-        let expected_nonce = self.get_nonce(&tx.from);
         if tx.nonce != expected_nonce {
             return Err(format!(
                 "Invalid nonce: expected {}, got {}",
                 expected_nonce, tx.nonce
             ));
         }
-        let balance = self.get_balance(&tx.from);
         let total_cost = tx.total_cost();
-        if balance < total_cost {
+        if spendable_balance < total_cost {
             return Err(format!(
                 "Insufficient balance: {} < {} (amount: {}, fee: {})",
-                balance, total_cost, tx.amount, tx.fee
+                spendable_balance, total_cost, tx.amount, tx.fee
             ));
         }
 
@@ -291,16 +301,22 @@ impl AccountState {
             if let Some(producer) = &evidence.header1.producer {
                 if let Some(validator) = self.validators.get_mut(producer) {
                     if !validator.slashed {
-                        let penalty = ((validator.stake as u128 * slash_ratio_fixed as u128) / FIXED_POINT_SCALE as u128) as u64;
+                        let penalty = ((validator.stake as u128 * slash_ratio_fixed as u128)
+                            / FIXED_POINT_SCALE as u128)
+                            as u64;
                         validator.stake = validator.stake.saturating_sub(penalty);
                         validator.slashed = true;
                         validator.active = false;
-                        
-                        let jail_epochs = 7; 
+
+                        let jail_epochs = 7;
                         validator.jail_until = self.epoch_index.saturating_add(jail_epochs);
-                        
-                        tracing::info!("Slashed validator {} for {} stake (Jailed until epoch {})", 
-                            producer, penalty, validator.jail_until);
+
+                        tracing::info!(
+                            "Slashed validator {} for {} stake (Jailed until epoch {})",
+                            producer,
+                            penalty,
+                            validator.jail_until
+                        );
                     }
                 }
             }
@@ -321,11 +337,7 @@ impl AccountState {
         for (addr, amount) in released {
             let account = self.get_or_create(&addr);
             account.balance = account.balance.saturating_add(amount);
-            tracing::info!(
-                "Unbonding released: {} received {} coins",
-                addr,
-                amount
-            );
+            tracing::info!("Unbonding released: {} received {} coins", addr, amount);
         }
     }
 
@@ -337,7 +349,9 @@ impl AccountState {
         let mut to_execute = Vec::new();
 
         for proposal in self.governance.proposals.iter_mut() {
-            if proposal.status == crate::core::governance::ProposalStatus::Active && current_epoch >= proposal.end_epoch {
+            if proposal.status == crate::core::governance::ProposalStatus::Active
+                && current_epoch >= proposal.end_epoch
+            {
                 proposal.finalize(total_stake, quorum_pct);
                 if proposal.status == crate::core::governance::ProposalStatus::Passed {
                     to_execute.push(proposal.clone());
@@ -380,7 +394,10 @@ impl AccountState {
             }
             ProposalType::ChangeBlockReward(new_reward) => {
                 self.block_reward = *new_reward;
-                tracing::info!("Executing Governance: BlockReward changed to {}", new_reward);
+                tracing::info!(
+                    "Executing Governance: BlockReward changed to {}",
+                    new_reward
+                );
             }
             ProposalType::SlashValidator(addr) => {
                 if let Some(v) = self.validators.get_mut(addr) {
@@ -391,7 +408,11 @@ impl AccountState {
                 }
             }
             ProposalType::ParameterUpdate(key, value) => {
-                tracing::info!("Executing Governance: Parameter {} updated to {}", key, value);
+                tracing::info!(
+                    "Executing Governance: Parameter {} updated to {}",
+                    key,
+                    value
+                );
             }
         }
     }
@@ -450,23 +471,15 @@ impl AccountState {
         for (pubkey, account) in &self.accounts {
             println!(
                 "  {}...  balance: {}, nonce: {}",
-                pubkey,
-                account.balance,
-                account.nonce
+                pubkey, account.balance, account.nonce
             );
         }
     }
     pub fn get_all_balances(&self) -> HashMap<Address, u64> {
-        self.accounts
-            .iter()
-            .map(|(k, v)| (*k, v.balance))
-            .collect()
+        self.accounts.iter().map(|(k, v)| (*k, v.balance)).collect()
     }
     pub fn get_all_nonces(&self) -> HashMap<Address, u64> {
-        self.accounts
-            .iter()
-            .map(|(k, v)| (*k, v.nonce))
-            .collect()
+        self.accounts.iter().map(|(k, v)| (*k, v.nonce)).collect()
     }
 
     pub fn calculate_state_root(&mut self) -> String {
@@ -478,8 +491,9 @@ impl AccountState {
 
         if self.keys_dirty || self.cached_tree.is_empty() {
             self.cached_keys = self.accounts.keys().cloned().collect();
-            
-            self.cached_leaves = self.accounts
+
+            self.cached_leaves = self
+                .accounts
                 .par_iter()
                 .map(|(pubkey, account)| {
                     let mut h = Sha256::new();
@@ -490,11 +504,11 @@ impl AccountState {
                     h.finalize().into()
                 })
                 .collect();
-            
+
             self.cached_tree = Vec::new();
             let mut level = self.cached_leaves.clone();
             self.cached_tree.push(level.clone());
-            
+
             while level.len() > 1 {
                 let next_level: Vec<[u8; 32]> = level
                     .par_chunks(2)
@@ -528,22 +542,24 @@ impl AccountState {
                     }
                 }
             }
-            
+
             self.cached_tree[0] = self.cached_leaves.clone();
-            
+
             for level_idx in 0..self.cached_tree.len() - 1 {
-                if affected_indices.is_empty() { break; }
-                
+                if affected_indices.is_empty() {
+                    break;
+                }
+
                 let mut next_affected = HashSet::new();
-                
+
                 let mut parent_to_children: HashMap<usize, (usize, usize)> = HashMap::new();
                 for &idx in &affected_indices {
                     let parent_idx = idx / 2;
                     let left_idx = parent_idx * 2;
-                    let right_idx = if left_idx + 1 < self.cached_tree[level_idx].len() { 
-                        left_idx + 1 
-                    } else { 
-                        left_idx 
+                    let right_idx = if left_idx + 1 < self.cached_tree[level_idx].len() {
+                        left_idx + 1
+                    } else {
+                        left_idx
                     };
                     parent_to_children.insert(parent_idx, (left_idx, right_idx));
                 }
@@ -553,7 +569,7 @@ impl AccountState {
                     h.update(&[0x01]);
                     h.update(&self.cached_tree[level_idx][left_idx]);
                     h.update(&self.cached_tree[level_idx][right_idx]);
-                    
+
                     self.cached_tree[level_idx + 1][parent_idx] = h.finalize().into();
                     next_affected.insert(parent_idx);
                 }
@@ -596,7 +612,7 @@ mod tests {
         let alice = Address::from(alice_bytes);
         state.add_balance(&alice, 500);
         assert_eq!(state.get_balance(&alice), 500);
-        
+
         let mut bob_bytes = [0u8; 32];
         bob_bytes[0] = 2;
         let bob = Address::from(bob_bytes);
@@ -610,14 +626,7 @@ mod tests {
         let bob = Address::from(bob_kp.public_key_bytes());
         let mut state = AccountState::new();
         state.add_balance(&alice, 1000);
-        let mut tx = Transaction::new_with_fee(
-            alice,
-            bob,
-            100,
-            5,
-            0,
-            vec![],
-        );
+        let mut tx = Transaction::new_with_fee(alice, bob, 100, 5, 0, vec![]);
         tx.sign(&alice_kp);
         assert!(state.validate_transaction(&tx).is_ok());
         crate::execution::executor::Executor::apply_transaction(&mut state, &tx).unwrap();
@@ -631,8 +640,7 @@ mod tests {
         let alice = Address::from(alice_kp.public_key_bytes());
         let mut state = AccountState::new();
         state.add_balance(&alice, 50);
-        let mut tx =
-            Transaction::new_with_fee(alice, Address::zero(), 100, 1, 0, vec![]);
+        let mut tx = Transaction::new_with_fee(alice, Address::zero(), 100, 1, 0, vec![]);
         tx.sign(&alice_kp);
         assert!(state.validate_transaction(&tx).is_err());
     }
@@ -643,8 +651,7 @@ mod tests {
         let mut state = AccountState::new();
         state.add_balance(&alice, 1000);
         let recipient = Address::from([1u8; 32]);
-        let mut tx =
-            Transaction::new_with_fee(alice, recipient, 100, 1, 5, vec![]);
+        let mut tx = Transaction::new_with_fee(alice, recipient, 100, 1, 5, vec![]);
         tx.sign(&alice_kp);
         let result = state.validate_transaction(&tx);
         assert!(result.is_err());
@@ -657,15 +664,13 @@ mod tests {
         let mut state = AccountState::new();
         state.add_balance(&alice, 1000);
         let recipient = Address::from([1u8; 32]);
-        let mut tx1 =
-            Transaction::new_with_fee(alice, recipient, 50, 1, 0, vec![]);
+        let mut tx1 = Transaction::new_with_fee(alice, recipient, 50, 1, 0, vec![]);
         tx1.sign(&alice_kp);
         assert!(state.validate_transaction(&tx1).is_ok());
         crate::execution::executor::Executor::apply_transaction(&mut state, &tx1).unwrap();
         assert!(state.validate_transaction(&tx1).is_err());
         let recipient = Address::from([1u8; 32]);
-        let mut tx2 =
-            Transaction::new_with_fee(alice, recipient, 50, 1, 1, vec![]);
+        let mut tx2 = Transaction::new_with_fee(alice, recipient, 50, 1, 1, vec![]);
         tx2.sign(&alice_kp);
         assert!(state.validate_transaction(&tx2).is_ok());
     }
@@ -675,8 +680,7 @@ mod tests {
         let alice = Address::from(alice_kp.public_key_bytes());
         let mut state = AccountState::new();
         state.add_balance(&alice, 1000);
-        let mut tx =
-            Transaction::new_with_fee(alice, Address::zero(), 100, 0, 0, vec![]);
+        let mut tx = Transaction::new_with_fee(alice, Address::zero(), 100, 0, 0, vec![]);
         tx.sign(&alice_kp);
         let result = state.validate_transaction(&tx);
         assert!(result.is_err());

@@ -1,10 +1,10 @@
-use jsonrpsee::types::error::ErrorObjectOwned;
+use super::api::BudlumApiServer;
 use crate::chain::chain_actor::ChainHandle;
 use crate::core::address::Address;
 use crate::core::block::Block;
 use crate::core::transaction::Transaction;
 use crate::network::node::NodeClient;
-use super::api::BudlumApiServer;
+use jsonrpsee::types::error::ErrorObjectOwned;
 use tracing::info;
 
 pub struct RpcServer {
@@ -19,10 +19,8 @@ impl RpcServer {
 
     pub async fn run(self, addr: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use jsonrpsee::server::ServerBuilder;
-        let server = ServerBuilder::default()
-            .build(addr.clone())
-            .await?;
-        
+        let server = ServerBuilder::default().build(addr.clone()).await?;
+
         info!("RPC Server started on {}", addr);
         let handle = server.start(self.into_rpc());
         tokio::spawn(handle.stopped());
@@ -35,7 +33,7 @@ impl RpcServer {
 
     fn to_0x_hash(h: String) -> String {
         if h.is_empty() {
-             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string()
+            "0x0000000000000000000000000000000000000000000000000000000000000000".to_string()
         } else if h.starts_with("0x") {
             h
         } else {
@@ -85,7 +83,10 @@ impl BudlumApiServer for RpcServer {
         Ok(Self::to_hex(height))
     }
 
-    async fn get_block_by_number(&self, number: u64) -> Result<serde_json::Value, ErrorObjectOwned> {
+    async fn get_block_by_number(
+        &self,
+        number: u64,
+    ) -> Result<serde_json::Value, ErrorObjectOwned> {
         match self.chain.get_block(number).await {
             Some(b) => Ok(Self::block_to_json(b)),
             None => Ok(serde_json::Value::Null),
@@ -93,7 +94,11 @@ impl BudlumApiServer for RpcServer {
     }
 
     async fn get_block_by_hash(&self, hash: String) -> Result<serde_json::Value, ErrorObjectOwned> {
-        let clean_hash = if hash.starts_with("0x") { &hash[2..] } else { &hash };
+        let clean_hash = if hash.starts_with("0x") {
+            &hash[2..]
+        } else {
+            &hash
+        };
         match self.chain.get_block_by_hash(clean_hash.to_string()).await {
             Some(b) => Ok(Self::block_to_json(b)),
             None => Ok(serde_json::Value::Null),
@@ -101,45 +106,85 @@ impl BudlumApiServer for RpcServer {
     }
 
     async fn get_balance(&self, address: String) -> Result<String, ErrorObjectOwned> {
-        let clean_addr = if address.starts_with("0x") { &address[2..] } else { &address };
-        let addr = Address::from_hex(clean_addr).map_err(|e| ErrorObjectOwned::owned(-32602, format!("Invalid address: {}", e), None::<()>))?;
+        let clean_addr = if address.starts_with("0x") {
+            &address[2..]
+        } else {
+            &address
+        };
+        let addr = Address::from_hex(clean_addr).map_err(|e| {
+            ErrorObjectOwned::owned(-32602, format!("Invalid address: {}", e), None::<()>)
+        })?;
         let balance = self.chain.get_balance(&addr).await;
         Ok(Self::to_hex(balance))
     }
 
     async fn get_nonce(&self, address: String) -> Result<String, ErrorObjectOwned> {
-        let clean_addr = if address.starts_with("0x") { &address[2..] } else { &address };
-        let addr = Address::from_hex(clean_addr).map_err(|e| ErrorObjectOwned::owned(-32602, format!("Invalid address: {}", e), None::<()>))?;
+        let clean_addr = if address.starts_with("0x") {
+            &address[2..]
+        } else {
+            &address
+        };
+        let addr = Address::from_hex(clean_addr).map_err(|e| {
+            ErrorObjectOwned::owned(-32602, format!("Invalid address: {}", e), None::<()>)
+        })?;
         let nonce = self.chain.get_nonce(&addr).await;
         Ok(Self::to_hex(nonce))
     }
 
     async fn send_raw_transaction(&self, tx: Transaction) -> Result<String, ErrorObjectOwned> {
         if let Err(e) = crate::network::protocol::NetworkMessage::validate_tx_size(&tx) {
-            return Err(ErrorObjectOwned::owned(-32602, format!("Transaction too large: {:?}", e), None::<()>));
+            return Err(ErrorObjectOwned::owned(
+                -32602,
+                format!("Transaction too large: {:?}", e),
+                None::<()>,
+            ));
         }
-        
+
         if !tx.verify() {
-            return Err(ErrorObjectOwned::owned(-32602, "Invalid transaction signature", None::<()>));
+            return Err(ErrorObjectOwned::owned(
+                -32602,
+                "Invalid transaction signature",
+                None::<()>,
+            ));
         }
 
         let tx_hash = tx.hash.clone();
         let tx_clone = tx.clone();
-        self.chain.add_transaction(tx).await.map_err(|e| ErrorObjectOwned::owned(-32602, format!("Invalid params: {}", e), None::<()>))?;
+        self.chain.add_transaction(tx).await.map_err(|e| {
+            ErrorObjectOwned::owned(-32602, format!("Invalid params: {}", e), None::<()>)
+        })?;
         self.node.broadcast_tx_sync(tx_clone);
         Ok(Self::to_0x_hash(tx_hash))
     }
 
-    async fn get_transaction_by_hash(&self, hash: String) -> Result<serde_json::Value, ErrorObjectOwned> {
-        let clean_hash = if hash.starts_with("0x") { &hash[2..] } else { &hash };
-        match self.chain.get_transaction_by_hash(clean_hash.to_string()).await {
+    async fn get_transaction_by_hash(
+        &self,
+        hash: String,
+    ) -> Result<serde_json::Value, ErrorObjectOwned> {
+        let clean_hash = if hash.starts_with("0x") {
+            &hash[2..]
+        } else {
+            &hash
+        };
+        match self
+            .chain
+            .get_transaction_by_hash(clean_hash.to_string())
+            .await
+        {
             Some(t) => Ok(Self::tx_to_json(t)),
             None => Ok(serde_json::Value::Null),
         }
     }
 
-    async fn get_transaction_receipt(&self, hash: String) -> Result<serde_json::Value, ErrorObjectOwned> {
-        let clean_hash = if hash.starts_with("0x") { &hash[2..] } else { &hash };
+    async fn get_transaction_receipt(
+        &self,
+        hash: String,
+    ) -> Result<serde_json::Value, ErrorObjectOwned> {
+        let clean_hash = if hash.starts_with("0x") {
+            &hash[2..]
+        } else {
+            &hash
+        };
         match self.chain.get_tx_receipt(clean_hash.to_string()).await {
             Some(receipt) => Ok(receipt),
             None => Ok(serde_json::Value::Null),
@@ -153,7 +198,11 @@ impl BudlumApiServer for RpcServer {
 
     async fn estimate_gas(&self, tx: Transaction) -> Result<String, ErrorObjectOwned> {
         if let Err(_e) = crate::network::protocol::NetworkMessage::validate_tx_size(&tx) {
-            return Err(ErrorObjectOwned::owned(-32602, format!("Transaction too large: {:?}", _e), None::<()>));
+            return Err(ErrorObjectOwned::owned(
+                -32602,
+                format!("Transaction too large: {:?}", _e),
+                None::<()>,
+            ));
         }
         Ok(Self::to_hex(21000))
     }
@@ -165,32 +214,7 @@ impl BudlumApiServer for RpcServer {
                 "reasons": ["transaction_too_large"]
             }));
         }
-
-        let mut reasons = Vec::new();
-
-        if !tx.verify() {
-            reasons.push("invalid_signature");
-        }
-        
-        let current_nonce = self.chain.get_nonce(&tx.from).await;
-        if tx.nonce < current_nonce {
-            reasons.push("nonce_too_low");
-        }
-        
-        let balance = self.chain.get_balance(&tx.from).await;
-        if balance < tx.amount + tx.fee {
-            reasons.push("insufficient_funds");
-        }
-        
-        let chain_id = self.chain.get_chain_id().await;
-        if tx.chain_id != chain_id {
-            reasons.push("invalid_chain_id");
-        }
-
-        Ok(serde_json::json!({
-            "accepted": reasons.is_empty(),
-            "reasons": reasons
-        }))
+        Ok(self.chain.tx_precheck(tx).await)
     }
 
     async fn syncing(&self) -> Result<bool, ErrorObjectOwned> {
@@ -207,6 +231,10 @@ impl BudlumApiServer for RpcServer {
     }
 
     async fn net_peer_count(&self) -> Result<String, ErrorObjectOwned> {
-        Ok(Self::to_hex(self.node.peer_count.load(std::sync::atomic::Ordering::SeqCst) as u64))
+        Ok(Self::to_hex(
+            self.node
+                .peer_count
+                .load(std::sync::atomic::Ordering::SeqCst) as u64,
+        ))
     }
 }

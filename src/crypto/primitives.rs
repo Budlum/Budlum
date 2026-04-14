@@ -30,9 +30,7 @@ pub struct KeyPair {
     signing_key: SigningKey,
 }
 
-use schnorrkel::{
-    Keypair as SchnorrkelKeypair,
-};
+use schnorrkel::Keypair as SchnorrkelKeypair;
 
 #[derive(Clone)]
 pub struct ValidatorKeys {

@@ -1,5 +1,5 @@
-use crate::core::transaction::Transaction;
 use crate::core::address::Address;
+use crate::core::transaction::Transaction;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -45,6 +45,7 @@ struct PendingTx {
     added_at: u128,
 }
 
+#[derive(Clone)]
 pub struct Mempool {
     config: MempoolConfig,
 
@@ -186,6 +187,22 @@ impl Mempool {
         self.transactions.get(hash).map(|p| &p.tx)
     }
 
+    pub fn sender_transactions(&self, sender: &Address) -> Vec<Transaction> {
+        self.by_sender
+            .get(sender)
+            .map(|nonces| {
+                nonces
+                    .values()
+                    .filter_map(|hash| {
+                        self.transactions
+                            .get(hash)
+                            .map(|pending| pending.tx.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn drain(&mut self) -> Vec<Transaction> {
         let txs: Vec<Transaction> = self.transactions.values().map(|p| p.tx.clone()).collect();
         self.transactions.clear();
@@ -285,9 +302,12 @@ mod tests {
     #[test]
     fn test_sorted_by_fee() {
         let mut pool = Mempool::default();
-        pool.add_transaction(create_test_tx(&"01".repeat(32), 0, 5)).unwrap();
-        pool.add_transaction(create_test_tx(&"02".repeat(32), 0, 20)).unwrap();
-        pool.add_transaction(create_test_tx(&"03".repeat(32), 0, 10)).unwrap();
+        pool.add_transaction(create_test_tx(&"01".repeat(32), 0, 5))
+            .unwrap();
+        pool.add_transaction(create_test_tx(&"02".repeat(32), 0, 20))
+            .unwrap();
+        pool.add_transaction(create_test_tx(&"03".repeat(32), 0, 10))
+            .unwrap();
 
         let sorted = pool.get_sorted_transactions(10);
         assert_eq!(sorted[0].fee, 20);

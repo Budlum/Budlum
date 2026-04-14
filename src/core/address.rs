@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize, Serializer, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
 
@@ -13,7 +13,10 @@ impl Address {
         }
         let bytes = hex::decode(s).map_err(|e| e.to_string())?;
         if bytes.len() != 32 {
-            return Err(format!("Invalid address length: expected 32, got {}", bytes.len()));
+            return Err(format!(
+                "Invalid address length: expected 32, got {}",
+                bytes.len()
+            ));
         }
         let mut addr = [0u8; 32];
         addr.copy_from_slice(&bytes);

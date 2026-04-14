@@ -1,7 +1,9 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 pub const PROTOCOL_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum, Default,
+)]
 pub enum Network {
     Mainnet,
     Testnet,
@@ -36,12 +38,8 @@ impl Network {
 
     pub fn bootnodes(&self) -> Vec<String> {
         match self {
-            Network::Mainnet => vec![
-                "/ip4/1.2.3.4/tcp/4001/p2p/QmMainnetBootnode1".to_string(),
-            ],
-            Network::Testnet => vec![
-                "/ip4/5.6.7.8/tcp/5001/p2p/QmTestnetBootnode1".to_string(),
-            ],
+            Network::Mainnet => vec!["/ip4/1.2.3.4/tcp/4001/p2p/QmMainnetBootnode1".to_string()],
+            Network::Testnet => vec!["/ip4/5.6.7.8/tcp/5001/p2p/QmTestnetBootnode1".to_string()],
             Network::Devnet => vec![],
         }
     }
