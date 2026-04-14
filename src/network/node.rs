@@ -802,7 +802,14 @@ impl Node {
                                             }
                                             Err(e) => {
                                                 warn!("Failed to apply FinalityCert from {}: {}", peer_id, e);
-                                                if let Ok(mut pm) = self.peer_manager.lock() {
+                                                if e.contains("Missing verified QC blob") {
+                                                    let topic = gossipsub::IdentTopic::new("blocks");
+                                                    let req = NetworkMessage::GetQcBlob {
+                                                        epoch,
+                                                        checkpoint_height,
+                                                    };
+                                                    let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, req.to_bytes());
+                                                } else if let Ok(mut pm) = self.peer_manager.lock() {
                                                     pm.report_bad_behavior(&peer_id);
                                                 }
                                             }
@@ -831,7 +838,7 @@ impl Node {
                                         let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, response.to_bytes());
                                     }
 
-                                    NetworkMessage::QcBlobResponse { epoch, checkpoint_height, found, .. } => {
+                                    NetworkMessage::QcBlobResponse { epoch, checkpoint_height, found, blob_data, .. } => {
                                         let rate_limit_ok = self.peer_manager.lock()
                                             .map(|mut pm| pm.check_blob_rate_limit(&peer_id))
                                             .unwrap_or(false);
@@ -843,8 +850,43 @@ impl Node {
                                             peer_id, epoch, checkpoint_height, found);
 
                                         if found {
-                                            if let Ok(mut pm) = self.peer_manager.lock() {
-                                                pm.report_good_behavior(&peer_id);
+                                            match serde_json::from_slice::<crate::consensus::qc::QcBlob>(&blob_data) {
+                                                Ok(blob) => {
+                                                    if blob.epoch != epoch || blob.checkpoint_height != checkpoint_height {
+                                                        warn!(
+                                                            "QcBlobResponse metadata mismatch from {}: expected epoch={}, height={}, got epoch={}, height={}",
+                                                            peer_id,
+                                                            epoch,
+                                                            checkpoint_height,
+                                                            blob.epoch,
+                                                            blob.checkpoint_height
+                                                        );
+                                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                                            pm.report_bad_behavior(&peer_id);
+                                                        }
+                                                        continue;
+                                                    }
+
+                                                    match self.chain.import_qc_blob(blob).await {
+                                                        Ok(_) => {
+                                                            if let Ok(mut pm) = self.peer_manager.lock() {
+                                                                pm.report_good_behavior(&peer_id);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            warn!("Failed to import QcBlob from {}: {}", peer_id, e);
+                                                            if let Ok(mut pm) = self.peer_manager.lock() {
+                                                                pm.report_bad_behavior(&peer_id);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!("Failed to parse QcBlobResponse from {}: {}", peer_id, e);
+                                                    if let Ok(mut pm) = self.peer_manager.lock() {
+                                                        pm.report_bad_behavior(&peer_id);
+                                                    }
+                                                }
                                             }
                                         }
                                     }

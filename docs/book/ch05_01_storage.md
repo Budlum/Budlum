@@ -139,3 +139,12 @@ Budlum'da reorg artık sadece blok gövdelerini yazmakla kalmaz; canonical metad
 - `LAST` işaretçisi yeni ucun hash'ine taşınır.
 
 Bu önemli bir ayrıntıdır, çünkü aksi halde node yeniden başlatıldığında disk üzerinde eski canonical bilgi ile yeni chain body birbirine karışabilir.
+
+## 6. QC / Finality Temizleme Yardımcıları
+
+PQ enforcement ile birlikte storage katmanına küçük ama önemli iki yardımcı daha eklenmiştir:
+
+- `delete_qc_blob(height)`: Bir checkpoint'e ait doğrulanmış QC blob kaydını siler.
+- `delete_finality_cert(height)`: Belirli yükseklikteki finality sertifikasını temizler.
+
+Bu fonksiyonlar özellikle `PqFraudProof` sonrası invalidation akışında kullanılır. Böylece yalnızca RAM'deki finality durumu değil, disk üzerindeki kanıt kayıtları da tutarlı kalır.

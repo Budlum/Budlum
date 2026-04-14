@@ -1,5 +1,6 @@
 use crate::chain::blockchain::Blockchain;
 use crate::chain::finality::FinalityCert;
+use crate::consensus::qc::{PqFraudProof, QcBlob};
 use crate::core::address::Address;
 use crate::core::block::Block;
 use crate::core::transaction::Transaction;
@@ -23,6 +24,8 @@ pub enum ChainCommand {
     GetValidatorSetHash(oneshot::Sender<String>),
     GetMempoolSize(oneshot::Sender<usize>),
     HandleFinalityCert(FinalityCert, oneshot::Sender<Result<(), String>>),
+    ImportQcBlob(QcBlob, oneshot::Sender<Result<(), String>>),
+    HandlePqFraudProof(PqFraudProof, oneshot::Sender<Result<(), String>>),
     CleanupMempool(oneshot::Sender<usize>),
     TryReorg(Vec<Block>, oneshot::Sender<Result<bool, String>>),
     GetChainInfo(oneshot::Sender<String>),
@@ -176,6 +179,25 @@ impl ChainHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(ChainCommand::CleanupMempool(tx)).await;
         rx.await.unwrap_or(0)
+    }
+
+    pub async fn import_qc_blob(&self, blob: QcBlob) -> Result<(), String> {
+        let (res_tx, res_rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::ImportQcBlob(blob, res_tx)).await;
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn handle_pq_fraud_proof(&self, proof: PqFraudProof) -> Result<(), String> {
+        let (res_tx, res_rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::HandlePqFraudProof(proof, res_tx))
+            .await;
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
     pub async fn try_reorg(&self, fork: Vec<Block>) -> Result<bool, String> {
@@ -360,6 +382,20 @@ impl ChainActor {
                             .map_err(|e| e.to_string()),
                     );
                 }
+                ChainCommand::ImportQcBlob(blob, res_tx) => {
+                    let _ = res_tx.send(
+                        self.blockchain
+                            .import_qc_blob(blob)
+                            .map_err(|e| e.to_string()),
+                    );
+                }
+                ChainCommand::HandlePqFraudProof(proof, res_tx) => {
+                    let _ = res_tx.send(
+                        self.blockchain
+                            .handle_pq_fraud_proof(proof)
+                            .map_err(|e| e.to_string()),
+                    );
+                }
                 ChainCommand::CleanupMempool(tx) => {
                     let removed = self.blockchain.mempool.cleanup_expired();
                     let _ = tx.send(removed);
@@ -401,11 +437,7 @@ impl ChainActor {
                     let _ = tx.send(common);
                 }
                 ChainCommand::GetQcBlob(height, tx) => {
-                    let res = self
-                        .blockchain
-                        .storage
-                        .as_ref()
-                        .and_then(|s| s.get_qc_blob(height).unwrap_or(None));
+                    let res = self.blockchain.get_qc_blob(height);
                     let _ = tx.send(res);
                 }
                 ChainCommand::GetFinalityCert(height, tx) => {

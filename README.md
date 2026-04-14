@@ -2,7 +2,7 @@
 
 **Budlum Core** is a modular blockchain framework written in Rust. It serves as a high-performance Layer-1 blockchain featuring pluggable consensus engines (PoW, PoS, PoA), a hardened libp2p-based networking stack, and an atomic, account-based state model.
 
-The architecture emphasizes **security**, **modularity**, and **readability**, making it an ideal foundation for custom blockchain networks, protocol experiments, or educational study of advanced distributed ledger technology. With the latest hardening passes, the framework is robust against spam, malformed payloads, inconsistent replay, and stale canonical metadata after reorgs.
+The architecture emphasizes **security**, **modularity**, and **readability**, making it an ideal foundation for custom blockchain networks, protocol experiments, or educational study of advanced distributed ledger technology. With the latest hardening passes, the framework is robust against spam, malformed payloads, inconsistent replay, stale canonical metadata after reorgs, and unchecked PQ sidecar data.
 
 ---
 
@@ -46,7 +46,7 @@ graph TD
         Engine --> PoW["Proof of Work"]
         Engine --> PoS["Proof of Stake + VRF"]
         Engine --> Finality["BLS Finality Layer"]
-        Engine --> QC["Optimistic QC - PQ Attestation"]
+        Engine --> QC["QC Sidecar - PQ Attestation"]
     end
 
     subgraph "Networking Layer (libp2p)"
@@ -68,7 +68,7 @@ graph TD
 | **Network** | `src/network/` | P2P stack (libp2p), node discovery, and protocol logic. |
 | **RPC** | `src/rpc/` | JSON-RPC 2.0 implementation with `bud_` standard methods. |
 | **Consensus** | `src/consensus/` | Implementations of PoW, PoS, PoA, and Finality gadgets. |
-| **Storage** | `src/storage/` | Persistent database layer (RocksDB/DumbDB). |
+| **Storage** | `src/storage/` | Persistent database layer built on `sled`. |
 | **Execution** | `src/execution/` | State transition engine and block application. |
 | **Mempool** | `src/mempool/` | Validating transaction pool with fee-based prioritization. |
 | **Tests** | `src/tests/` | Comprehensive integration and **Chaos Engineering** suites. |
@@ -136,6 +136,11 @@ Budlum Core has undergone a rigorous production-readiness audit and is now equip
 -   **Merkle Tree Security (Incremental & Optimized)**:
     *   **Domain Separation**: Uses `0x00` prefixes for leaves and `0x01` for internal nodes.
     *   **Incremental Updates**: State root calculation is $O(\log N)$ using a cached Merkle Tree and dirty-account tracking.
+-   **PQ Enforcement Pipeline**:
+    *   Validator identity now includes Dilithium public keys.
+    *   `QcBlobResponse` payloads are parsed, Merkle-checked, Dilithium-verified, and persisted before use.
+    *   `FinalityCert` acceptance is gated on the presence of a verified `QC_BLOB`.
+    *   Valid `PqFraudProof`s can slash validators and invalidate affected finality metadata.
 -   **Binary Optimization**:
     *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
     *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.
@@ -176,13 +181,15 @@ Budlum abstracts consensus into the `ConsensusEngine` trait.
 - **Selection**: Uses Verifiable Random Functions for unbiased, secure proposers. Thresholding is proportional to stake, ensuring fairness.
 - **Slashing**: Detects **Double-Proposals** and **Double-Signatures**.
 
-#### BLS Finality Layer (`src/consensus/finality.rs`)
+#### BLS Finality Layer (`src/chain/finality.rs`)
 - **BFT Consensus**: Adds a gadget on top of PoS to finalize blocks via aggregate signatures.
 - **Checkpoints**: Every 100 blocks, a mandatory quorum vote seals the chain's past forever.
+- **QC Gating**: A BLS certificate is not sufficient on its own; the corresponding checkpoint must also have a verified PQ sidecar blob for the certificate's signers.
 
 #### Optimistic QC (`src/consensus/qc.rs`)
-- **Post-Quantum Security**: Implements Dilithium-based attestations.
-- **Fraud Proofs**: Nodes can challenge invalid PQ attestations by submitting Merkle proofs of invalid signatures.
+- **Post-Quantum Security**: Implements Dilithium-based validator attestations for checkpoint sidecars.
+- **Merkle Sidecar**: PQ signatures are packed into `QcBlob` objects with deterministic Merkle roots and per-leaf proofs.
+- **Fraud Proofs**: Nodes can construct and verify `PqFraudProof` objects for invalid PQ attestations; valid proofs trigger slashing and finality invalidation.
 
 #### Proof of Work (PoW) (`src/consensus/pow.rs`)
 - **Algorithm**: Standard SHA3-256 Hashcash.
@@ -248,7 +255,7 @@ Defined in `src/network/protocol.rs` and `proto/protocol.proto`:
 - `Handshake` / `HandshakeAck`: Protocol version and validator set hash verification.
 - `Block(Block)` / `Transaction(Transaction)`: Core data propagation.
 - **Finality**: `Prevote`, `Precommit`, and `FinalityCert` (BLS-aggregated).
-- **QC**: `GetQcBlob` and `QcBlobResponse` (Dilithium-indexed).
+- **QC**: `GetQcBlob` and `QcBlobResponse` transport PQ sidecars; recipients parse, verify, and persist blobs before they become authoritative.
 
 #### Serialization & Efficiency
 Budlum has migrated to **Protobuf** for P2P messaging to ensure minimal overhead and cross-language compatibility. Determinisitic serialization for consensus state uses **Bincode**.
@@ -266,12 +273,13 @@ To prevent spam and attacks, the `PeerManager` (`src/network/peer_manager.rs`) a
 
 Budlum uses an Account-based model (like Ethereum), not UTXO (like Bitcoin).
 
-#### Storage (`src/storage.rs`)
+#### Storage (`src/storage/db.rs`)
 Data is persisted in **sled**, a high-performance embedded database.
 - **`{hash}`**: Stores serialized block data.
 - **`LAST`**: Stores the hash of the chain tip.
 - **`STATE_ROOT:{height}`**: Stores canonical state roots.
 - **`TX_IDX:{hash}`**: Stores transaction-to-height lookup entries.
+- **`QC_BLOB:{height}` / `FINALITY_CERT:{height}`**: Persist verified PQ sidecars and finalized checkpoint proofs.
 - **Snapshots**: Stored separately by the snapshot/pruning subsystem.
 
 #### Snapshots & Pruning (`src/snapshot.rs`)
@@ -287,7 +295,7 @@ Data is persisted in **sled**, a high-performance embedded database.
 - **Signatures**:
     - **Ed25519**: Primary signature for transactions and basic block identity.
     - **BLS (bls12_381)**: Multi-signature aggregation for finality voting.
-    - **Dilithium**: Post-Quantum attestation for long-term security.
+    - **Dilithium**: Post-Quantum validator attestations with detached signature verification.
 - **Hashing**: **SHA3-256** (Keccak).
 - **Proof of Possession (PoP)**: Mandated for BLS key registration to prevent rogue-key attacks.
 

@@ -2,14 +2,13 @@
 
 Bu bölüm, makinelerin birbirleriyle konuşurken kullandığı dili (`NetworkMessage`) ve verilerin kablodan geçmeden önce nasıl 0 ve 1'lere dönüştürüldüğünü (Serialization) analiz eder.
 
-Kaynak Dosya: `src/network/protocol.rs` (Varsayımsal)
+Kaynak Dosyalar: `src/network/protocol.rs`, `src/network/proto_conversions.rs`, `src/network/node.rs`
 
 ---
 
 ## 1. Veri Yapıları: Ortak Dil
 
 Dünyanın her yerindeki bilgisayarların anlaşabilmesi için ortak bir `Enum` tanımlarız.
-# Protokol Mesajları ve Serileştirme (Serialization)
 
 `budlum-core` içindeki node'lar, eşler düzeyindeki (p2p) ağı yönetmek ve veri paylaşmak için özel `NetworkMessage` protokolünü kullanırlar.
 
@@ -22,7 +21,7 @@ Ağdaki tüm iletişim bir enum (numaralandırılmış yapı) üzerinden geçer.
 3.  **Transaction**: Yeni işlemlerin yayılması.
 4.  **Finalite Oyları (Prevote / Precommit)**: BLS tabanlı finalite katmanı oyları.
 5.  **FinalityCert**: Bir checkpoint'in finalize edildiğini kanıtlayan eşik imzalı sertifika.
-6.  **QC İstekleri (GetQcBlob / QcBlobResponse)**: Optimistik QC doğrulaması için Dilithium imzalı blob paketlerinin paylaşımı.
+6.  **QC İstekleri (GetQcBlob / QcBlobResponse)**: Checkpoint'e ait Dilithium attestasyon blob'unun istenmesi, parse edilmesi ve doğrulanması için kullanılır.
 7.  **NewTip / Sync Mesajları**: Zincir senkronizasyonu için kullanılan `GetBlocksByHeight` vb. mesajlar.
 
 *Tam Liste kaynak kodu üzerinden incelenebilir: `src/network/protocol.rs`*
@@ -52,6 +51,19 @@ Mesajlar ağ üzerine bayt olarak çıkmadan önce serileştirilir.
 
 **Neden Protobuf?**
 Blok zincirinde saniyede binlerce işlem olur. JSON kullanmak, ağı %30-40 yavaşlatır ve CPU'yu yorar. Protobuf, veriyi ikili (binary) formatta paketleyerek çok daha hızlı ve küçük paketler oluşturur.
+
+## 2.1. QC Mesajlarının Anlamı
+
+- `GetQcBlob { epoch, checkpoint_height }`:
+  Bir node'un, finalize edilmek istenen checkpoint için gerekli PQ attestasyon blob'unu istemesidir.
+- `QcBlobResponse { epoch, checkpoint_height, checkpoint_hash, blob_data, found }`:
+  Bulunan blob'un ham baytlarını taşır. Alıcı node bu veriyi doğrudan güvenilir saymaz:
+  1. JSON parse edilir.
+  2. `epoch` ve `checkpoint_height` eşleşmesi kontrol edilir.
+  3. Merkle root ve Dilithium imzaları validator snapshot'ına karşı doğrulanır.
+  4. Başarılıysa `QC_BLOB:{height}` olarak persist edilir.
+
+Bu önemli bir farktır: ağ protokolü blob'u sadece “taşır”, ama kabul kararı zincir katmanında verilir.
 
 ---
 

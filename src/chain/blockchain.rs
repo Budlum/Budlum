@@ -1,6 +1,7 @@
 use crate::chain::finality::{ValidatorEntry, ValidatorSetSnapshot};
 use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
 use crate::chain::snapshot::PruningManager;
+use crate::consensus::qc::{PqFraudProof, QcBlob};
 use crate::consensus::ConsensusEngine;
 use crate::core::account::AccountState;
 use crate::core::address::Address;
@@ -9,6 +10,7 @@ use crate::core::transaction::Transaction;
 use crate::execution::executor::Executor;
 use crate::mempool::pool::{Mempool, MempoolConfig};
 use crate::storage::db::Storage;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
@@ -28,6 +30,7 @@ pub struct Blockchain {
     pub finalized_height: u64,
     pub finalized_hash: String,
     pub genesis_time: u128,
+    pub verified_qc_blobs: BTreeMap<u64, QcBlob>,
 }
 impl Blockchain {
     pub fn new(
@@ -139,6 +142,7 @@ impl Blockchain {
             finalized_height: restored_finalized_height,
             finalized_hash: restored_finalized_hash,
             genesis_time: 0,
+            verified_qc_blobs: BTreeMap::new(),
         };
 
         if let Some(first) = bc.chain.first() {
@@ -235,6 +239,11 @@ impl Blockchain {
     }
 
     pub fn get_validator_set_hash(&self) -> String {
+        self.validator_snapshot_for_epoch(self.state.epoch_index)
+            .set_hash
+    }
+
+    fn validator_snapshot_for_epoch(&self, epoch: u64) -> ValidatorSetSnapshot {
         let active_validators = self.state.get_active_validators();
         let entries: Vec<ValidatorEntry> = active_validators
             .into_iter()
@@ -243,9 +252,142 @@ impl Blockchain {
                 stake: v.stake,
                 bls_public_key: v.bls_public_key.clone(),
                 pop_signature: v.pop_signature.clone(),
+                pq_public_key: v.pq_public_key.clone(),
             })
             .collect();
-        ValidatorSetSnapshot::compute_hash(&entries)
+        ValidatorSetSnapshot::new(epoch, entries)
+    }
+
+    pub fn get_qc_blob(&self, height: u64) -> Option<QcBlob> {
+        self.verified_qc_blobs.get(&height).cloned().or_else(|| {
+            self.storage
+                .as_ref()
+                .and_then(|store| store.get_qc_blob(height).unwrap_or(None))
+        })
+    }
+
+    fn maybe_penalize_detected_fraud(
+        &mut self,
+        snapshot: &ValidatorSetSnapshot,
+        blob: &QcBlob,
+    ) -> Result<(), String> {
+        let proofs = blob.detect_fraud_proofs(snapshot);
+        for proof in proofs {
+            self.apply_valid_pq_fraud_proof(&proof)?;
+        }
+        Ok(())
+    }
+
+    fn invalidate_finality_from_height(&mut self, from_height: u64) {
+        let checkpoint_interval = crate::core::chain_config::FINALITY_CHECKPOINT_INTERVAL;
+        let qc_heights: Vec<u64> = self
+            .verified_qc_blobs
+            .range(from_height..)
+            .map(|(height, _)| *height)
+            .collect();
+        for height in qc_heights {
+            self.verified_qc_blobs.remove(&height);
+        }
+
+        if let Some(store) = &self.storage {
+            let mut height = from_height;
+            let upper_bound = self.chain.len().saturating_sub(1) as u64;
+            while height <= upper_bound {
+                let _ = store.delete_finality_cert(height);
+                let _ = store.delete_qc_blob(height);
+                if let Some(next) = height.checked_add(checkpoint_interval) {
+                    height = next;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let mut new_finalized_height = 0;
+        let mut new_finalized_hash = self
+            .chain
+            .first()
+            .map(|block| block.hash.clone())
+            .unwrap_or_default();
+
+        if let Some(store) = &self.storage {
+            let mut height = self.chain.len().saturating_sub(1) as u64;
+            while height >= checkpoint_interval {
+                if let Ok(Some(cert)) = store.get_finality_cert(height) {
+                    new_finalized_height = cert.checkpoint_height;
+                    new_finalized_hash = cert.checkpoint_hash;
+                    break;
+                }
+                height = height.saturating_sub(checkpoint_interval);
+                if height == 0 {
+                    break;
+                }
+            }
+        }
+
+        self.finalized_height = new_finalized_height;
+        self.finalized_hash = new_finalized_hash;
+
+        if let Some(store) = &self.storage {
+            let _ = store.save_canonical_height(self.finalized_height);
+        }
+    }
+
+    fn apply_valid_pq_fraud_proof(&mut self, proof: &PqFraudProof) -> Result<(), String> {
+        use crate::core::chain_config::FIXED_POINT_SCALE;
+
+        let validator_address = Address::from_hex(&proof.validator_address)
+            .map_err(|e| format!("Invalid fraud-proof validator address: {}", e))?;
+
+        let slash_ratio_fixed = (50 * FIXED_POINT_SCALE) / 100;
+        let _ = self.state.slash_validator(
+            &validator_address,
+            slash_ratio_fixed,
+            "invalid PQ attestation",
+        );
+
+        self.invalidate_finality_from_height(proof.checkpoint_height);
+        Ok(())
+    }
+
+    pub fn import_qc_blob(&mut self, blob: QcBlob) -> Result<(), String> {
+        let block = self
+            .chain
+            .get(blob.checkpoint_height as usize)
+            .ok_or_else(|| {
+                format!(
+                    "Missing checkpoint block at height {}",
+                    blob.checkpoint_height
+                )
+            })?;
+
+        if block.hash != blob.checkpoint_hash {
+            return Err(format!(
+                "QcBlob checkpoint hash mismatch: expected {}, got {}",
+                block.hash, blob.checkpoint_hash
+            ));
+        }
+
+        let snapshot = self.validator_snapshot_for_epoch(blob.epoch);
+        self.maybe_penalize_detected_fraud(&snapshot, &blob)?;
+        blob.verify_against_snapshot(&snapshot, None, Some(self.state.epoch_index))?;
+
+        self.verified_qc_blobs
+            .insert(blob.checkpoint_height, blob.clone());
+        if let Some(store) = &self.storage {
+            let _ = store.save_qc_blob(blob.checkpoint_height, &blob);
+        }
+
+        Ok(())
+    }
+
+    pub fn handle_pq_fraud_proof(&mut self, proof: PqFraudProof) -> Result<(), String> {
+        let blob = self
+            .get_qc_blob(proof.checkpoint_height)
+            .ok_or_else(|| format!("Missing QC blob at height {}", proof.checkpoint_height))?;
+        let snapshot = self.validator_snapshot_for_epoch(proof.epoch);
+        proof.verify_against_blob(&blob, &snapshot)?;
+        self.apply_valid_pq_fraud_proof(&proof)
     }
 
     fn projected_sender_state(&self, tx: &Transaction) -> (u64, u64) {
@@ -760,6 +902,10 @@ impl Blockchain {
         let old_chain = self.chain.clone();
         let new_state = Blockchain::rebuild_state(&new_chain)?;
 
+        for block in &old_chain[fork_point..] {
+            self.verified_qc_blobs.remove(&block.index);
+        }
+
         self.chain = new_chain;
         self.state = new_state;
 
@@ -903,19 +1049,23 @@ impl Blockchain {
             ));
         }
 
-        let active_validators = self.state.get_active_validators();
-        let entries: Vec<ValidatorEntry> = active_validators
-            .into_iter()
-            .map(|v| ValidatorEntry {
-                address: v.address,
-                stake: v.stake,
-                bls_public_key: v.bls_public_key.clone(),
-                pop_signature: v.pop_signature.clone(),
-            })
-            .collect();
-        let snapshot = ValidatorSetSnapshot::new(cert.epoch, entries);
+        let snapshot = self.validator_snapshot_for_epoch(cert.epoch);
 
         cert.verify(&snapshot)?;
+
+        let blob = self.get_qc_blob(cert.checkpoint_height).ok_or_else(|| {
+            format!(
+                "Missing verified QC blob for checkpoint {}",
+                cert.checkpoint_height
+            )
+        })?;
+        self.maybe_penalize_detected_fraud(&snapshot, &blob)?;
+        let signer_indices = cert.signer_indices(snapshot.validators.len());
+        blob.verify_against_snapshot(
+            &snapshot,
+            Some(&signer_indices),
+            Some(self.state.epoch_index),
+        )?;
 
         self.finalized_height = cert.checkpoint_height;
         self.finalized_hash = cert.checkpoint_hash.clone();
@@ -951,6 +1101,7 @@ impl Clone for Blockchain {
             finalized_height: self.finalized_height,
             finalized_hash: self.finalized_hash.clone(),
             genesis_time: self.genesis_time,
+            verified_qc_blobs: self.verified_qc_blobs.clone(),
         }
     }
 }

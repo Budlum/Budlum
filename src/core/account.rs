@@ -49,9 +49,14 @@ pub struct Validator {
     pub last_proposed_block: Option<u64>,
     pub votes_for: u64,
     pub votes_against: u64,
+    #[serde(default)]
     pub vrf_public_key: Vec<u8>,
+    #[serde(default)]
     pub bls_public_key: Vec<u8>,
+    #[serde(default)]
     pub pop_signature: Vec<u8>,
+    #[serde(default)]
+    pub pq_public_key: Vec<u8>,
 }
 
 impl Validator {
@@ -69,6 +74,7 @@ impl Validator {
             vrf_public_key: Vec::new(),
             bls_public_key: Vec::new(),
             pop_signature: Vec::new(),
+            pq_public_key: Vec::new(),
         }
     }
     pub fn effective_stake(&self) -> u64 {
@@ -296,31 +302,48 @@ impl AccountState {
     }
 
     pub fn apply_slashing(&mut self, evidences: &[SlashingEvidence], slash_ratio_fixed: u64) {
-        use crate::core::chain_config::FIXED_POINT_SCALE;
         for evidence in evidences {
             if let Some(producer) = &evidence.header1.producer {
-                if let Some(validator) = self.validators.get_mut(producer) {
-                    if !validator.slashed {
-                        let penalty = ((validator.stake as u128 * slash_ratio_fixed as u128)
-                            / FIXED_POINT_SCALE as u128)
-                            as u64;
-                        validator.stake = validator.stake.saturating_sub(penalty);
-                        validator.slashed = true;
-                        validator.active = false;
-
-                        let jail_epochs = 7;
-                        validator.jail_until = self.epoch_index.saturating_add(jail_epochs);
-
-                        tracing::info!(
-                            "Slashed validator {} for {} stake (Jailed until epoch {})",
-                            producer,
-                            penalty,
-                            validator.jail_until
-                        );
-                    }
-                }
+                let _ = self.slash_validator(
+                    producer,
+                    slash_ratio_fixed,
+                    "consensus slashing evidence",
+                );
             }
         }
+    }
+
+    pub fn slash_validator(
+        &mut self,
+        address: &Address,
+        slash_ratio_fixed: u64,
+        reason: &str,
+    ) -> Option<u64> {
+        use crate::core::chain_config::FIXED_POINT_SCALE;
+
+        let validator = self.validators.get_mut(address)?;
+        if validator.slashed {
+            return Some(0);
+        }
+
+        let penalty = ((validator.stake as u128 * slash_ratio_fixed as u128)
+            / FIXED_POINT_SCALE as u128) as u64;
+        validator.stake = validator.stake.saturating_sub(penalty);
+        validator.slashed = true;
+        validator.active = false;
+
+        let jail_epochs = 7;
+        validator.jail_until = self.epoch_index.saturating_add(jail_epochs);
+
+        tracing::info!(
+            "Slashed validator {} for {} stake due to {} (Jailed until epoch {})",
+            address,
+            penalty,
+            reason,
+            validator.jail_until
+        );
+
+        Some(penalty)
     }
 
     pub fn process_unbonding(&mut self) {

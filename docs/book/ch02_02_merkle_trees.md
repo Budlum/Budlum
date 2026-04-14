@@ -101,11 +101,18 @@ Dilithium imzaları Ed25519'dan kat kat daha büyüktür (birkaç KB). Eğer her
 Budlum, bu imzaları blok dışındaki `QcBlob` içinde Merkle ağacı yapısıyla saklar:
 1. Her validatörün Dilithium imzası bir yapraktır (Leaf).
 2. Bu imzalar bir ağaç oluşturur.
-3. Ağacın kök hash'i (Root), blok başlığına eklenir.
+3. Ağacın kök hash'i `QcBlob` içinde saklanır ve tüm blob bütünlüğü bu kök üzerinden doğrulanır.
+4. Gerektiğinde tek bir imza için Merkle proof üretilebilir.
 
 **Neden Bu Yapıyı Seçtik?**
-- **Optimistic Doğrulama:** Full nodelar bloğu hemen kabul eder. Eğer `QcBlob` içindeki bir PQ imzasının hatalı olduğu iddia edilirse, sadece o imza ve Merkle yolu (Path) kullanılarak **Fraud Proof** (Sahtecilik Kanıtı) sunulur.
+- **Parçalı Doğrulama:** Full node tüm Dilithium imzalarını blok gövdesine taşımadan doğrulayabilir; tek bir validator için sadece ilgili yaprak ve Merkle yolu yeterlidir.
+- **Fraud Proof Üretimi:** `QcBlob::detect_fraud_proofs` hatalı imzaları tarayıp geçerli `PqFraudProof` nesneleri üretebilir.
 - **Düşük Depolama:** Ana zincir şişmez; sadece kuantum saldırısı riski doğduğunda bu kanıtlar önem kazanır.
+
+**Güncel Akış**
+- Node bir `FinalityCert` aldığında, ilgili `QC_BLOB` yoksa `GetQcBlob` ister.
+- Gelen `QcBlobResponse` parse edilir, Merkle root doğrulanır, Dilithium imzaları validator snapshot'ına karşı kontrol edilir ve ancak bundan sonra disk/persist katmanına yazılır.
+- Eğer `PqFraudProof` geçerliyse ilgili validator slash edilir ve o checkpoint'ten sonraki finality kayıtları geçersiz kılınabilir.
 
 ---
 
@@ -130,4 +137,3 @@ Merkle Ağaçları, Budlum projesinde sadece veri bütünlüğü değil, aynı z
 2.  **Hesaplar:** `state_root` ile anlık bakiye doğrulanır. **Budlum Hardening** ile birlikte artık $O(\log N)$ maliyetli **Incremental Merkle Tree** yapısı kullanılır.
 3.  **PQ Güvenlik:** `QcBlob` kökü ile devasa imzalar yönetilebilir hale gelir.
 4.  **Hafif İstemciler:** Tüm state'i bilmeden saniyeler içinde bakiye kanıtı (Merkle Proof) yapabilirler.
-
