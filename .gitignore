@@ -1,7 +1,7 @@
 /target
 /data
 *.log
-.vscode
+.vscode/
 # QMD storage
 qmd/
 scripts/
