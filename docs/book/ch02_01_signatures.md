@@ -168,4 +168,4 @@ BLS şemasında saldırganların sahte anahtarlar üretmesini (Rogue-key attack)
 1.  **Hibrit Güvenlik:** Ed25519 (Hız) + BLS (Verimlilik) + Dilithium (PQ Güvenlik).
 2.  **Ölçeklenebilirlik:** BLS agregasyonu sayesinde binlerce validatörle bile düşük ağ yükü.
 3.  **Geleceğe Hazırlık:** Kuantum ötesi senaryolara bugünden hazır mimari.
-4.  **State-Correctness Bağı:** PQ katmanı artık sadece “ek bir imza türü” değil; validator kimliği, finality gating ve fraud-proof doğrulamasıyla zincirin karar mekanizmasına bağlıdır.
+4.  **State-Correctness Bağı:** PQ katmanı artık sadece “ek bir imza türü” değil; validator kimliği, finality gating ve QC fault-proof doğrulamasıyla zincirin karar mekanizmasına bağlıdır.

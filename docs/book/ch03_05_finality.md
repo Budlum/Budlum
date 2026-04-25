@@ -83,12 +83,12 @@ Finalite katmanında en büyük suç, aynı epoch için iki farklı bloğa oy ve
 - **Tespit:** `verify_double_vote` fonksiyonu, bir kişinin aynı epoch için iki farklı hash imzaladığını kanıtlar.
 - **Ceza:** Validatör derhal sistemden atılır ve bakiyesinin tamamı yakılabilir.
 
-## 4.1. PQ Fraud ve Finality Invalidation
+## 4.1. QC Fault Proof ve Finality Invalidation
 
 Finality katmanı artık sadece BLS double-vote suçlarını değil, checkpoint'i destekleyen hatalı PQ attestasyonlarını da hesaba katar.
 
-- Eğer bir `PqFraudProof`, ilgili `QcBlob` içindeki bir yaprağın gerçekten geçersiz Dilithium imzası taşıdığını kanıtlarsa validator slash edilir.
-- Aynı anda o checkpoint ve sonrasındaki finality kayıtları invalidation sürecine girebilir.
+- Eğer bir `QcFaultProof`, ilgili `QcBlob` içindeki bir yaprağın gerçekten geçersiz Dilithium imzası taşıdığını kanıtlarsa o checkpoint ve sonrasındaki finality kayıtları invalidation sürecine girer.
+- Slash kararı proof verdict'inden ayrı tutulur; bugünkü Merkle tabanlı invalid-Dilithium kanıtları slash etmez, ileride signed veya ZK-backed kanıtlar slashable verdict üretebilir.
 - Bu yaklaşım, “bir kez finalize olduysa artık her şey sorgusuz doğru” yerine “finality ancak tüm güvenlik katmanları tutarlıysa korunur” prensibini uygular.
 
 ---

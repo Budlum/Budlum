@@ -147,4 +147,4 @@ PQ enforcement ile birlikte storage katmanına küçük ama önemli iki yardımc
 - `delete_qc_blob(height)`: Bir checkpoint'e ait doğrulanmış QC blob kaydını siler.
 - `delete_finality_cert(height)`: Belirli yükseklikteki finality sertifikasını temizler.
 
-Bu fonksiyonlar özellikle `PqFraudProof` sonrası invalidation akışında kullanılır. Böylece yalnızca RAM'deki finality durumu değil, disk üzerindeki kanıt kayıtları da tutarlı kalır.
+Bu fonksiyonlar özellikle `QcFaultProof` sonrası invalidation akışında kullanılır. Böylece yalnızca RAM'deki finality durumu değil, disk üzerindeki kanıt kayıtları da tutarlı kalır.

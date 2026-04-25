@@ -140,7 +140,7 @@ Budlum Core has undergone a rigorous production-readiness audit and is now equip
     *   Validator identity now includes Dilithium public keys.
     *   `QcBlobResponse` payloads are parsed, Merkle-checked, Dilithium-verified, and persisted before use.
     *   `FinalityCert` acceptance is gated on the presence of a verified `QC_BLOB`.
-    *   Valid `PqFraudProof`s can slash validators and invalidate affected finality metadata.
+    *   Valid `QcFaultProof`s return explicit verdicts: current invalid-Dilithium proofs invalidate affected finality metadata, while slashable QC faults are reserved for stronger signed/ZK-backed evidence.
 -   **Binary Optimization**:
     *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
     *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.
@@ -189,7 +189,7 @@ Budlum abstracts consensus into the `ConsensusEngine` trait.
 #### Optimistic QC (`src/consensus/qc.rs`)
 - **Post-Quantum Security**: Implements Dilithium-based validator attestations for checkpoint sidecars.
 - **Merkle Sidecar**: PQ signatures are packed into `QcBlob` objects with deterministic Merkle roots and per-leaf proofs.
-- **Fraud Proofs**: Nodes can construct and verify `PqFraudProof` objects for invalid PQ attestations; valid proofs trigger slashing and finality invalidation.
+- **Fault Proofs**: Nodes can construct and verify versioned `QcFaultProof` objects for invalid PQ attestations; current Merkle proofs invalidate finality, and the format is ready for ZK-backed QC proofs and future slashable verdicts.
 
 #### Proof of Work (PoW) (`src/consensus/pow.rs`)
 - **Algorithm**: Standard SHA3-256 Hashcash.

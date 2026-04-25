@@ -1,6 +1,6 @@
 use crate::chain::blockchain::Blockchain;
 use crate::chain::finality::FinalityCert;
-use crate::consensus::qc::{PqFraudProof, QcBlob};
+use crate::consensus::qc::{QcBlob, QcFaultProof};
 use crate::core::address::Address;
 use crate::core::block::Block;
 use crate::core::transaction::Transaction;
@@ -25,7 +25,7 @@ pub enum ChainCommand {
     GetMempoolSize(oneshot::Sender<usize>),
     HandleFinalityCert(FinalityCert, oneshot::Sender<Result<(), String>>),
     ImportQcBlob(QcBlob, oneshot::Sender<Result<(), String>>),
-    HandlePqFraudProof(PqFraudProof, oneshot::Sender<Result<(), String>>),
+    HandleQcFaultProof(QcFaultProof, oneshot::Sender<Result<(), String>>),
     CleanupMempool(oneshot::Sender<usize>),
     TryReorg(Vec<Block>, oneshot::Sender<Result<bool, String>>),
     GetChainInfo(oneshot::Sender<String>),
@@ -189,11 +189,11 @@ impl ChainHandle {
             .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
-    pub async fn handle_pq_fraud_proof(&self, proof: PqFraudProof) -> Result<(), String> {
+    pub async fn handle_qc_fault_proof(&self, proof: QcFaultProof) -> Result<(), String> {
         let (res_tx, res_rx) = oneshot::channel();
         let _ = self
             .tx
-            .send(ChainCommand::HandlePqFraudProof(proof, res_tx))
+            .send(ChainCommand::HandleQcFaultProof(proof, res_tx))
             .await;
         res_rx
             .await
@@ -389,10 +389,10 @@ impl ChainActor {
                             .map_err(|e| e.to_string()),
                     );
                 }
-                ChainCommand::HandlePqFraudProof(proof, res_tx) => {
+                ChainCommand::HandleQcFaultProof(proof, res_tx) => {
                     let _ = res_tx.send(
                         self.blockchain
-                            .handle_pq_fraud_proof(proof)
+                            .handle_qc_fault_proof(proof)
                             .map_err(|e| e.to_string()),
                     );
                 }

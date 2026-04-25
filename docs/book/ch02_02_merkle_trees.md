@@ -106,13 +106,13 @@ Budlum, bu imzaları blok dışındaki `QcBlob` içinde Merkle ağacı yapısıy
 
 **Neden Bu Yapıyı Seçtik?**
 - **Parçalı Doğrulama:** Full node tüm Dilithium imzalarını blok gövdesine taşımadan doğrulayabilir; tek bir validator için sadece ilgili yaprak ve Merkle yolu yeterlidir.
-- **Fraud Proof Üretimi:** `QcBlob::detect_fraud_proofs` hatalı imzaları tarayıp geçerli `PqFraudProof` nesneleri üretebilir.
+- **Fault Proof Üretimi:** `QcBlob::detect_fault_proofs` hatalı imzaları tarayıp geçerli `QcFaultProof` nesneleri üretebilir.
 - **Düşük Depolama:** Ana zincir şişmez; sadece kuantum saldırısı riski doğduğunda bu kanıtlar önem kazanır.
 
 **Güncel Akış**
 - Node bir `FinalityCert` aldığında, ilgili `QC_BLOB` yoksa `GetQcBlob` ister.
 - Gelen `QcBlobResponse` parse edilir, Merkle root doğrulanır, Dilithium imzaları validator snapshot'ına karşı kontrol edilir ve ancak bundan sonra disk/persist katmanına yazılır.
-- Eğer `PqFraudProof` geçerliyse ilgili validator slash edilir ve o checkpoint'ten sonraki finality kayıtları geçersiz kılınabilir.
+- Eğer `QcFaultProof` geçerliyse o checkpoint'ten sonraki finality kayıtları geçersiz kılınabilir. Slash kararı ayrı bir verdict'tir ve bugünkü invalid-Dilithium Merkle kanıtı validator'ı slash etmez.
 
 ---
 
