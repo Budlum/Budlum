@@ -48,6 +48,8 @@ pub struct Node {
     pub peer_id: PeerId,
     pub chain: ChainHandle, // Zincir Aktörü ile iletişim (Async)
     pub peer_manager: Arc<Mutex<PeerManager>>, // Eş Yönetimi
+    pub bootstrap_peers: Vec<String>,
+    pub max_peers: usize,
     // ...
 }
 ```
@@ -142,8 +144,8 @@ async fn handle_network_event(&mut self, event: SwarmEvent<BudlumBehaviourEvent>
         // Yeni bir Blok veya İşlem geldiğinde (Gossipsub)
         SwarmEvent::Behaviour(BudlumBehaviourEvent::Gossipsub(gossip_event)) => {
             if let GossipsubEvent::Message { message, .. } = gossip_event {
-                // Mesajı ayrıştır (Deserialize)
-                let network_msg: NetworkMessage = bincode::deserialize(&message.data).unwrap();
+                // Mesajı Protobuf üzerinden ayrıştır ve boyut limitlerini uygula.
+                let network_msg = NetworkMessage::from_bytes_validated(&message.data)?;
                 
                 match network_msg {
                     NetworkMessage::Block(block) => {
@@ -163,8 +165,10 @@ async fn handle_network_event(&mut self, event: SwarmEvent<BudlumBehaviourEvent>
 }
 ```
 
-**Analiz: Peer Count Takibi**
+**Analiz: Peer Count Takibi ve Ağ Limitleri**
 `run` döngüsü içinde `SwarmEvent::ConnectionEstablished` olduğunda `peer_count` artırılır, `ConnectionClosed` olduğunda azaltılır. Bu veri atomik olduğu için RPC sunucusu tarafından kilitlenme (lock) gerektirmeden anlık okunabilir.
+
+`Node::apply_network_security(network)` çağrısı, `src/core/chain_config.rs` içindeki network-specific `SecurityConfig` değerlerini node'a uygular. Böylece mainnet/testnet/devnet için maksimum peer limiti ayrı çalışır.
         
         // Yeni biri bağlandığında (Connection Established)
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -187,6 +191,8 @@ Budlum'un üretim sürümünde, düğüm operatörleri için yeni bakım komutla
 - **`--check-db`**: Düğümü başlatmadan önce veritabanındaki tüm blokların hash ve bağlantı (linkage) bütünlüğünü kontrol eder.
 - **`--repair-db`**: Eğer veritabanı indeksleri (height -> hash) bozulmuşsa, ham blok verisinden indeksleri yeniden inşa eder.
 - **`--metrics-port`**: Düğümün sağlığını (peer sayısı, blok yüksekliği, mempool doluluğu) Prometheus formatında dışarı sunar.
+- **Mainnet Bootnode Guard**: Mainnet, gerçek bootnode verilmeden başlamaz. Operatör `config/mainnet.toml` içindeki `[bootnodes].addresses` listesini doldurmalı veya `--bootstrap` geçmelidir.
+- **Protocol Version Check**: Handshake ve HandshakeAck mesajlarında `version_major/version_minor` uyumluluğu kontrol edilir. Yanlış chain ID veya uyumsuz protokol gönderen peer banlanır.
 
 ---
 

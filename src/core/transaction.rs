@@ -6,12 +6,58 @@ use sha3::{Digest, Sha3_256};
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GasSchedule {
+    pub base_fee: u64,
+    pub gas_per_byte: u64,
+    pub gas_per_signature: u64,
+    pub transfer_gas: u64,
+    pub stake_gas: u64,
+    pub vote_gas: u64,
+    pub contract_call_gas: u64,
+}
+
+impl crate::core::chain_config::Network {
+    pub fn gas_schedule(&self) -> GasSchedule {
+        match self {
+            crate::core::chain_config::Network::Mainnet => GasSchedule {
+                base_fee: 10,
+                gas_per_byte: 2,
+                gas_per_signature: 1_000,
+                transfer_gas: 21_000,
+                stake_gas: 45_000,
+                vote_gas: 35_000,
+                contract_call_gas: 50_000,
+            },
+            crate::core::chain_config::Network::Testnet => GasSchedule {
+                base_fee: 1,
+                gas_per_byte: 1,
+                gas_per_signature: 500,
+                transfer_gas: 21_000,
+                stake_gas: 35_000,
+                vote_gas: 25_000,
+                contract_call_gas: 35_000,
+            },
+            crate::core::chain_config::Network::Devnet => GasSchedule {
+                base_fee: 1,
+                gas_per_byte: 1,
+                gas_per_signature: 100,
+                transfer_gas: 1_000,
+                stake_gas: 2_000,
+                vote_gas: 1_500,
+                contract_call_gas: 5_000,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransactionType {
     Transfer,
     Stake,
     Unstake,
     Vote,
+    ContractCall,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,6 +132,19 @@ impl Transaction {
             data,
             DEFAULT_CHAIN_ID,
             TransactionType::Vote,
+        )
+    }
+
+    pub fn new_contract_call(from: Address, fee: u64, nonce: u64, bytecode: Vec<u8>) -> Self {
+        Self::new_with_chain_id(
+            from,
+            Address::zero(),
+            0,
+            fee,
+            nonce,
+            bytecode,
+            DEFAULT_CHAIN_ID,
+            TransactionType::ContractCall,
         )
     }
 
@@ -172,6 +231,7 @@ impl Transaction {
             TransactionType::Stake => 1,
             TransactionType::Unstake => 2,
             TransactionType::Vote => 3,
+            TransactionType::ContractCall => 4,
         };
         hasher.update(&[type_byte]);
 
@@ -235,6 +295,16 @@ impl Transaction {
             }
             TransactionType::Unstake => {}
             TransactionType::Vote => {}
+            TransactionType::ContractCall => {
+                if self.amount != 0 {
+                    println!("Contract call TX amount must be 0");
+                    return false;
+                }
+                if self.data.is_empty() || self.data.len() % 8 != 0 {
+                    println!("Contract call TX data must be non-empty BudZKVM bytecode");
+                    return false;
+                }
+            }
         }
         true
     }
@@ -243,6 +313,23 @@ impl Transaction {
     }
     pub fn total_cost(&self) -> u64 {
         self.amount.saturating_add(self.fee)
+    }
+
+    pub fn estimate_gas_with_schedule(&self, schedule: GasSchedule) -> u64 {
+        let intrinsic = match self.tx_type {
+            TransactionType::Transfer => schedule.transfer_gas,
+            TransactionType::Stake | TransactionType::Unstake => schedule.stake_gas,
+            TransactionType::Vote => schedule.vote_gas,
+            TransactionType::ContractCall => schedule.contract_call_gas,
+        };
+        let signature_gas = if self.signature.is_some() {
+            schedule.gas_per_signature
+        } else {
+            0
+        };
+        intrinsic
+            .saturating_add((self.data.len() as u64).saturating_mul(schedule.gas_per_byte))
+            .saturating_add(signature_gas)
     }
 }
 #[cfg(test)]

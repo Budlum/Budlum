@@ -26,6 +26,7 @@ impl From<&Transaction> for pb::ProtoTransaction {
                 TransactionType::Stake => pb::ProtoTransactionType::Stake as i32,
                 TransactionType::Unstake => pb::ProtoTransactionType::Unstake as i32,
                 TransactionType::Vote => pb::ProtoTransactionType::Vote as i32,
+                TransactionType::ContractCall => pb::ProtoTransactionType::ContractCall as i32,
             },
         }
     }
@@ -48,6 +49,7 @@ impl TryFrom<pb::ProtoTransaction> for Transaction {
             Ok(pb::ProtoTransactionType::Stake) => TransactionType::Stake,
             Ok(pb::ProtoTransactionType::Unstake) => TransactionType::Unstake,
             Ok(pb::ProtoTransactionType::Vote) => TransactionType::Vote,
+            Ok(pb::ProtoTransactionType::ContractCall) => TransactionType::ContractCall,
             Err(_) => return Err("Invalid transaction type in proto payload".into()),
         };
 

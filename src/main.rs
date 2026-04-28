@@ -98,6 +98,10 @@ async fn main() {
     let network = config.network;
     let port = config.port.unwrap_or(network.default_port());
     let chain_id = config.chain_id.unwrap_or(network.chain_id().value());
+    let network_params = network.consensus_params();
+    if config.min_stake == 1000 {
+        config.min_stake = network_params.min_stake;
+    }
     let consensus_type = config.consensus.unwrap_or(match network {
         budlum_core::core::chain_config::Network::Mainnet => ConsensusType::PoS,
         budlum_core::core::chain_config::Network::Testnet => ConsensusType::PoS,
@@ -138,6 +142,8 @@ async fn main() {
             println!("PoS mode - min stake: {}", config.min_stake);
             let pos_config = PoSConfig {
                 min_stake: config.min_stake,
+                slot_duration: (network_params.slot_ms / 1000).max(1),
+                epoch_length: network_params.epoch_len,
                 ..Default::default()
             };
             let keys = if let Some(ref path) = config.validator_key_file {
@@ -215,16 +221,26 @@ async fn main() {
         }
     }
 
-    let mut node = Node::new(chain.clone()).unwrap();
-
     let mut bootstraps = Vec::new();
     if let Some(ref addr) = config.bootstrap {
         bootstraps.push(addr.clone());
+    } else if !config.bootnodes.is_empty() {
+        bootstraps.extend(config.bootnodes.clone());
     } else {
         bootstraps.extend(network.bootnodes());
+        bootstraps.extend(network.fallback_bootnodes());
     }
 
-    for addr in bootstraps {
+    if network == budlum_core::core::chain_config::Network::Mainnet && bootstraps.is_empty() {
+        eprintln!("Refusing to start mainnet without at least one configured bootnode.");
+        eprintln!("Set [bootnodes].addresses in config/mainnet.toml or pass --bootstrap.");
+        std::process::exit(1);
+    }
+
+    let mut node = Node::new_with_bootstrap(chain.clone(), bootstraps.clone()).unwrap();
+    node.apply_network_security(network);
+
+    for addr in &bootstraps {
         if let Err(e) = node.bootstrap(&addr) {
             eprintln!("Failed to bootstrap from {}: {}", addr, e);
         }

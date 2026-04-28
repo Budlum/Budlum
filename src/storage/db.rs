@@ -12,7 +12,43 @@ pub struct Storage {
 impl Storage {
     pub fn new(path: &str) -> std::io::Result<Self> {
         let db = sled::open(path)?;
-        Ok(Storage { db })
+        let storage = Storage { db };
+        storage.apply_migrations()?;
+        Ok(storage)
+    }
+
+    pub fn apply_migrations(&self) -> std::io::Result<()> {
+        const CURRENT_SCHEMA_VERSION: u64 = 1;
+        let current = self.schema_version()?;
+        if current < CURRENT_SCHEMA_VERSION {
+            self.db.insert(
+                b"SCHEMA_VERSION",
+                CURRENT_SCHEMA_VERSION.to_string().as_bytes(),
+            )?;
+            self.db.flush()?;
+        }
+        Ok(())
+    }
+
+    pub fn schema_version(&self) -> std::io::Result<u64> {
+        if let Some(val) = self.db.get(b"SCHEMA_VERSION")? {
+            let s = from_utf8(&val)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            Ok(s.parse().unwrap_or(0))
+        } else {
+            Ok(0)
+        }
+    }
+
+    pub fn create_snapshot<P: AsRef<std::path::Path>>(&self, path: P) -> std::io::Result<()> {
+        let mut snapshot = Vec::new();
+        for item in self.db.iter() {
+            let (key, value) = item?;
+            snapshot.push((key.to_vec(), value.to_vec()));
+        }
+        let bytes = serde_json::to_vec(&snapshot)?;
+        std::fs::write(path, bytes)?;
+        Ok(())
     }
     pub fn insert_block(&self, block: &Block) -> std::io::Result<()> {
         let key = block.hash.clone();

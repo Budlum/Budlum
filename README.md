@@ -1,358 +1,349 @@
-# Budlum Blockchain Core
+# ⚡ Budlum Core
 
-**Budlum Core** is a modular blockchain framework written in Rust. It serves as a high-performance Layer-1 blockchain featuring pluggable consensus engines (PoW, PoS, PoA), a hardened libp2p-based networking stack, and an atomic, account-based state model.
+> Build your own Layer-1 blockchain: modular, deterministic, privacy-ready, and ZKVM-native.
 
-The architecture emphasizes **security**, **modularity**, and **readability**, making it an ideal foundation for custom blockchain networks, protocol experiments, or educational study of advanced distributed ledger technology. With the latest hardening passes, the framework is robust against spam, malformed payloads, inconsistent replay, stale canonical metadata after reorgs, and unchecked PQ sidecar data.
+Budlum Core is a Rust-based Layer-1 blockchain framework for engineers, protocol researchers, and builders who want a real chain core they can inspect, modify, and extend.
+
+If this project helps your research or experiments, please support it:
+
+⭐ **Star the repo** to help more builders discover Budlum  
+🍴 **Fork it** to experiment with your own consensus, VM, privacy, or network design  
+🧠 **Open issues and discussions** if you want to shape the roadmap
 
 ---
 
-## 📚 Table of Contents
+## 🚀 Why Budlum?
 
-- [Architecture Overview](#architecture-overview)
-- [Quick Start](#quick-start)
-- [Production Hardening](#-production-hardening)
-- [Core Components Deep Dive](#core-components-deep-dive)
-    - [1. Data Structures](#1-data-structures)
-    - [2. Consensus Engines](#2-consensus-engines)
-    - [3. Mempool & Anti-Spam](#3-mempool--anti-spam)
-    - [4. Networking Layer](#4-networking-layer)
-    - [5. State Management](#5-state-management)
-    - [6. Cryptography & Security](#6-cryptography--security)
-- [CLI Reference](#cli-reference)
-- [Development Guide](#development-guide)
+Most blockchain frameworks are rigid, hard to reason about, or optimized for one fixed worldview.
+
+Budlum is different:
+
+- 🔁 **Swap consensus engines**: PoW, PoS, PoA, finality, and future hybrid modes
+- 🧠 **Deterministic execution**: replay-safe state transitions and reorg recovery
+- 🧩 **Modular architecture**: consensus, networking, storage, state, mempool, and execution are replaceable
+- 🔒 **Security-first design**: hardened against spam, invalid states, malformed payloads, and unsafe replays
+- 🌐 **High-performance networking**: libp2p, GossipSub, request/response sync, and peer reputation
+- 🧪 **Research-friendly**: ideal for L1 experiments, custom chains, privacy systems, and execution-layer design
+- 🕶️ **Privacy roadmap**: future privacy layer inspired by Monero-style privacy and Zcash-style zero-knowledge systems
+- 🤖 **AI execution roadmap**: future AI-assisted execution layer for smarter protocol automation and validation flows
 
 ---
 
 ## 🏗️ Architecture Overview
 
-Budlum Core follows a layered architecture where modules are loosely coupled through Rust `traits`.
+Budlum is structured as loosely coupled modules connected through Rust traits and explicit state boundaries.
 
 ```mermaid
 graph TD
-    User(("User")) --> CLI["CLI / API Layer"]
+    User(("User")) --> CLI["CLI / RPC"]
     CLI --> Node["Node Service"]
-    
-    subgraph "Core Blockchain Actor"
-        Node --> ChainHandle["ChainHandle (Async)"]
-        ChainHandle --> ChainActor["ChainActor (Exclusive Owner)"]
-        ChainActor --> Blockchain["Blockchain State"]
-        Blockchain --> State["Account State"]
-        Blockchain --> Mempool["Pending Transactions"]
-        Blockchain --> Store["Persistent Storage"]
+
+    subgraph "Core Chain"
+        Node --> ChainHandle["ChainHandle"]
+        ChainHandle --> ChainActor["ChainActor"]
+        ChainActor --> State["Deterministic Account State"]
+        ChainActor --> Mempool["Anti-Spam Mempool"]
+        ChainActor --> Storage["Atomic Storage"]
     end
 
-    subgraph "Consensus Layer (Hybrid)"
-        Chain -.-> Engine["ConsensusEngine Trait"]
+    subgraph "Consensus"
+        ChainActor -.-> Engine["ConsensusEngine Trait"]
         Engine --> PoW["Proof of Work"]
         Engine --> PoS["Proof of Stake + VRF"]
-        Engine --> Finality["BLS Finality Layer"]
-        Engine --> QC["QC Sidecar - PQ Attestation"]
+        Engine --> PoA["Proof of Authority"]
+        Engine --> Finality["BLS Finality"]
+        Engine --> QC["PQ-ready QC"]
     end
 
-    subgraph "Networking Layer (libp2p)"
-        Node --> Swarm["P2P Swarm"]
-        Swarm --> Gossip["GossipSub (Broadcast)"]
-        Swarm --> Sync["Req-Resp Sync (P2P)"]
-        Sync --> Codec["SyncCodec (Length-Prefixed)"]
-        Swarm --> PeerMgr["Granular Reputation Manager"]
+    subgraph "Execution"
+        ChainActor --> Executor["State Executor"]
+        Executor --> ZKVM["BudZKVM Contract Engine"]
+        Executor -.->|future| PrivateVM["Private / Custom VM"]
+        Executor -.->|future| AIExec["AI Execution Layer"]
+    end
+
+    subgraph "Networking"
+        Node --> Libp2p["libp2p Swarm"]
+        Libp2p --> Gossip["GossipSub"]
+        Libp2p --> Sync["Req/Resp Sync"]
+        Libp2p --> Reputation["Peer Reputation"]
     end
 ```
 
-### Module Responsibilities
+### Core Modules
 
-| Module | Source File | Description |
+| Module | Path | Purpose |
 | :--- | :--- | :--- |
-| **CLI** | `src/cli/` | Command line argument parsing and node configuration. |
-| **Core** | `src/core/` | Fundamental types: `Block`, `Transaction`, `Account`, `ChainConfig`. |
-| **Chain** | `src/chain/` | Blockchain logic, `ChainActor` (exclusive state owner), and snapshots. |
-| **Network** | `src/network/` | P2P stack (libp2p), node discovery, and protocol logic. |
-| **RPC** | `src/rpc/` | JSON-RPC 2.0 implementation with `bud_` standard methods. |
-| **Consensus** | `src/consensus/` | Implementations of PoW, PoS, PoA, and Finality gadgets. |
-| **Storage** | `src/storage/` | Persistent database layer built on `sled`. |
-| **Execution** | `src/execution/` | State transition engine and block application. |
-| **Mempool** | `src/mempool/` | Validating transaction pool with fee-based prioritization. |
-| **Tests** | `src/tests/` | Comprehensive integration and **Chaos Engineering** suites. |
+| Core types | `src/core/` | Blocks, transactions, accounts, addresses, chain config, governance |
+| Chain | `src/chain/` | Blockchain state, `ChainActor`, snapshots, finality wiring |
+| Consensus | `src/consensus/` | PoW, PoS, PoA, BLS finality, QC, slashing |
+| Execution | `src/execution/` | Deterministic state transitions and BudZKVM contract execution |
+| Networking | `src/network/` | libp2p node, protocol messages, sync codec, peer scoring |
+| Mempool | `src/mempool/` | Fee ordering, nonce queues, anti-spam checks |
+| Storage | `src/storage/` | sled-backed persistence, schema versioning, integrity checks |
+| RPC | `src/rpc/` | JSON-RPC server and `bud_` methods |
+| Docs | `docs/tr/book/`, `docs/en/book/` | Technical book covering architecture, consensus, storage, networking, and RPC |
 
 ---
 
 ## ⚡ Quick Start
 
-### Prerequisites
-- **Rust Toolchain**: `1.70.0+`
-- **Dependencies**: `protoc` (Protocol Buffers compiler)
+### Requirements
+
+- Rust `1.70+`
+- `protoc`
 
 ### Build
+
 ```bash
 git clone https://github.com/rade/budlum-core.git
 cd budlum-core
 cargo build --release
 ```
 
-### Running a Node
+### Run a Node
 
-**1. Proof of Work (Miner)**
+#### ⛏️ Proof of Work
+
 ```bash
 ./target/release/budlum-core --consensus pow --difficulty 3 --port 4001
 ```
 
-**2. Proof of Stake (Validator)**
+#### 🧠 Proof of Stake
+
 ```bash
 ./target/release/budlum-core --consensus pos --min-stake 5000 --db-path ./data/pos_node
 ```
 
-**3. Join an Existing Network (Bootstrap)**
+#### 🏛️ Proof of Authority
+
+```bash
+./target/release/budlum-core --consensus poa --config config/devnet.toml
+```
+
+#### 🔗 Join a Network
+
 ```bash
 ./target/release/budlum-core --bootstrap /ip4/127.0.0.1/tcp/4001/p2p/12D3K...
 ```
 
----
+#### ⚙️ Use a Network Config
 
----
-
-### 🟢 Production Hardening
-
-Budlum Core has undergone a rigorous production-readiness audit and is now equipped with advanced features for scale, security, and governance:
-
--   **Cryptographic BLS Finality**: Mandatory BFT finality gadget using aggregate BLS12-381 signatures for immutable checkpoints.
--   **On-Chain Governance**: Stake-weighted voting protocol for real-time network parameter updates (fees, rewards, etc.) without hard forks.
--   **Fast Sync (Snapshot-Based)**: Protocol for rapid node discovery and state synchronization using chunked P2P transfers. (See [Ch 5.3](docs/en/book/ch05_03_snapshots.md))
--   **Database Integrity Audit (FSCK)**: Built-in tool for verifying blockchain data consistency (`--check-db`) and self-repairing index corruptions (`--repair-db`). (See [Ch 5.1](docs/en/book/ch05_01_storage.md))
--   **Deterministic Economics**: All reward and slashing calculations use **Saturating Fixed-Point Math** (`u64`).
--   **Deterministic Slot-Timestamps**: Block timestamps are derived from `genesis_time + (index * SLOT_MS)`.
--   **Deterministic Replay / Reorg Recovery**:
-    *   Restart and reorg state rebuilds now replay the same block-level effects as live execution.
-    *   Rewards, slashing, epoch transitions, and dynamic fee updates remain consistent across recovery paths.
--   **Atomic Persistence & State Resilience**:
-    *   Consensus state (seen blocks, checkpoints, seeds) is persisted to `sled`.
-    *   Mempool transactions are persisted to disk to survive reboots.
-    *   Reorgs rewrite canonical metadata through the same commit path used for normal blocks, including `TX_IDX`, `STATE_ROOT`, and tip tracking.
-    *   **Unwrap Audit**: 50+ potential panic points were replaced with robust error handling for 24/7 uptime.
--   **Queued Nonce Mempool**:
-    *   The mempool accepts sequential pending nonces from the same sender.
-    *   Block assembly simulates transactions against a temporary state so nonce order remains valid while fees still drive selection.
--   **PoA Wiring**:
-    *   `validators.json` is loaded into the in-state validator set at node startup.
-    *   Local signer keys are reused by the CLI mining path so the reward address and block producer stay aligned.
--   **Merkle Tree Security (Incremental & Optimized)**:
-    *   **Domain Separation**: Uses `0x00` prefixes for leaves and `0x01` for internal nodes.
-    *   **Incremental Updates**: State root calculation is $O(\log N)$ using a cached Merkle Tree and dirty-account tracking.
--   **PQ Enforcement Pipeline**:
-    *   Validator identity now includes Dilithium public keys.
-    *   `QcBlobResponse` payloads are parsed, Merkle-checked, Dilithium-verified, and persisted before use.
-    *   `FinalityCert` acceptance is gated on the presence of a verified `QC_BLOB`; certs that arrive first are queued and retried after blob import.
-    *   Valid `QcFaultProof`s are available over P2P and return explicit verdicts: current invalid-Dilithium proofs invalidate affected finality metadata, while slashable QC faults are reserved for stronger signed/ZK-backed evidence.
--   **Binary Optimization**:
-    *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
-    *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.
--   **RPC Hardening**: Strict input validation for transaction sizes, signatures, payload limits (2MB), and mempool-aware prechecks via `bud_txPrecheck`.
-
----
-
-## 🔍 Core Components Deep Dive
-
-### 1. Data Structures
-
-The fundamental primitives of the Budlum blockchain are **Blocks** and **Transactions**.
-
-#### Block (`src/block.rs`)
-A block contains a header and a body of transactions.
-- **`index`**: height of the block (genesis = 0).
-- **`hash`**: SHA3-256 hash of the block content.
-- **`previous_hash`**: Link to the parent block.
-- **`producer`**: Ed25519 Public Key of the node that created the block.
-- **`signature`**: Ed25519 Signature of the block hash by the producer. (Placebo `stake_proof` implementations were purged to enforce pure intrinsic signature validation).
-- **`chain_id`**: Network identifier to prevent cross-chain replay.
-- **`transactions`**: A vector of `Transaction` objects.
-
-#### Transaction (`src/transaction.rs`)
-A state-changing directive signed by a wallet.
-- **`from`/`to`**: 32-byte binary `Address` (Type-safe, memory-efficient).
-- **`nonce`**: Sequence number. Must strictly increment (0, 1, 2...) for valid processing.
-- **`signature`**: Signs `hash(from, to, amount, fee, nonce, data, timestamp, chain_id)` using Ed25519.
-- **Atomic Execution**: If any transaction fails cryptographic checks or safe-math bounds, the execution fails and the block is rejected.
-
----
-
-### 2. Consensus Engines
-
-Budlum abstracts consensus into the `ConsensusEngine` trait.
-
-#### Proof of Stake (PoS) & VRF (`src/consensus/pos.rs`)
-- **Selection**: Uses Verifiable Random Functions for unbiased, secure proposers. Thresholding is proportional to stake, ensuring fairness.
-- **Slashing**: Detects **Double-Proposals** and **Double-Signatures**.
-
-#### BLS Finality Layer (`src/chain/finality.rs`)
-- **BFT Consensus**: Adds a gadget on top of PoS to finalize blocks via aggregate signatures.
-- **Checkpoints**: Every 100 blocks, a mandatory quorum vote seals the chain's past forever.
-- **QC Gating**: A BLS certificate is not sufficient on its own; the corresponding checkpoint must also have a verified PQ sidecar blob for the certificate's signers.
-
-#### Optimistic QC (`src/consensus/qc.rs`)
-- **Post-Quantum Security**: Implements Dilithium-based validator attestations for checkpoint sidecars.
-- **Merkle Sidecar**: PQ signatures are packed into `QcBlob` objects with deterministic Merkle roots and per-leaf proofs.
-- **Fault Proofs**: Nodes can construct and verify versioned `QcFaultProof` objects for invalid PQ attestations; current Merkle proofs invalidate finality, and the format is ready for ZK-backed QC proofs and future slashable verdicts.
-
-#### Proof of Work (PoW) (`src/consensus/pow.rs`)
-- **Algorithm**: Standard SHA3-256 Hashcash.
-- **Validation**: Ensures blocks compute properly, and `cumulative difficulty` overrides trivial chain lengths for more sophisticated fork choices. Adaptive retargeting applies block delays.
-
-#### Proof of Authority (PoA) (`src/consensus/poa.rs`)
-- **Permissioned**: Validators are loaded from `validators.json` into the in-memory validator set at startup.
-- **Round-Robin**: Validators produce blocks in a strict rotation (`height % validator_count`).
-- **Signer-Aware CLI**: Local validator keys can be loaded so manual block production uses the same producer identity as the consensus signer.
-
----
-
-### 3. Mempool & Anti-Spam (`src/mempool.rs`)
-
-A structured transaction pool with advanced spam protection.
-
-#### Features
-- **Fee-Based Ordering**: Transactions sorted by fee (highest first).
-- **Replace-By-Fee (RBF)**: Higher-fee tx replaces same-nonce tx (+10% bump required).
-- **Queued Nonces**: Sequential pending transactions from the same sender are accepted and evaluated against projected sender state.
-- **Anti-Spam Rules**:
-  - Max 16 pending transactions per sender.
-  - Minimum fee enforcement.
-  - Duplicate rejection.
-- **TTL Expiration**: Stale transactions auto-removed.
-
----
-
-### 4. Genesis & Monetary Policy (`src/genesis.rs`)
-
-Deterministic genesis block (TIMESTAMP = 0) and economic parameters.
-
-#### GenesisConfig
-```rust
-GenesisConfig {
-    chain_id: 1337,
-    allocations: vec![("address", amount)],  // Initial balances
-    validators: vec!["pubkey1", "pubkey2"],  // Initial validators
-    block_reward: 50,
-    base_fee: 1,
-}
+```bash
+./target/release/budlum-core --config config/devnet.toml
+./target/release/budlum-core --config config/testnet.toml
 ```
 
-#### Economic Constants
-- `BLOCK_REWARD`: 50 BDLM per block
-- `BASE_FEE`: 1 BDLM minimum transaction fee
+Mainnet startup requires a real bootnode. Configure `[bootnodes].addresses` in `config/mainnet.toml` or pass `--bootstrap`.
 
 ---
 
-### 4. Networking Layer
+## 🧩 Core Features
 
-Budlum uses the **libp2p** stack to ensure robust, decentralized peer-to-peer communication.
+### 🔗 Pluggable Consensus
 
-#### Sync Protocol & Reorg Orchestration
-Headers-first synchronization for efficient chain sync and fork-resolution:
-- `GetHeaders` / `Headers`: Multi-step exponential locators calculate accurate fork-points.
-- `BlocksRange`: Rapid batch delivery mechanisms matching chain height.
-- `try_reorg()`: Evaluates cumulative difficulty and automates local chain truncations to adopt the heaviest canonical chain without node freezes.
-- `GetStateSnapshot` / `SnapshotChunk`: State snapshot sync.
+- PoW with SHA3 Hashcash
+- PoS with VRF-based proposer selection
+- PoA with validator rotation
+- BLS finality layer
+- Slashing checks for unsafe validator behavior
+- PQ-ready QC / Dilithium attestation path
 
-#### Protocol Messages
-Defined in `src/network/protocol.rs` and `proto/protocol.proto`:
-- `Handshake` / `HandshakeAck`: Protocol version and validator set hash verification.
-- `Block(Block)` / `Transaction(Transaction)`: Core data propagation.
-- **Finality**: `Prevote`, `Precommit`, and `FinalityCert` (BLS-aggregated).
-- **QC**: `GetQcBlob` and `QcBlobResponse` transport PQ sidecars; recipients parse, verify, and persist blobs before they become authoritative.
+### ⚙️ Deterministic Execution
 
-#### Serialization & Efficiency
-Budlum has migrated to **Protobuf** for P2P messaging to ensure minimal overhead and cross-language compatibility. Determinisitic serialization for consensus state uses **Bincode**.
+- Replay-safe state transitions
+- Slot-based timestamps
+- Fixed-point economic calculations
+- Deterministic restart and reorg recovery
+- Atomic block application
+- Canonical state root tracking
 
-#### DoS Protection: Peer Scoring
-To prevent spam and attacks, the `PeerManager` (`src/network/peer_manager.rs`) assigns scores and Token-Bucket capacities:
-- **Valid Block**: +1
-- **Invalid Block**: -20
-- **Oversized Message / Spam**: Rate Limited Token Deductions / Bans
-- **Ban Threshold**: -100 (1 Hour Ban)
+### 🧠 BudZKVM Execution
 
----
+- Contract execution inside the L1 path
+- `TransactionType::ContractCall` support
+- Gas-limited deterministic VM execution
+- STARK proof generation and verification
+- Invalid bytecode, failed proof, or VM failure rejects the transaction atomically
 
-### 5. State Management
+### 🌐 Networking
 
-Budlum uses an Account-based model (like Ethereum), not UTXO (like Bitcoin).
+- libp2p transport
+- GossipSub block and transaction broadcast
+- Request/response sync protocol
+- Headers-first synchronization
+- Snapshot-based fast sync path
+- Peer reputation and protocol-level DoS protection
+- Chain ID and protocol-version isolation
 
-#### Storage (`src/storage/db.rs`)
-Data is persisted in **sled**, a high-performance embedded database.
-- **`{hash}`**: Stores serialized block data.
-- **`LAST`**: Stores the hash of the chain tip.
-- **`STATE_ROOT:{height}`**: Stores canonical state roots.
-- **`TX_IDX:{hash}`**: Stores transaction-to-height lookup entries.
-- **`QC_BLOB:{height}` / `FINALITY_CERT:{height}`**: Persist verified PQ sidecars and finalized checkpoint proofs.
-- **Snapshots**: Stored separately by the snapshot/pruning subsystem.
+### 🛡️ Production Hardening
 
-#### Snapshots & Pruning (`src/snapshot.rs`)
-- **Snapshot Loop**: Every 1000 blocks, the node saves a snapshot of all balances.
-- **Pruning**: Blocks older than `2 * max_reorg_depth` (200 blocks) can be pruned to save disk space, as long as a valid snapshot exists ahead of them.
-- **Replay Safety**: Restart and reorg recovery reuse the same block-effect pipeline as live execution, keeping replayed state deterministic.
-
----
-
-### 6. Cryptography & Security
-
-#### Standards
-- **Signatures**:
-    - **Ed25519**: Primary signature for transactions and basic block identity.
-    - **BLS (bls12_381)**: Multi-signature aggregation for finality voting.
-    - **Dilithium**: Post-Quantum validator attestations with detached signature verification.
-- **Hashing**: **SHA3-256** (Keccak).
-- **Proof of Possession (PoP)**: Mandated for BLS key registration to prevent rogue-key attacks.
-
-#### Domain Separation
-We prefix all hashes to prevent context confusion attacks.
-- Block Hash Prefix: `BDLM_BLOCK_V2` (includes state_root)
-- TX Hash Prefix: `BDLM_TX_V1`
-- State Root Prefix: `BDLM_STATE_V1`
-
-#### Chain ID
-Every transaction is signed with a specific `chain_id`.
-- Mainnet: `1`
-- Testnet: `42`
-- Devnet: `1337`
-This ensures a transaction meant for Testnet cannot be replayed on Mainnet.
+- Anti-spam mempool
+- Fee-based transaction ordering
+- Replace-by-fee support
+- Sequential nonce queues
+- Database integrity checks with `--check-db`
+- Index repair path with `--repair-db`
+- Atomic persistence
+- Snapshot export helpers
+- Reorg-safe canonical metadata
+- Payload size and signature validation
 
 ---
 
-## 💻 CLI Reference
+## 🕶️ Privacy & Private Execution Roadmap
 
-Usage: `cargo run -- [OPTIONS]`
+Budlum is designed to grow toward privacy-native Layer-1 experimentation.
+
+Planned research directions:
+
+- **Privacy layer** inspired by Monero-style sender/receiver privacy and Zcash-style zero-knowledge proofs
+- **Private transaction types** for shielded transfers and selective disclosure
+- **Custom private VM** for confidential execution workflows
+- **Proof-carrying execution** where private computation can be verified without exposing internal state
+- **Privacy-aware mempool rules** to reduce metadata leakage
+- **Auditable privacy primitives** with explicit cryptographic boundaries
+
+The goal is not to clone Monero or Zcash. The goal is to make Budlum a clean Rust playground for privacy-preserving L1 design.
+
+---
+
+## 🤖 AI Execution Layer Roadmap
+
+Budlum also leaves room for future AI-assisted protocol infrastructure.
+
+Possible directions:
+
+- AI-assisted transaction simulation and risk scoring
+- Intelligent mempool filtering under spam conditions
+- Automated state anomaly detection
+- AI-guided validator operations and monitoring
+- Protocol research agents for testing consensus and reorg scenarios
+- Custom backend services running alongside the node for analysis, orchestration, and developer tooling
+
+This layer is planned as an optional extension. Core consensus and execution must remain deterministic, auditable, and reproducible.
+
+---
+
+## 🔧 CLI Reference
+
+Usage:
+
+```bash
+cargo run -- [OPTIONS]
+```
 
 | Flag | Description | Default |
 | :--- | :--- | :--- |
-| `--consensus <TYPE>` | `pow` `pos` `poa` | `pow` |
-| `--network <NAME>` | `mainnet` `testnet` `devnet` | `devnet` |
+| `--consensus <TYPE>` | `pow`, `pos`, `poa` | `pow` |
+| `--network <NAME>` | `mainnet`, `testnet`, `devnet` | `devnet` |
+| `--config <PATH>` | TOML config file | `None` |
 | `--rpc-host <ADDR>` | JSON-RPC listen address | `127.0.0.1` |
 | `--rpc-port <PORT>` | JSON-RPC listen port | `8545` |
-| `--port <PORT>` | P2P Listen Port | `4001` (Auto-adjusts per network) |
-| `--db-path <PATH>` | Database Directory | `./data/budlum.db` |
-| `--difficulty <N>` | Mining Difficulty (PoW) | `2` |
-| `--min-stake <AMT>` | Minimum Stake (PoS) | `1000` |
+| `--port <PORT>` | P2P listen port | Network default |
+| `--db-path <PATH>` | Database directory | `./data/budlum.db` |
+| `--difficulty <N>` | PoW mining difficulty | `2` |
+| `--min-stake <AMT>` | PoS minimum stake | `1000` |
 | `--validator-address` | Address to mine/validate for | `None` |
 | `--bootstrap <ADDR>` | Peer multiaddr to join | `None` |
-| `--check-db` | Run Database Integrity Audit | `false` |
+| `--check-db` | Run database integrity audit | `false` |
 | `--repair-db` | Rebuild indexes from raw block data | `false` |
 
 ---
 
-## 🛠️ Development Guide
+## 📚 Documentation
 
-### Running Tests
-Budlum has extensive unit, integration, and chaos tests (**131 tests**).
+Full technical documentation lives in:
+
+👉 Turkish: [`docs/tr/book/README.md`](docs/tr/book/README.md)
+
+👉 English: [`docs/en/book/README.md`](docs/en/book/README.md)
+
+Includes:
+
+- Architecture deep dive
+- Core block and transaction model
+- Consensus design
+- Cryptography and signatures
+- Networking protocols
+- Storage and snapshots
+- JSON-RPC API
+- Chaos engineering notes
+- Benchmark results
+
+---
+
+## 🛠️ Development
+
+### Run Tests
+
+```bash
+cargo test
+```
+
+With Nix:
+
 ```bash
 nix develop --command cargo test
 ```
 
-**Key Test Suites:**
-- `integration_tests`: Simulates full node interactions.
-- `consensus::pos::tests`: Validates slashing and staking logic.
-- `network::peer_manager::tests`: Validates banning logic and token limits.
+### Format & Lint
 
-### Code Style
-- Format: `cargo fmt`
-- Lint: `cargo clippy`
+```bash
+cargo fmt
+cargo clippy
+```
+
+---
+
+## 🧠 Use Cases
+
+- Build custom Layer-1 chains
+- Experiment with consensus algorithms
+- Research deterministic execution
+- Prototype ZK-native systems
+- Explore privacy-preserving chain design
+- Develop custom private VM concepts
+- Build chain-specific backend services
+- Study real-world blockchain architecture in Rust
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] ZKVM optimizations
+- [ ] Parallel execution engine
+- [ ] Multi-chain interoperability
+- [ ] Advanced governance modules
+- [ ] Privacy layer for shielded transactions
+- [ ] Private/custom VM execution path
+- [ ] AI-assisted execution layer
+- [ ] Operator backend and analytics services
+- [ ] Public devnet and validator onboarding
+
+---
+
+## 🤝 Contributing
+
+Budlum is early, experimental, and built for people who like looking under the hood.
+
+Ways to help:
+
+- ⭐ Star the repo
+- 🍴 Fork and build your own chain variant
+- 🧪 Run tests and report issues
+- 📚 Improve docs
+- 🧠 Open protocol design discussions
+- 🔐 Review privacy, consensus, and VM ideas
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
+
+For security-sensitive reports, use [`SECURITY.md`](SECURITY.md) instead of opening a public issue.
+
+Pull requests are welcome.
 
 ---
 
 ## 📄 License
+
 MIT License. Copyright (c) 2026 The Budlum Developers.

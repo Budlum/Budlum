@@ -1,6 +1,7 @@
 use crate::core::account::AccountState;
 use crate::core::address::Address;
 use crate::core::transaction::{Transaction, TransactionType};
+use crate::execution::zkvm::{ZkVmExecutor, DEFAULT_CONTRACT_GAS_LIMIT};
 
 pub struct Executor;
 
@@ -137,6 +138,13 @@ impl Executor {
                     }
                 }
             }
+            TransactionType::ContractCall => {
+                ZkVmExecutor::execute_bytecode(&tx.data, DEFAULT_CONTRACT_GAS_LIMIT)?;
+
+                let sender = state.get_or_create(&tx.from);
+                sender.balance = sender.balance.saturating_sub(tx.fee);
+                sender.nonce = sender.nonce.saturating_add(1);
+            }
         }
 
         Ok(())
@@ -180,6 +188,7 @@ mod tests {
     use super::*;
     use crate::core::account::AccountState;
     use crate::core::transaction::{Transaction, TransactionType};
+    use bud_isa::{Instruction, Opcode};
 
     #[test]
     fn test_apply_block_reward() {
@@ -256,5 +265,50 @@ mod tests {
         let validator = state.get_validator(&val_pubkey).unwrap();
         assert_eq!(validator.votes_for, 0);
         assert_eq!(validator.votes_against, 1);
+    }
+
+    #[test]
+    fn test_contract_call_executes_budzkvm_bytecode() {
+        let mut state = AccountState::new();
+        let alice = Address::from_hex(&"03".repeat(32)).unwrap();
+        state.add_balance(&alice, 100);
+
+        let program = vec![
+            Instruction {
+                opcode: Opcode::Load,
+                rd: 1,
+                rs1: 0,
+                rs2: 0,
+                imm: 11,
+            }
+            .encode(),
+            Instruction {
+                opcode: Opcode::Log,
+                rd: 0,
+                rs1: 1,
+                rs2: 0,
+                imm: 0,
+            }
+            .encode(),
+            Instruction {
+                opcode: Opcode::Halt,
+                rd: 0,
+                rs1: 0,
+                rs2: 0,
+                imm: 0,
+            }
+            .encode(),
+        ];
+        let bytecode: Vec<u8> = program
+            .into_iter()
+            .flat_map(|instruction| instruction.to_le_bytes())
+            .collect();
+        let tx = Transaction::new_contract_call(alice, 7, 0, bytecode);
+
+        Executor::apply_transaction(&mut state, &tx).unwrap();
+
+        let alice_acc = state.get_or_create(&alice);
+        assert_eq!(alice_acc.balance, 93);
+        assert_eq!(alice_acc.nonce, 1);
     }
 }

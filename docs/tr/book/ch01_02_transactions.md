@@ -2,7 +2,7 @@
 
 Bu bölüm, blok zincirindeki değer transferinin (Value Transfer) nasıl gerçekleştiğini, `Transaction` yapısının her bir parçasını neden koyduğumuzu ve `Mainnet Hardening` (Ana Ağ Güvenliği) paketleriyle gelen katı doğrulama kurallarını anlatır.
 
-Kaynak Dosya: `src/transaction.rs`
+Kaynak Dosya: `src/core/transaction.rs`
 
 ---
 
@@ -21,11 +21,14 @@ pub enum TransactionType {
     Stake,    // Validatör Olma: Paramı kilitliyorum ve ağa hizmet edeceğim.
     Unstake,  // Çıkış: Paramı çöz ve faiziyle geri ver.
     Vote,     // Yönetişim: Ağın parametrelerini değiştirmek için oy veriyorum.
+    ContractCall, // BudZKVM bytecode çalıştırma.
 }
 ```
 
 **Neden Var?**
-Eğer bu Tipler olmasaydı, Stake etmek için "Burn Adresi"ne para yollamak gibi dolambaçlı yollar (workaround) kullanmak zorunda kalırdık. İşlem tipini açıkça (`explicit`) belirtmek, kodun okunabilirliğini ve güvenliğini artırır. `AccountState` bu tipe bakarak ne yapacağına karar verir.
+Eğer bu Tipler olmasaydı, Stake etmek için "Burn Adresi"ne para yollamak gibi dolambaçlı yollar (workaround) kullanmak zorunda kalırdık. İşlem tipini açıkça (`explicit`) belirtmek, kodun okunabilirliğini ve güvenliğini artırır. `AccountState` ve `Executor` bu tipe bakarak ne yapacağına karar verir.
+
+`ContractCall`, L1 içine entegre edilen BudZKVM yürütme yoludur. Bu işlem tipinde `data` alanı memo değildir; little-endian `u64` instruction'lardan oluşan BudZKVM bytecode'dur. Executor bu bytecode'u VM'de çalıştırır, proof üretip doğrular ve ancak başarıdan sonra sender nonce/fee state'ini değiştirir.
 
 ---
 
@@ -57,7 +60,7 @@ pub struct Transaction {
 | `amount` | `u64` | `u64` | **Miktar.** Transfer edilecek değer. Kuruş (decimal) sorunlarıyla uğraşmamak için genellikle en küçük birim (Raw/Wei gibi) cinsinden tutulur. |
 | `fee` | `u64` | `u64` | **Rüşvet / Ücret.** Madencilerin/Validatörlerin bu işlemi bloğa koyması için ödenen teşviktir. Aynı zamanda Spam saldırılarını (milyonlarca bedava işlem) engeller. |
 | `nonce` | `u64` | Sıralı sayı. | **Anti-Replay Sayacı.** EN KRİTİK ALANLARDAN BİRİ. Alice Bob'a 10 coin yolladı. Bob bu işlemi ağa tekrar tekrar "replay" edip Alice'i soymasın diye var. Bir nonce sadece **BİR KERE** kullanılır. |
-| `data` | `Vec<u8>`| Byte dizisi. | **Memo / Veri.** "Kira ödemesi" gibi notlar veya ileride Smart Contract çağrıları için veri alanı. |
+| `data` | `Vec<u8>`| Byte dizisi. | **Memo / Contract Payload.** Normal işlemlerde ek veri olabilir. `ContractCall` için non-empty BudZKVM bytecode'dur ve uzunluğu 8'in katı olmalıdır. |
 | `timestamp`| `u128` | Epoch Zamanı. | **Zaman Penceresi.** İşlemin ne zaman üretildiği. Gelecekten (maksimum +15sn) veya çok geçmişten (maksimum -2 saat) gelen işlemler reddedilir. |
 | `signature`| `Option<Vec>` | Opsiyonel Byte dizisi. | **İmza.** "Bu işlemi gerçekten `from` adresinin sahibi mi yaptı?" sorusunun cevabı. Özel anahtar (Private Key) ile atılır. *Dipnot: İşlemler bir bloğa eklenmeden önce mutlakar doğrulanır.* |
 | `chain_id`| `u64` | Sabit Sayı. | **Zincir İzolasyonu.** Budlum Mainnet için üretilen bir imzalı işlemin, Budlum Testnet'te geçerli olmasını (veya tam tersi) engeller. |
@@ -74,6 +77,12 @@ Budlum Hardening aşamasında, sabit ücret yerine **EIP-1559 benzeri** dinamik 
   - Eğer blokta 50'den (Hedef) fazla işlem varsa: `base_fee` bir sonraki blok için **%12.5 artar**.
   - Eğer blokta 50'den az işlem varsa: `base_fee` bir sonraki blok için **%12.5 azalır** (minimum 1).
 - **Spam Koruması:** Ağ saldırı altındayken ücretler hızla yükselerek saldırganın maliyetini katlar.
+
+### 2.1 Gas Schedule ve ContractCall
+
+`GasSchedule` artık `contract_call_gas` alanı içerir. Bu değer, `bud_estimateGas` ve ağ profillerindeki maliyet modelinin contract execution için ayrı bir taban maliyet taşımasını sağlar.
+
+Execution tarafında BudZKVM için ayrıca sabit bir VM gas limiti uygulanır (`DEFAULT_CONTRACT_GAS_LIMIT`). Bu limit sonsuz döngü gibi DoS risklerini keser. VM out-of-gas olursa işlem başarısız sayılır ve sender state'i atomik olarak değişmeden kalır.
 
 ---
 
@@ -105,6 +114,16 @@ Geçmiş bir işlemin hangi blokta olduğunu bulmak eskiden tüm zinciri taramay
 Bloklar ağdan alındığında, `blockchain.rs` içindeki `validate_and_add_block` fonksiyonu her bir işlemi tek tek inceler.
 - Bloktaki herhangi bir işlemin `chain_id` değeri bloğun `chain_id` değerinden farklıysa (`tx.chain_id != block.chain_id`), **BLOK REDDEDİLİR**. Bu, testnet işlemlerinin mainnet bloğunun içine gömülerek validasyonun atlatılmasını engeller.
 
+### 2.4 ContractCall Bytecode Doğrulaması
+
+BudZKVM contract işlemleri için ek kurallar vardır:
+- `amount == 0` olmalıdır. Contract execution şu MVP aşamasında native value transfer yapmaz.
+- `data` boş olamaz.
+- `data.len() % 8 == 0` olmalıdır. Her instruction `bud-isa::Instruction::encode()` ile üretilmiş bir little-endian `u64` olarak taşınır.
+- İmza, nonce, chain ID ve fee kuralları normal işlemlerle aynıdır.
+
+Bu kontroller `Transaction::is_valid`, `AccountState::validate_transaction_with_context` ve `Blockchain::tx_precheck` seviyelerinde görünür hale getirilmiştir. Böylece hatalı bytecode mempool'a girmeden reddedilir.
+
 ---
 
 ### Fonksiyon: `signing_hash` (İmzalanacak Veri)
@@ -128,6 +147,7 @@ pub fn signing_hash(&self) -> [u8; 32] {
     hasher.update(self.chain_id.to_le_bytes());
     
     // 3. İmzayı EKLEME!
+    // 4. İşlem tipi byte'ını ekle (ContractCall = 4 dahil).
     hasher.finalize().into()
 }
 ```

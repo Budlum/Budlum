@@ -1,10 +1,11 @@
 # Chapter 1: Fundamentals and Data Structures
 
-Budlum is built from a small set of core structures: blocks, transactions, and account state.
+To understand blockchain technology, we first need to understand its core data structures. This chapter examines the building blocks of the Budlum project.
 
-- **Blocks** package transactions and link to previous blocks through hashes.
-- **Transactions** describe value transfers, staking operations, votes, and contract calls.
-- **Account state** stores balances, nonces, validator data, and Merkle roots.
+What we will learn:
+-   **Blocks:** How data is packaged and linked together.
+-   **Transactions:** How value transfers and state changes are represented.
+-   **Account State:** How the blockchain's "memory" is maintained.
 
-These structures form the deterministic state machine that every node must reproduce.
+These structures are tightly connected and form a single coherent system.
 

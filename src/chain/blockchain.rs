@@ -6,6 +6,7 @@ use crate::consensus::ConsensusEngine;
 use crate::core::account::AccountState;
 use crate::core::address::Address;
 use crate::core::block::Block;
+use crate::core::chain_config::Network;
 use crate::core::transaction::Transaction;
 use crate::execution::executor::Executor;
 use crate::mempool::pool::{Mempool, MempoolConfig};
@@ -57,7 +58,10 @@ impl Blockchain {
         }
 
         if !loaded_chain {
-            let genesis = GenesisConfig::new(chain_id).build_genesis_block();
+            let genesis_config = Network::from_chain_id(chain_id)
+                .map(GenesisConfig::for_network)
+                .unwrap_or_else(|| GenesisConfig::new(chain_id));
+            let genesis = genesis_config.build_genesis_block();
             chain_vec.push(genesis);
         }
 
@@ -120,7 +124,10 @@ impl Blockchain {
             };
         }
 
-        let mut mempool = Mempool::new(MempoolConfig::default());
+        let mempool_config = Network::from_chain_id(chain_id)
+            .map(|network| network.mempool_config())
+            .unwrap_or_else(MempoolConfig::default);
+        let mut mempool = Mempool::new(mempool_config);
         if let Some(ref store) = storage {
             if let Ok(txs) = store.load_mempool_txs() {
                 let count = txs.len();
@@ -516,6 +523,14 @@ impl Blockchain {
             crate::core::transaction::TransactionType::Vote => {
                 if self.state.get_validator(&tx.from).is_none() {
                     reasons.push("not_a_validator".to_string());
+                }
+            }
+            crate::core::transaction::TransactionType::ContractCall => {
+                if tx.amount != 0 {
+                    reasons.push("contract_amount_must_be_zero".to_string());
+                }
+                if tx.data.is_empty() || tx.data.len() % 8 != 0 {
+                    reasons.push("invalid_contract_bytecode".to_string());
                 }
             }
         }

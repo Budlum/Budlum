@@ -1,0 +1,41 @@
+[network]
+name = "devnet"
+chain_id = 1337
+port = 6001
+
+[consensus]
+type = "pow"
+min_stake = 1000
+epoch_len = 10
+
+[bootnodes]
+addresses = []
+fallback = []
+dns_seeds = []
+
+[rpc]
+enabled = true
+host = "127.0.0.1"
+port = 8545
+auth_required = false
+allowed_ips = ["127.0.0.1"]
+cors_origins = ["http://127.0.0.1", "http://localhost"]
+rate_limit_per_minute = 10000
+
+[metrics]
+port = 9090
+
+[storage]
+db_path = "./data/devnet/budlum.db"
+snapshot_dir = "./data/devnet/snapshots"
+backups_enabled = false
+backup_dir = "./data/devnet/backups"
+
+[validator]
+key_file = "./secrets/devnet-validator.key"
+backend = "local_file"
+
+[security]
+max_peers = 25
+banned_peer_db = "./data/devnet/banned-peers.json"
+mdns_enabled = true

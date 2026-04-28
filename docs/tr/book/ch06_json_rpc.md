@@ -22,12 +22,30 @@ cargo run -- --config ./budlum.toml
 
 **Örnek `budlum.toml`:**
 ```toml
-db_path = "./data/mainnet.db"
-rpc_host = "127.0.0.1"
-rpc_port = 8545
-metrics_port = 9090
-bootstrap = "/ip4/1.2.3.4/tcp/4001/p2p/..."
+[network]
+name = "testnet"
+chain_id = 42
+port = 5001
+
+[bootnodes]
+addresses = ["/ip4/203.0.113.10/tcp/5001/p2p/12D3K..."]
+
+[rpc]
+enabled = true
+host = "127.0.0.1"
+port = 8545
+auth_required = true
+api_key_env = "BUDLUM_RPC_API_KEY"
+rate_limit_per_minute = 600
+
+[metrics]
+port = 9090
+
+[storage]
+db_path = "./data/testnet/budlum.db"
 ```
+
+Hazır profiller repo kökünde bulunur: `config/mainnet.toml`, `config/testnet.toml`, `config/devnet.toml`.
 
 ---
 
@@ -44,6 +62,11 @@ Düğümün sağlığını ve performansını izlemek için `/metrics` endpoint'
 - `budlum_mempool_size`: Havuzdaki bekleyen işlem sayısı.
 - `budlum_reorgs_total`: Gerçekleşen toplam reorg sayısı.
 - `budlum_finalized_height`: En son finalize edilmiş blok.
+- `budlum_block_propagation_seconds`: Blok yayılım süresi histogramı.
+- `budlum_mempool_sender_count`: Mempool'daki farklı gönderici sayısı.
+- `budlum_peer_connection_quality`: Peer bağlantı kalitesi skoru.
+- `budlum_consensus_round_seconds`: Konsensüs tur süresi histogramı.
+- `budlum_finality_lag`: Head yüksekliği ile finalized height arasındaki fark.
 
 ---
 
@@ -86,6 +109,34 @@ curl -X POST -H "Content-Type: application/json" \
   http://127.0.0.1:8545
 ```
 
+**BudZKVM ContractCall Precheck Örneği:**
+`tx_type` JSON içinde Serde enum adıyla taşınır. `data`, BudZKVM bytecode byte dizisidir; her instruction little-endian `u64` olarak encode edilir. Aşağıdaki payload imzalı gerçek bir işlem yerine shape örneğidir:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  --data '{
+    "jsonrpc":"2.0",
+    "method":"bud_txPrecheck",
+    "params":[{
+      "from":"GONDEREN_32_BYTE_HEX",
+      "to":"0000000000000000000000000000000000000000000000000000000000000000",
+      "amount":0,
+      "fee":1,
+      "nonce":0,
+      "data":[20,1,0,0,0,0,0,0],
+      "timestamp":0,
+      "hash":"TX_HASH",
+      "signature":[/* Ed25519 signature bytes */],
+      "chain_id":1337,
+      "tx_type":"ContractCall"
+    }],
+    "id":1
+  }' \
+  http://127.0.0.1:8545
+```
+
+Production client'lar `hash` ve `signature` alanlarını `Transaction::signing_hash` ile aynı domain separation ve `tx_type` byte'ı üzerinden üretmelidir. `ContractCall` için `amount` daima `0` olmalıdır.
+
 ## 4. Mimari Tasarım ve Güvenlik (Hardening)
 
 RPC sunucusu, asenkron bir `tokio` görevinde çalışır. **Mainnet Ready** aşamasında aşağıdaki güvenlik katmanları eklenmiştir:
@@ -94,6 +145,8 @@ RPC sunucusu, asenkron bir `tokio` görevinde çalışır. **Mainnet Ready** aş
 2. **Payload Sınırı (Max Request Size):** Gelen her RPC isteği en fazla **2 MB** olabilir. Çok büyük JSON paketleri ile belleği şişirme saldırıları bu sayede engelenir.
 3. **İşlem Doğrulama (TX Validation):** `bud_sendRawTransaction` metodu, işlemi ağa yaymadan önce **transaction size** (Max 100KB) ve **kriptografik imza** kontrolü yapar. Hatalı veya devasa işlemler anında reddedilir.
 4. **Panic Prevention:** Sunucu kodundaki tüm kritik noktalar `Result` tipiyle yönetilir. Bozuk bir JSON veya ağ hatası tüm düğümü çökertemez.
+5. **Config Tabanlı Auth Hazırlığı:** TOML dosyalarında `auth_required`, `api_key_env`, `allowed_ips`, `cors_origins` ve `rate_limit_per_minute` alanları bulunur. Bunlar prod operatör konfigürasyonunu standartlaştırır; enforcement katmanı ayrıca genişletilmelidir.
+6. **ContractCall Shape Kontrolü:** `bud_txPrecheck` ve mempool doğrulaması, BudZKVM bytecode'unun boş olmamasını ve 8 byte instruction hizasına sahip olmasını kontrol eder.
 
 ## 5. `bud_txPrecheck` Ne Kadar Gerçekçi?
 
@@ -110,6 +163,8 @@ Bu metot aşağıdaki durumları raporlayabilir:
 - `invalid_stake_amount`
 - `not_a_validator`
 - `insufficient_stake`
+- `contract_amount_must_be_zero`
+- `invalid_contract_bytecode`
 - `duplicate_transaction`
 - `rbf_fee_too_low`
 - `sender_limit_reached`

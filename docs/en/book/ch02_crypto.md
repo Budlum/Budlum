@@ -1,9 +1,12 @@
 # Chapter 2: Cryptography and Security
 
-Budlum uses cryptography for identity, integrity, aggregation, and post-quantum readiness.
+The "crypto" in "cryptocurrency" comes from cryptography. In blockchains, however, cryptography is usually not used to hide messages through encryption; it is used to authenticate identity through signing and to protect integrity through hashing.
 
-- **Ed25519** signs ordinary transactions and block data.
-- **BLS** aggregates validator finality votes.
-- **Dilithium** provides post-quantum checkpoint attestations.
-- **Merkle trees** make compact proofs possible.
+The main cryptographic algorithms used in Budlum are:
+
+1.  **Ed25519:** Used for digital signatures. Fast and secure.
+2.  **SHA3-256 (Keccak):** Used for data hashing.
+3.  **Merkle Trees:** Used to prove data integrity.
+
+In this chapter, we will see how these algorithms are used in a blockchain context.
 

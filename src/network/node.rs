@@ -85,6 +85,7 @@ pub struct Node {
     pub bootstrap_peers: Vec<String>,
     pub peer_count: Arc<AtomicUsize>,
     pub in_progress_snapshots: HashMap<u64, Vec<Option<Vec<u8>>>>,
+    pub max_peers: usize,
 }
 
 impl Node {
@@ -163,6 +164,7 @@ impl Node {
             bootstrap_peers: Vec::new(),
             peer_count,
             in_progress_snapshots: HashMap::new(),
+            max_peers: MAX_PEERS,
         })
     }
     pub fn new_with_bootstrap(
@@ -172,6 +174,10 @@ impl Node {
         let mut node = Self::new(chain)?;
         node.bootstrap_peers = bootstrap_peers;
         Ok(node)
+    }
+    pub fn apply_network_security(&mut self, network: crate::core::chain_config::Network) {
+        let security = network.security_config();
+        self.max_peers = security.max_peers;
     }
     pub fn get_client(&self) -> NodeClient {
         NodeClient {
@@ -327,8 +333,8 @@ impl Node {
                         }
                         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                             let count = self.peer_count.fetch_add(1, Ordering::SeqCst) + 1;
-                            if count > MAX_PEERS {
-                                warn!("Max peers reached ({}/{}), disconnecting {}", count, MAX_PEERS, peer_id);
+                            if count > self.max_peers {
+                                warn!("Max peers reached ({}/{}), disconnecting {}", count, self.max_peers, peer_id);
                                 let _ = self.swarm.disconnect_peer_id(peer_id);
                                 self.peer_count.fetch_sub(1, Ordering::SeqCst);
                                 continue;
@@ -717,6 +723,11 @@ impl Node {
                                             self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).ban_peer(&peer_id);
                                             continue;
                                         }
+                                        if !crate::core::encoding::is_compatible_version(version_major, version_minor) {
+                                            warn!("Peer {} has incompatible protocol v{}.{}. Banning.", peer_id, version_major, version_minor);
+                                            self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).ban_peer(&peer_id);
+                                            continue;
+                                        }
                                         info!("Handshake from {}: v{}.{}, chain={}, height={}, val_set={}, schemes={:?}",
                                             peer_id, version_major, version_minor, chain_id, best_height, validator_set_hash, supported_schemes);
                                         self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).set_handshaked(&peer_id, true);
@@ -740,6 +751,11 @@ impl Node {
                                         let my_chain_id = self.chain.get_chain_id().await;
                                         if chain_id != my_chain_id {
                                             warn!("Peer {} Ack with wrong chain_id {} (expected {}). Banning.", peer_id, chain_id, my_chain_id);
+                                            self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).ban_peer(&peer_id);
+                                            continue;
+                                        }
+                                        if !crate::core::encoding::is_compatible_version(version_major, version_minor) {
+                                            warn!("Peer {} Ack has incompatible protocol v{}.{}. Banning.", peer_id, version_major, version_minor);
                                             self.peer_manager.lock().unwrap_or_else(|e| { tracing::error!("PeerManager lock poisoned: {}", e); std::process::exit(1); }).ban_peer(&peer_id);
                                             continue;
                                         }
