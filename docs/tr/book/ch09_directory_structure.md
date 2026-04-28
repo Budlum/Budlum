@@ -52,4 +52,4 @@ Yeni bir ağ profili eklemek için güncellenmesi gereken ana noktalar:
 1. `src/core/chain_config.rs`: Chain ID, port, consensus, gas, mempool ve security değerleri.
 2. `src/chain/genesis.rs`: Ağın genesis allocation ve validator set değerleri.
 3. `config/<network>.toml`: Operatör config dosyası.
-4. `docs/book/ch07_network_distinctions.md`: Ağ dokümantasyonu.
+4. `docs/tr/book/ch07_network_distinctions.md`: Ağ dokümantasyonu.

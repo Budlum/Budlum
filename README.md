@@ -82,7 +82,7 @@ graph TD
 | Mempool | `src/mempool/` | Fee ordering, nonce queues, anti-spam checks |
 | Storage | `src/storage/` | sled-backed persistence, schema versioning, integrity checks |
 | RPC | `src/rpc/` | JSON-RPC server and `bud_` methods |
-| Docs | `docs/book/` | Technical book covering architecture, consensus, storage, networking, and RPC |
+| Docs | `docs/tr/book/`, `docs/en/book/` | Technical book covering architecture, consensus, storage, networking, and RPC |
 
 ---
 
@@ -255,7 +255,9 @@ cargo run -- [OPTIONS]
 
 Full technical documentation lives in:
 
-👉 [`docs/book/README.md`](docs/book/README.md)
+👉 Turkish: [`docs/tr/book/README.md`](docs/tr/book/README.md)
+
+👉 English: [`docs/en/book/README.md`](docs/en/book/README.md)
 
 Includes:
 
