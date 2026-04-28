@@ -114,6 +114,12 @@ impl Blockchain {
             chain_len - 1
         );
 
+        let mut validator_snapshots = BTreeMap::new();
+        validator_snapshots.insert(
+            state.epoch_index,
+            Self::build_validator_snapshot_from_state(state.epoch_index, &state),
+        );
+
         for block in chain_vec.iter().skip(start_index) {
             state = match Self::apply_block_effects(&state, block) {
                 Ok(next_state) => next_state,
@@ -122,6 +128,10 @@ impl Blockchain {
                     std::process::exit(1);
                 }
             };
+            validator_snapshots.insert(
+                state.epoch_index,
+                Self::build_validator_snapshot_from_state(state.epoch_index, &state),
+            );
         }
 
         let mempool_config = Network::from_chain_id(chain_id)
@@ -152,7 +162,7 @@ impl Blockchain {
             finalized_hash: restored_finalized_hash,
             genesis_time: 0,
             verified_qc_blobs: BTreeMap::new(),
-            validator_snapshots: BTreeMap::new(),
+            validator_snapshots,
             pending_finality_certs: BTreeMap::new(),
         };
 
@@ -165,7 +175,6 @@ impl Blockchain {
                 .as_millis();
         }
 
-        bc.record_validator_snapshot(bc.state.epoch_index);
         bc
     }
 
@@ -256,7 +265,14 @@ impl Blockchain {
     }
 
     fn build_validator_snapshot(&self, epoch: u64) -> ValidatorSetSnapshot {
-        let active_validators = self.state.get_active_validators();
+        Self::build_validator_snapshot_from_state(epoch, &self.state)
+    }
+
+    fn build_validator_snapshot_from_state(
+        epoch: u64,
+        state: &AccountState,
+    ) -> ValidatorSetSnapshot {
+        let active_validators = state.get_active_validators();
         let entries: Vec<ValidatorEntry> = active_validators
             .into_iter()
             .map(|v| ValidatorEntry {

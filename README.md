@@ -149,6 +149,16 @@ Mainnet startup requires a real bootnode. Configure `[bootnodes].addresses` in `
 - Slashing checks for unsafe validator behavior
 - PQ-ready QC / Dilithium attestation path
 
+### 🛡️ PQ-QC Finality Enforcement
+
+- Validator identity includes Dilithium public keys for post-quantum checkpoint attestations.
+- `FinalityCert` acceptance requires a verified `QC_BLOB` for the same checkpoint.
+- Certificates that arrive before their QC blob are queued and retried after `QcBlob` import.
+- PQ attestations sign `epoch`, `checkpoint_height`, `checkpoint_hash`, and `validator_index`.
+- Validator snapshots are tracked by epoch and rebuilt during restart replay for historical verification.
+- `QcFaultProof` is available over P2P; valid invalid-Dilithium proofs invalidate affected finality/QC metadata without directly slashing validators.
+- ZK-backed slashable QC proofs are versioned in the data model but remain future scope.
+
 ### ⚙️ Deterministic Execution
 
 - Replay-safe state transitions
