@@ -5,6 +5,11 @@ Budlum projesi, büyüklüğü arttıkça karmaşıklığı yönetmek adına **k
 ## 1. Mevcut Dizin Yapısı
 
 ```text
+config/
+├── mainnet.toml            # Mainnet node profile; real bootnodes required before launch
+├── testnet.toml            # Public testnet profile
+└── devnet.toml             # Local development profile
+
 src/
 ├── main.rs                 # Uygulama giriş noktası (CLI & Service Runner)
 ├── lib.rs                  # Modüllerin public dışa aktarımı
@@ -15,7 +20,7 @@ src/
 ├── network/                # P2P altyapısı (Node, PeerManager, Protocol, SyncCodec)
 │   └── sync_codec.rs        # P2P senkronizasyon için özel veri kodlayıcı
 ├── rpc/                    # JSON-RPC sunucusu ve API tanımları
-├── storage/                # Veritabanı (RocksDB/DumbDB) katmanı
+├── storage/                # Sled veritabanı, migration ve snapshot export katmanı
 ├── execution/              # İşlem yürütme (Executor) ve State geçişleri
 ├── consensus/              # Konsensüs algoritmaları (PoW, PoA, PoS, Finality)
 ├── mempool/                # İşlem havuzu (Mempool) yönetimi
@@ -31,7 +36,16 @@ src/
 - **Core Üzerinde Bağımlılık Yok**: `core/` modülü en alttadır ve projenin geri kalanından bağımsızdır. Sadece temel tipleri (Block, Transaction) içerir.
 - **Ayrık Konsensüs**: Konsensüs algoritmaları (`consensus/`) birer "Plugin" gibi çalışır. Blockchain'e enjekte edilebilirler.
 - **İletişim Kanalı (MPSC)**: Modüller birbirini doğrudan çağırmak yerine çoğunlukla mesaj kuyrukları (Channel) üzerinden asenkron konuşur.
+- **Ağ Profilleri**: Mainnet, testnet ve devnet parametreleri `src/core/chain_config.rs` içinde merkezi olarak tanımlanır; TOML config dosyaları operatör değerlerini taşır.
+- **Genesis İzolasyonu**: `src/chain/genesis.rs` her ağ için ayrı genesis config üretir. Mainnet/testnet/devnet chain ID, validator set, allocation, reward, gas schedule ve timestamp ayrıdır.
 
 ## 3. Geliştirici Deneyimi
 
 Bu yapı sayesinde, yeni bir konsensüs algoritması eklemek isteyen bir geliştirici, sadece `consensus/` ve `core/block.rs` üzerinde değişiklik yaparak diğer modülleri etkilemeden ilerleyebilir.
+
+Yeni bir ağ profili eklemek için güncellenmesi gereken ana noktalar:
+
+1. `src/core/chain_config.rs`: Chain ID, port, consensus, gas, mempool ve security değerleri.
+2. `src/chain/genesis.rs`: Ağın genesis allocation ve validator set değerleri.
+3. `config/<network>.toml`: Operatör config dosyası.
+4. `docs/book/ch07_network_distinctions.md`: Ağ dokümantasyonu.

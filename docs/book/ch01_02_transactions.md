@@ -2,7 +2,7 @@
 
 Bu bölüm, blok zincirindeki değer transferinin (Value Transfer) nasıl gerçekleştiğini, `Transaction` yapısının her bir parçasını neden koyduğumuzu ve `Mainnet Hardening` (Ana Ağ Güvenliği) paketleriyle gelen katı doğrulama kurallarını anlatır.
 
-Kaynak Dosya: `src/transaction.rs`
+Kaynak Dosya: `src/core/transaction.rs`
 
 ---
 

@@ -41,11 +41,11 @@ Merkeziyetsiz karar verme mekanizmaları.
 Bilgisayarların ortak dili.
 -   [Node Mimarisi](ch04_01_node.md): **Tokio Event Loop** ve Asenkron programlama.
 -   [Peer Manager](ch04_02_peer_manager.md): **Oyun Teorisi** ile itibar yönetimi ve **Sybil Saldırısı** koruması.
--   [Protokol](ch04_03_protocol.md): **Bincode** serileştirme ve Ağ limitleri.
+-   [Protokol](ch04_03_protocol.md): **Protobuf** ağ mesajları, deterministik iç serileştirme ve ağ limitleri.
 
 ### 5. [Bölüm 5: Depolama ve Verim](ch05_storage.md)
 Verinin kalıcılığı.
--   [Veritabanı](ch05_01_storage.md): **RocksDB** tabanlı kalıcı depolama.
+-   [Veritabanı](ch05_01_storage.md): **Sled** tabanlı kalıcı depolama, migration ve snapshot export.
 -   [Mempool](ch05_02_mempool.md): **Ücret Piyasası** (Fee Market).
 -   [Snapshot](ch05_03_snapshots.md): **Pruning** (Budama).
 

@@ -1,4 +1,4 @@
-use prometheus::{Encoder, IntCounter, IntGauge, Registry, TextEncoder};
+use prometheus::{Encoder, Histogram, HistogramOpts, IntCounter, IntGauge, Registry, TextEncoder};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -11,6 +11,11 @@ pub struct Metrics {
     pub transactions_processed: IntCounter,
     pub reorgs_total: IntCounter,
     pub finalized_height: IntGauge,
+    pub block_propagation_seconds: Histogram,
+    pub mempool_sender_count: IntGauge,
+    pub peer_connection_quality: IntGauge,
+    pub consensus_round_seconds: Histogram,
+    pub finality_lag: IntGauge,
 }
 
 impl Metrics {
@@ -27,6 +32,25 @@ impl Metrics {
         let reorgs_total = IntCounter::new("budlum_reorgs_total", "Total chain reorgs").unwrap();
         let finalized_height =
             IntGauge::new("budlum_finalized_height", "Finalized block height").unwrap();
+        let block_propagation_seconds = Histogram::with_opts(HistogramOpts::new(
+            "budlum_block_propagation_seconds",
+            "Observed block propagation time in seconds",
+        ))
+        .unwrap();
+        let mempool_sender_count =
+            IntGauge::new("budlum_mempool_sender_count", "Distinct senders in mempool").unwrap();
+        let peer_connection_quality = IntGauge::new(
+            "budlum_peer_connection_quality",
+            "Aggregate peer quality score",
+        )
+        .unwrap();
+        let consensus_round_seconds = Histogram::with_opts(HistogramOpts::new(
+            "budlum_consensus_round_seconds",
+            "Consensus round duration in seconds",
+        ))
+        .unwrap();
+        let finality_lag =
+            IntGauge::new("budlum_finality_lag", "Head height minus finalized height").unwrap();
 
         registry.register(Box::new(chain_height.clone())).unwrap();
         registry.register(Box::new(peer_count.clone())).unwrap();
@@ -41,6 +65,19 @@ impl Metrics {
         registry
             .register(Box::new(finalized_height.clone()))
             .unwrap();
+        registry
+            .register(Box::new(block_propagation_seconds.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(mempool_sender_count.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(peer_connection_quality.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(consensus_round_seconds.clone()))
+            .unwrap();
+        registry.register(Box::new(finality_lag.clone())).unwrap();
 
         Metrics {
             registry: Arc::new(registry),
@@ -51,6 +88,11 @@ impl Metrics {
             transactions_processed,
             reorgs_total,
             finalized_height,
+            block_propagation_seconds,
+            mempool_sender_count,
+            peer_connection_quality,
+            consensus_round_seconds,
+            finality_lag,
         }
     }
 

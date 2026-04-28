@@ -5,6 +5,46 @@ use rand::RngCore;
 use sha3::{Digest, Sha3_256};
 use std::io::{Read, Write};
 use std::path::Path;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyBackend {
+    LocalFile,
+    Hsm {
+        slot: String,
+    },
+    Threshold {
+        shares_required: u8,
+        shares_total: u8,
+    },
+    AirGappedColdStorage,
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatorKeyPolicy {
+    pub backend: KeyBackend,
+    pub rotation_interval_epochs: u64,
+    pub allow_export: bool,
+}
+
+impl ValidatorKeyPolicy {
+    pub fn mainnet_default() -> Self {
+        Self {
+            backend: KeyBackend::Hsm {
+                slot: "BUDLUM_MAINNET_VALIDATOR".to_string(),
+            },
+            rotation_interval_epochs: 90,
+            allow_export: false,
+        }
+    }
+
+    pub fn devnet_default() -> Self {
+        Self {
+            backend: KeyBackend::LocalFile,
+            rotation_interval_epochs: 0,
+            allow_export: true,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum CryptoError {
     KeyGeneration(String),

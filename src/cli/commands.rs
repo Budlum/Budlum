@@ -63,6 +63,8 @@ pub struct NodeConfig {
     pub port: Option<u16>,
     #[arg(long)]
     pub bootstrap: Option<String>,
+    #[arg(skip)]
+    pub bootnodes: Vec<String>,
     #[arg(long, default_value = "./data/budlum.db")]
     pub db_path: String,
     #[arg(long, default_value = "./validators.json")]
@@ -104,6 +106,7 @@ impl Default for NodeConfig {
             ring_size: 11,
             port: None,
             bootstrap: None,
+            bootnodes: Vec::new(),
             db_path: "./data/budlum.db".to_string(),
             validators_file: "./validators.json".to_string(),
             validator_address: None,
@@ -124,6 +127,85 @@ impl Default for NodeConfig {
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct FileConfig {
+    pub network: Option<NetworkSection>,
+    pub consensus: Option<ConsensusSection>,
+    pub bootnodes: Option<BootnodesSection>,
+    pub rpc: Option<RpcSection>,
+    pub metrics: Option<MetricsSection>,
+    pub storage: Option<StorageSection>,
+    pub validator: Option<ValidatorSection>,
+    pub security: Option<SecuritySection>,
+    pub node: Option<NodeSection>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct NetworkSection {
+    pub name: Option<String>,
+    pub chain_id: Option<u64>,
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct ConsensusSection {
+    #[serde(rename = "type")]
+    pub consensus_type: Option<String>,
+    pub min_stake: Option<u64>,
+    pub epoch_len: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct BootnodesSection {
+    pub addresses: Option<Vec<String>>,
+    pub fallback: Option<Vec<String>>,
+    pub dns_seeds: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct RpcSection {
+    pub enabled: Option<bool>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub auth_required: Option<bool>,
+    pub api_key_env: Option<String>,
+    pub allowed_ips: Option<Vec<String>>,
+    pub cors_origins: Option<Vec<String>>,
+    pub rate_limit_per_minute: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct MetricsSection {
+    pub port: Option<u16>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct StorageSection {
+    pub db_path: Option<String>,
+    pub snapshot_dir: Option<String>,
+    pub backups_enabled: Option<bool>,
+    pub backup_dir: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct ValidatorSection {
+    pub key_file: Option<String>,
+    pub address: Option<String>,
+    pub backend: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct SecuritySection {
+    pub max_peers: Option<usize>,
+    pub banned_peer_db: Option<String>,
+    pub mdns_enabled: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct NodeSection {
+    pub dial: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct LegacyFileConfig {
     pub network: Option<String>,
     pub consensus: Option<String>,
     pub difficulty: Option<usize>,
@@ -144,36 +226,130 @@ impl NodeConfig {
             match std::fs::read_to_string(path) {
                 Ok(content) => match toml::from_str::<FileConfig>(&content) {
                     Ok(fc) => {
-                        if self.port.is_none() {
-                            self.port = fc.port;
-                        }
-                        if self.bootstrap.is_none() {
-                            self.bootstrap = fc.bootstrap;
-                        }
-                        if self.validator_key_file.is_none() {
-                            self.validator_key_file = fc.validator_key_file;
-                        }
-                        if self.validator_address.is_none() {
-                            self.validator_address = fc.validator_address;
-                        }
-                        if let Some(ref db) = fc.db_path {
-                            if self.db_path == "./data/budlum.db" || self.db_path.is_empty() {
-                                self.db_path = db.clone();
+                        if let Some(network) = fc.network {
+                            if let Some(name) = network.name {
+                                self.network = match name.as_str() {
+                                    "mainnet" => Network::Mainnet,
+                                    "testnet" => Network::Testnet,
+                                    "devnet" => Network::Devnet,
+                                    other => {
+                                        println!(
+                                            "Unknown network '{}' in config, keeping CLI value",
+                                            other
+                                        );
+                                        self.network
+                                    }
+                                };
+                            }
+                            if self.chain_id.is_none() {
+                                self.chain_id = network.chain_id;
+                            }
+                            if self.port.is_none() {
+                                self.port = network.port;
                             }
                         }
-                        if let Some(ref host) = fc.rpc_host {
-                            if self.rpc_host == "127.0.0.1" || self.rpc_host.is_empty() {
-                                self.rpc_host = host.clone();
+                        if let Some(consensus) = fc.consensus {
+                            if self.consensus.is_none() {
+                                self.consensus = consensus.consensus_type.as_deref().and_then(|s| match s {
+                                    "pow" => Some(ConsensusType::PoW),
+                                    "pos" => Some(ConsensusType::PoS),
+                                    "poa" => Some(ConsensusType::PoA),
+                                    other => {
+                                        println!("Unknown consensus '{}' in config, keeping CLI value", other);
+                                        None
+                                    }
+                                });
+                            }
+                            if self.min_stake == 1000 {
+                                if let Some(min_stake) = consensus.min_stake {
+                                    self.min_stake = min_stake;
+                                }
                             }
                         }
-                        if let Some(rp) = fc.rpc_port {
-                            if self.rpc_port == 8545 {
-                                self.rpc_port = rp;
+                        if let Some(bootnodes) = fc.bootnodes {
+                            if self.bootnodes.is_empty() {
+                                if let Some(addresses) = bootnodes.addresses {
+                                    self.bootnodes.extend(addresses);
+                                }
+                                if let Some(fallback) = bootnodes.fallback {
+                                    self.bootnodes.extend(fallback);
+                                }
+                            }
+                            if self.bootstrap.is_none() {
+                                self.bootstrap = self.bootnodes.first().cloned();
                             }
                         }
-                        if let Some(mp) = fc.metrics_port {
-                            if self.metrics_port == 9090 {
-                                self.metrics_port = mp;
+                        if let Some(rpc) = fc.rpc {
+                            if let Some(host) = rpc.host {
+                                if self.rpc_host == "127.0.0.1" || self.rpc_host.is_empty() {
+                                    self.rpc_host = host;
+                                }
+                            }
+                            if let Some(port) = rpc.port {
+                                if self.rpc_port == 8545 {
+                                    self.rpc_port = port;
+                                }
+                            }
+                        }
+                        if let Some(metrics) = fc.metrics {
+                            if let Some(port) = metrics.port {
+                                if self.metrics_port == 9090 {
+                                    self.metrics_port = port;
+                                }
+                            }
+                        }
+                        if let Some(storage) = fc.storage {
+                            if let Some(db) = storage.db_path {
+                                if self.db_path == "./data/budlum.db" || self.db_path.is_empty() {
+                                    self.db_path = db;
+                                }
+                            }
+                        }
+                        if let Some(validator) = fc.validator {
+                            if self.validator_key_file.is_none() {
+                                self.validator_key_file = validator.key_file;
+                            }
+                            if self.validator_address.is_none() {
+                                self.validator_address = validator.address;
+                            }
+                        }
+                        if let Some(node) = fc.node {
+                            if self.dial.is_none() {
+                                self.dial = node.dial;
+                            }
+                        }
+                        if let Ok(legacy) = toml::from_str::<LegacyFileConfig>(&content) {
+                            if self.port.is_none() {
+                                self.port = legacy.port;
+                            }
+                            if self.bootstrap.is_none() {
+                                self.bootstrap = legacy.bootstrap;
+                            }
+                            if self.validator_key_file.is_none() {
+                                self.validator_key_file = legacy.validator_key_file;
+                            }
+                            if self.validator_address.is_none() {
+                                self.validator_address = legacy.validator_address;
+                            }
+                            if let Some(ref db) = legacy.db_path {
+                                if self.db_path == "./data/budlum.db" || self.db_path.is_empty() {
+                                    self.db_path = db.clone();
+                                }
+                            }
+                            if let Some(ref host) = legacy.rpc_host {
+                                if self.rpc_host == "127.0.0.1" || self.rpc_host.is_empty() {
+                                    self.rpc_host = host.clone();
+                                }
+                            }
+                            if let Some(rp) = legacy.rpc_port {
+                                if self.rpc_port == 8545 {
+                                    self.rpc_port = rp;
+                                }
+                            }
+                            if let Some(mp) = legacy.metrics_port {
+                                if self.metrics_port == 9090 {
+                                    self.metrics_port = mp;
+                                }
                             }
                         }
                         println!("Loaded config from: {}", path);

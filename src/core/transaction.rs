@@ -6,6 +6,47 @@ use sha3::{Digest, Sha3_256};
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GasSchedule {
+    pub base_fee: u64,
+    pub gas_per_byte: u64,
+    pub gas_per_signature: u64,
+    pub transfer_gas: u64,
+    pub stake_gas: u64,
+    pub vote_gas: u64,
+}
+
+impl crate::core::chain_config::Network {
+    pub fn gas_schedule(&self) -> GasSchedule {
+        match self {
+            crate::core::chain_config::Network::Mainnet => GasSchedule {
+                base_fee: 10,
+                gas_per_byte: 2,
+                gas_per_signature: 1_000,
+                transfer_gas: 21_000,
+                stake_gas: 45_000,
+                vote_gas: 35_000,
+            },
+            crate::core::chain_config::Network::Testnet => GasSchedule {
+                base_fee: 1,
+                gas_per_byte: 1,
+                gas_per_signature: 500,
+                transfer_gas: 21_000,
+                stake_gas: 35_000,
+                vote_gas: 25_000,
+            },
+            crate::core::chain_config::Network::Devnet => GasSchedule {
+                base_fee: 1,
+                gas_per_byte: 1,
+                gas_per_signature: 100,
+                transfer_gas: 1_000,
+                stake_gas: 2_000,
+                vote_gas: 1_500,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransactionType {
     Transfer,
@@ -243,6 +284,22 @@ impl Transaction {
     }
     pub fn total_cost(&self) -> u64 {
         self.amount.saturating_add(self.fee)
+    }
+
+    pub fn estimate_gas_with_schedule(&self, schedule: GasSchedule) -> u64 {
+        let intrinsic = match self.tx_type {
+            TransactionType::Transfer => schedule.transfer_gas,
+            TransactionType::Stake | TransactionType::Unstake => schedule.stake_gas,
+            TransactionType::Vote => schedule.vote_gas,
+        };
+        let signature_gas = if self.signature.is_some() {
+            schedule.gas_per_signature
+        } else {
+            0
+        };
+        intrinsic
+            .saturating_add((self.data.len() as u64).saturating_mul(schedule.gas_per_byte))
+            .saturating_add(signature_gas)
     }
 }
 #[cfg(test)]

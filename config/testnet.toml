@@ -1,0 +1,42 @@
+[network]
+name = "testnet"
+chain_id = 42
+port = 5001
+
+[consensus]
+type = "pos"
+min_stake = 10000
+epoch_len = 50
+
+[bootnodes]
+addresses = []
+fallback = []
+dns_seeds = []
+
+[rpc]
+enabled = true
+host = "0.0.0.0"
+port = 18545
+auth_required = true
+api_key_env = "BUDLUM_TESTNET_RPC_API_KEY"
+allowed_ips = []
+cors_origins = []
+rate_limit_per_minute = 600
+
+[metrics]
+port = 19090
+
+[storage]
+db_path = "./data/testnet/budlum.db"
+snapshot_dir = "./data/testnet/snapshots"
+backups_enabled = true
+backup_dir = "./data/testnet/backups"
+
+[validator]
+key_file = "./secrets/testnet-validator.key"
+backend = "local_file"
+
+[security]
+max_peers = 75
+banned_peer_db = "./data/testnet/banned-peers.json"
+mdns_enabled = false

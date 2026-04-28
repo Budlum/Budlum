@@ -68,7 +68,7 @@ graph TD
 | **Network** | `src/network/` | P2P stack (libp2p), node discovery, and protocol logic. |
 | **RPC** | `src/rpc/` | JSON-RPC 2.0 implementation with `bud_` standard methods. |
 | **Consensus** | `src/consensus/` | Implementations of PoW, PoS, PoA, and Finality gadgets. |
-| **Storage** | `src/storage/` | Persistent database layer (RocksDB/DumbDB). |
+| **Storage** | `src/storage/` | Persistent sled database layer, migrations, and snapshot export. |
 | **Execution** | `src/execution/` | State transition engine and block application. |
 | **Mempool** | `src/mempool/` | Validating transaction pool with fee-based prioritization. |
 | **Tests** | `src/tests/` | Comprehensive integration and **Chaos Engineering** suites. |
@@ -105,6 +105,14 @@ cargo build --release
 ./target/release/budlum-core --bootstrap /ip4/127.0.0.1/tcp/4001/p2p/12D3K...
 ```
 
+**4. Run With a Network Config**
+```bash
+./target/release/budlum-core --config config/devnet.toml
+./target/release/budlum-core --config config/testnet.toml
+```
+
+Mainnet refuses to start without at least one configured bootnode. Fill `[bootnodes].addresses` in `config/mainnet.toml` or pass `--bootstrap`.
+
 ---
 
 ---
@@ -140,6 +148,10 @@ Budlum Core has undergone a rigorous production-readiness audit and is now equip
     *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
     *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.
 -   **RPC Hardening**: Strict input validation for transaction sizes, signatures, payload limits (2MB), and mempool-aware prechecks via `bud_txPrecheck`.
+-   **Network-Specific Profiles**: `mainnet`, `testnet`, and `devnet` now have distinct chain IDs, ports, consensus parameters, mempool limits, gas schedules, security limits, and genesis configs.
+-   **Mainnet Bootnode Guard**: Placeholder bootnodes were removed. Mainnet startup requires an explicit real bootnode from config or CLI.
+-   **Protocol Isolation**: P2P handshakes now reject wrong chain IDs and incompatible protocol versions before accepting peer traffic.
+-   **Schema Migration Hook**: Storage initialization applies a schema version marker and exposes a snapshot export helper for backup workflows.
 
 ---
 
@@ -159,7 +171,7 @@ A block contains a header and a body of transactions.
 - **`chain_id`**: Network identifier to prevent cross-chain replay.
 - **`transactions`**: A vector of `Transaction` objects.
 
-#### Transaction (`src/transaction.rs`)
+#### Transaction (`src/core/transaction.rs`)
 A state-changing directive signed by a wallet.
 - **`from`/`to`**: 32-byte binary `Address` (Type-safe, memory-efficient).
 - **`nonce`**: Sequence number. Must strictly increment (0, 1, 2...) for valid processing.
@@ -195,7 +207,7 @@ Budlum abstracts consensus into the `ConsensusEngine` trait.
 
 ---
 
-### 3. Mempool & Anti-Spam (`src/mempool.rs`)
+### 3. Mempool & Anti-Spam (`src/mempool/pool.rs`)
 
 A structured transaction pool with advanced spam protection.
 
@@ -211,9 +223,9 @@ A structured transaction pool with advanced spam protection.
 
 ---
 
-### 4. Genesis & Monetary Policy (`src/genesis.rs`)
+### 4. Genesis & Monetary Policy (`src/chain/genesis.rs`)
 
-Deterministic genesis block (TIMESTAMP = 0) and economic parameters.
+Deterministic genesis blocks and economic parameters are network-specific.
 
 #### GenesisConfig
 ```rust
@@ -223,12 +235,15 @@ GenesisConfig {
     validators: vec!["pubkey1", "pubkey2"],  // Initial validators
     block_reward: 50,
     base_fee: 1,
+    gas_schedule: Network::Devnet.gas_schedule(),
+    timestamp: 0,
 }
 ```
 
-#### Economic Constants
-- `BLOCK_REWARD`: 50 BDLM per block
-- `BASE_FEE`: 1 BDLM minimum transaction fee
+#### Network Profiles
+- `mainnet`: chain ID `1`, PoS defaults, stricter mempool/security limits, non-placeholder bootnodes required.
+- `testnet`: chain ID `42`, PoS defaults with lower stake and faster slots.
+- `devnet`: chain ID `1337`, local-friendly defaults and no required bootnodes.
 
 ---
 
@@ -266,10 +281,11 @@ To prevent spam and attacks, the `PeerManager` (`src/network/peer_manager.rs`) a
 
 Budlum uses an Account-based model (like Ethereum), not UTXO (like Bitcoin).
 
-#### Storage (`src/storage.rs`)
+#### Storage (`src/storage/db.rs`)
 Data is persisted in **sled**, a high-performance embedded database.
 - **`{hash}`**: Stores serialized block data.
 - **`LAST`**: Stores the hash of the chain tip.
+- **`SCHEMA_VERSION`**: Tracks database schema migrations.
 - **`STATE_ROOT:{height}`**: Stores canonical state roots.
 - **`TX_IDX:{hash}`**: Stores transaction-to-height lookup entries.
 - **Snapshots**: Stored separately by the snapshot/pruning subsystem.
@@ -294,7 +310,7 @@ Data is persisted in **sled**, a high-performance embedded database.
 #### Domain Separation
 We prefix all hashes to prevent context confusion attacks.
 - Block Hash Prefix: `BDLM_BLOCK_V2` (includes state_root)
-- TX Hash Prefix: `BDLM_TX_V1`
+- TX Hash Prefix: `BDLM_TX_V2`
 - State Root Prefix: `BDLM_STATE_V1`
 
 #### Chain ID
@@ -303,6 +319,9 @@ Every transaction is signed with a specific `chain_id`.
 - Testnet: `42`
 - Devnet: `1337`
 This ensures a transaction meant for Testnet cannot be replayed on Mainnet.
+
+#### Validator Key Policy
+`src/crypto/primitives.rs` defines key backend policies for local files, HSM slots, threshold signing, and air-gapped cold storage. Mainnet defaults describe a non-exportable HSM policy; operators still need to wire their actual HSM or signer service before launch.
 
 ---
 
@@ -314,9 +333,10 @@ Usage: `cargo run -- [OPTIONS]`
 | :--- | :--- | :--- |
 | `--consensus <TYPE>` | `pow` `pos` `poa` | `pow` |
 | `--network <NAME>` | `mainnet` `testnet` `devnet` | `devnet` |
+| `--config <PATH>` | TOML config file (`config/mainnet.toml`, `config/testnet.toml`, `config/devnet.toml`) | `None` |
 | `--rpc-host <ADDR>` | JSON-RPC listen address | `127.0.0.1` |
 | `--rpc-port <PORT>` | JSON-RPC listen port | `8545` |
-| `--port <PORT>` | P2P Listen Port | `4001` (Auto-adjusts per network) |
+| `--port <PORT>` | P2P Listen Port | Auto-adjusts per network |
 | `--db-path <PATH>` | Database Directory | `./data/budlum.db` |
 | `--difficulty <N>` | Mining Difficulty (PoW) | `2` |
 | `--min-stake <AMT>` | Minimum Stake (PoS) | `1000` |
@@ -330,7 +350,7 @@ Usage: `cargo run -- [OPTIONS]`
 ## 🛠️ Development Guide
 
 ### Running Tests
-Budlum has extensive unit, integration, and chaos tests (**131 tests**).
+Budlum has extensive unit, integration, and chaos tests (**135 tests**).
 ```bash
 nix develop --command cargo test
 ```

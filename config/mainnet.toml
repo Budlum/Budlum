@@ -1,0 +1,42 @@
+[network]
+name = "mainnet"
+chain_id = 1
+port = 4001
+
+[consensus]
+type = "pos"
+min_stake = 1000000
+epoch_len = 100
+
+[bootnodes]
+addresses = []
+fallback = []
+dns_seeds = []
+
+[rpc]
+enabled = true
+host = "0.0.0.0"
+port = 8545
+auth_required = true
+api_key_env = "BUDLUM_RPC_API_KEY"
+allowed_ips = []
+cors_origins = []
+rate_limit_per_minute = 300
+
+[metrics]
+port = 9090
+
+[storage]
+db_path = "./data/mainnet/budlum.db"
+snapshot_dir = "./data/mainnet/snapshots"
+backups_enabled = true
+backup_dir = "./data/mainnet/backups"
+
+[validator]
+key_file = "./secrets/mainnet-validator.key"
+backend = "hsm"
+
+[security]
+max_peers = 100
+banned_peer_db = "./data/mainnet/banned-peers.json"
+mdns_enabled = false
