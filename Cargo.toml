@@ -55,6 +55,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 async-trait = "0.1"
 rayon = "1.10"
+bud-isa = { path = "../BudZKVM/bud-isa" }
+bud-vm = { path = "../BudZKVM/bud-vm" }
+bud-proof = { path = "../BudZKVM/bud-proof" }
 
 [build-dependencies]
 prost-build = "0.14.3"

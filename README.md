@@ -1,6 +1,6 @@
 # Budlum Blockchain Core
 
-**Budlum Core** is a modular blockchain framework written in Rust. It serves as a high-performance Layer-1 blockchain featuring pluggable consensus engines (PoW, PoS, PoA), a hardened libp2p-based networking stack, and an atomic, account-based state model.
+**Budlum Core** is a modular blockchain framework written in Rust. It serves as a high-performance Layer-1 blockchain featuring pluggable consensus engines (PoW, PoS, PoA), a hardened libp2p-based networking stack, an atomic account-based state model, and BudZKVM-backed contract execution.
 
 The architecture emphasizes **security**, **modularity**, and **readability**, making it an ideal foundation for custom blockchain networks, protocol experiments, or educational study of advanced distributed ledger technology. With the latest hardening passes, the framework is robust against spam, malformed payloads, inconsistent replay, and stale canonical metadata after reorgs.
 
@@ -69,7 +69,7 @@ graph TD
 | **RPC** | `src/rpc/` | JSON-RPC 2.0 implementation with `bud_` standard methods. |
 | **Consensus** | `src/consensus/` | Implementations of PoW, PoS, PoA, and Finality gadgets. |
 | **Storage** | `src/storage/` | Persistent sled database layer, migrations, and snapshot export. |
-| **Execution** | `src/execution/` | State transition engine and block application. |
+| **Execution** | `src/execution/` | State transition engine, block application, and BudZKVM contract execution. |
 | **Mempool** | `src/mempool/` | Validating transaction pool with fee-based prioritization. |
 | **Tests** | `src/tests/` | Comprehensive integration and **Chaos Engineering** suites. |
 
@@ -148,6 +148,11 @@ Budlum Core has undergone a rigorous production-readiness audit and is now equip
     *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
     *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.
 -   **RPC Hardening**: Strict input validation for transaction sizes, signatures, payload limits (2MB), and mempool-aware prechecks via `bud_txPrecheck`.
+-   **BudZKVM Contract Execution**:
+    *   `TransactionType::ContractCall` carries BudZKVM bytecode in `tx.data`.
+    *   `src/execution/zkvm.rs` decodes 8-byte instructions, executes them with a gas limit, produces a STARK proof, and verifies it before the transaction mutates account state.
+    *   Failed VM execution, malformed bytecode, or proof verification failure rejects the transaction without charging fee or advancing nonce.
+    *   P2P protobuf encoding preserves the `CONTRACT_CALL` transaction type for network propagation.
 -   **Network-Specific Profiles**: `mainnet`, `testnet`, and `devnet` now have distinct chain IDs, ports, consensus parameters, mempool limits, gas schedules, security limits, and genesis configs.
 -   **Mainnet Bootnode Guard**: Placeholder bootnodes were removed. Mainnet startup requires an explicit real bootnode from config or CLI.
 -   **Protocol Isolation**: P2P handshakes now reject wrong chain IDs and incompatible protocol versions before accepting peer traffic.
@@ -176,7 +181,16 @@ A state-changing directive signed by a wallet.
 - **`from`/`to`**: 32-byte binary `Address` (Type-safe, memory-efficient).
 - **`nonce`**: Sequence number. Must strictly increment (0, 1, 2...) for valid processing.
 - **`signature`**: Signs `hash(from, to, amount, fee, nonce, data, timestamp, chain_id)` using Ed25519.
+- **`tx_type`**: Includes `Transfer`, `Stake`, `Unstake`, `Vote`, and `ContractCall`.
+- **`data`**: For `ContractCall`, this is raw BudZKVM bytecode encoded as little-endian `u64` instructions.
 - **Atomic Execution**: If any transaction fails cryptographic checks or safe-math bounds, the execution fails and the block is rejected.
+
+#### BudZKVM Contract Calls (`src/execution/zkvm.rs`)
+Contract execution is wired into the normal L1 block path:
+- A `ContractCall` transaction must have `amount == 0` and non-empty bytecode with a length divisible by 8.
+- The executor runs the bytecode in `bud-vm` with `DEFAULT_CONTRACT_GAS_LIMIT`.
+- A proof is generated and verified through `bud-proof` before sender fee/nonce state is updated.
+- Out-of-gas, malformed bytecode, VM panic, or proof failure rejects the transaction atomically.
 
 ---
 

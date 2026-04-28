@@ -290,6 +290,14 @@ impl AccountState {
                     return Err("Only validators can vote".into());
                 }
             }
+            TransactionType::ContractCall => {
+                if tx.amount != 0 {
+                    return Err("Contract call amount must be 0".into());
+                }
+                if tx.data.is_empty() || tx.data.len() % 8 != 0 {
+                    return Err("Contract call data must be non-empty BudZKVM bytecode".into());
+                }
+            }
         }
 
         Ok(())

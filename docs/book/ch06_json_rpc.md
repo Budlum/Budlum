@@ -109,6 +109,34 @@ curl -X POST -H "Content-Type: application/json" \
   http://127.0.0.1:8545
 ```
 
+**BudZKVM ContractCall Precheck Örneği:**
+`tx_type` JSON içinde Serde enum adıyla taşınır. `data`, BudZKVM bytecode byte dizisidir; her instruction little-endian `u64` olarak encode edilir. Aşağıdaki payload imzalı gerçek bir işlem yerine shape örneğidir:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  --data '{
+    "jsonrpc":"2.0",
+    "method":"bud_txPrecheck",
+    "params":[{
+      "from":"GONDEREN_32_BYTE_HEX",
+      "to":"0000000000000000000000000000000000000000000000000000000000000000",
+      "amount":0,
+      "fee":1,
+      "nonce":0,
+      "data":[20,1,0,0,0,0,0,0],
+      "timestamp":0,
+      "hash":"TX_HASH",
+      "signature":[/* Ed25519 signature bytes */],
+      "chain_id":1337,
+      "tx_type":"ContractCall"
+    }],
+    "id":1
+  }' \
+  http://127.0.0.1:8545
+```
+
+Production client'lar `hash` ve `signature` alanlarını `Transaction::signing_hash` ile aynı domain separation ve `tx_type` byte'ı üzerinden üretmelidir. `ContractCall` için `amount` daima `0` olmalıdır.
+
 ## 4. Mimari Tasarım ve Güvenlik (Hardening)
 
 RPC sunucusu, asenkron bir `tokio` görevinde çalışır. **Mainnet Ready** aşamasında aşağıdaki güvenlik katmanları eklenmiştir:
@@ -118,6 +146,7 @@ RPC sunucusu, asenkron bir `tokio` görevinde çalışır. **Mainnet Ready** aş
 3. **İşlem Doğrulama (TX Validation):** `bud_sendRawTransaction` metodu, işlemi ağa yaymadan önce **transaction size** (Max 100KB) ve **kriptografik imza** kontrolü yapar. Hatalı veya devasa işlemler anında reddedilir.
 4. **Panic Prevention:** Sunucu kodundaki tüm kritik noktalar `Result` tipiyle yönetilir. Bozuk bir JSON veya ağ hatası tüm düğümü çökertemez.
 5. **Config Tabanlı Auth Hazırlığı:** TOML dosyalarında `auth_required`, `api_key_env`, `allowed_ips`, `cors_origins` ve `rate_limit_per_minute` alanları bulunur. Bunlar prod operatör konfigürasyonunu standartlaştırır; enforcement katmanı ayrıca genişletilmelidir.
+6. **ContractCall Shape Kontrolü:** `bud_txPrecheck` ve mempool doğrulaması, BudZKVM bytecode'unun boş olmamasını ve 8 byte instruction hizasına sahip olmasını kontrol eder.
 
 ## 5. `bud_txPrecheck` Ne Kadar Gerçekçi?
 
@@ -134,6 +163,8 @@ Bu metot aşağıdaki durumları raporlayabilir:
 - `invalid_stake_amount`
 - `not_a_validator`
 - `insufficient_stake`
+- `contract_amount_must_be_zero`
+- `invalid_contract_bytecode`
 - `duplicate_transaction`
 - `rbf_fee_too_low`
 - `sender_limit_reached`

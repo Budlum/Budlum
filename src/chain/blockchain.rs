@@ -347,6 +347,14 @@ impl Blockchain {
                     reasons.push("not_a_validator".to_string());
                 }
             }
+            crate::core::transaction::TransactionType::ContractCall => {
+                if tx.amount != 0 {
+                    reasons.push("contract_amount_must_be_zero".to_string());
+                }
+                if tx.data.is_empty() || tx.data.len() % 8 != 0 {
+                    reasons.push("invalid_contract_bytecode".to_string());
+                }
+            }
         }
 
         if reasons.is_empty() {

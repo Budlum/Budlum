@@ -21,13 +21,16 @@ src/
 │   └── sync_codec.rs        # P2P senkronizasyon için özel veri kodlayıcı
 ├── rpc/                    # JSON-RPC sunucusu ve API tanımları
 ├── storage/                # Sled veritabanı, migration ve snapshot export katmanı
-├── execution/              # İşlem yürütme (Executor) ve State geçişleri
+├── execution/              # İşlem yürütme, State geçişleri ve BudZKVM backend
+│   ├── executor.rs         # Transfer/Stake/Vote/ContractCall state transition mantığı
+│   └── zkvm.rs             # BudZKVM bytecode decode, VM execution, proof verify
 ├── consensus/              # Konsensüs algoritmaları (PoW, PoA, PoS, Finality)
 ├── mempool/                # İşlem havuzu (Mempool) yönetimi
 └── tests/                  # Doğrulama, Kaos ve Performans testleri
     ├── integration.rs      # Uçtan uca sistem testleri
     ├── chaos.rs            # Ağ bölünmesi ve hata simülasyonları
     ├── hardening.rs        # Güvenlik ve kaynak sınırı testleri
+    ├── zkvm.rs             # ContractCall ve BudZKVM execution güvenlik testleri
     └── bench_performance.rs # High-TPS performans ölçüm aracı
 ```
 
@@ -38,6 +41,7 @@ src/
 - **İletişim Kanalı (MPSC)**: Modüller birbirini doğrudan çağırmak yerine çoğunlukla mesaj kuyrukları (Channel) üzerinden asenkron konuşur.
 - **Ağ Profilleri**: Mainnet, testnet ve devnet parametreleri `src/core/chain_config.rs` içinde merkezi olarak tanımlanır; TOML config dosyaları operatör değerlerini taşır.
 - **Genesis İzolasyonu**: `src/chain/genesis.rs` her ağ için ayrı genesis config üretir. Mainnet/testnet/devnet chain ID, validator set, allocation, reward, gas schedule ve timestamp ayrıdır.
+- **Execution Backend Ayrımı**: `src/execution/executor.rs` L1 state transition kapısıdır; BudZKVM'e özel bytecode/proof mantığı `src/execution/zkvm.rs` içinde izole edilir. Böylece transfer/stake/vote yolları contract execution bağımlılıklarıyla karışmaz.
 
 ## 3. Geliştirici Deneyimi
 

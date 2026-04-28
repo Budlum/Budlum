@@ -7,6 +7,7 @@ enum ProtoTransactionType {
     STAKE = 1;
     UNSTAKE = 2;
     VOTE = 3;
+    CONTRACT_CALL = 4;
 }
 
 message ProtoTransaction {

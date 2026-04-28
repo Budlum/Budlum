@@ -95,6 +95,7 @@ Budlum'un üretim sürümünde, ağ parametreleri artık statik kod sabitleri de
 - **`base_fee`**: Ağdaki minimum işlem ücreti. Blok doluluğuna göre EIP-1559 benzeri bir elastik yapıyla güncellenir.
 - **`block_reward`**: Validatörlere verilen blok üretim ödülü.
 - **Yönetişim (Governance)**: `TransactionType::Vote` ile başlayan oylama süreçleri, epoch geçişlerinde (`advance_epoch`) sonuçlandırılır ve bu parametreler on-chain olarak güncellenir.
+- **BudZKVM Contract Execution**: `TransactionType::ContractCall`, `tx.data` içindeki BudZKVM bytecode'u `src/execution/zkvm.rs` üzerinden çalıştırır. Execution başarılı olup proof doğrulanmadan sender nonce/fee state'i güncellenmez.
 
 ---
 
@@ -136,6 +137,7 @@ pub fn validate_transaction_with_context(
 
     // 4. Tip Kontrolleri (Stake, Unstake vb.)
     // Örneğin: Stake miktarı 0 olamaz, olmayan parayla stake yapılamaz.
+    // ContractCall için amount=0, data non-empty ve data.len()%8==0 olmalıdır.
     // ...
     Ok(())
 }
@@ -178,6 +180,11 @@ pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), String> {
                 self.add_validator(tx.from, tx.amount);
             }
         }
+        TransactionType::ContractCall => {
+            // 1. BudZKVM bytecode'u çalıştır.
+            // 2. STARK proof üret ve verify et.
+            // 3. Sadece başarıdan sonra fee düş ve nonce artır.
+        }
         // ...
     }
     Ok(())
@@ -187,6 +194,16 @@ pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), String> {
 **Kritik Detay: `get_or_create`**
 Blockchain'de hesap açmak için bankaya gidilmez. Biri size para yolladığında hesabınız o an oluşur. `get_or_create` fonksiyonu bu dinamikliği sağlar: "Hesap varsa getir, yoksa 0 bakiye ile yarat."
 
+### BudZKVM Atomicity Kuralı
+
+`ContractCall` işlemlerinde state mutation sırası özellikle önemlidir:
+1. Sender'ın yeterli fee bakiyesi ve doğru nonce'u doğrulanır.
+2. Bytecode shape kontrolü yapılır.
+3. `ZkVmExecutor::execute_bytecode` bytecode'u decode eder, VM'i gas limitiyle çalıştırır, proof üretir ve proof'u doğrular.
+4. Ancak bu adımların tamamı başarılı olursa sender fee kadar borçlandırılır ve nonce bir artırılır.
+
+VM panic, out-of-gas, malformed bytecode veya proof verification failure durumunda `apply_transaction` hata döner. Bu durumda sender bakiyesi ve nonce'u değişmeden kalır. Bu davranış `src/tests/zkvm.rs` içindeki atomicity testleriyle korunur.
+
 ---
 
 ### Fonksiyon: `apply_block` (Blok Seviyesi State Determinism)
@@ -195,6 +212,8 @@ Blockchain'de hesap açmak için bankaya gidilmez. Biri size para yolladığınd
 
 **Güvenlik ve Determinism Kuralı:** Mainnet Hardening kapsamında, bu fonksiyon artık **hataları yutmaz**. `apply_block` işlemi bir `Result<(), String>` döner. Eğer blok içindeki tek bir işlem dahi (yetersiz bakiye veya hatalı nonce sebebiyle) `apply_transaction` aşamasında başarısız olursa, blok anında reddedilir ve süreç iptal edilir.
 Ayrıca node ilk başlatılırken (`init` süreci) diskten okunan eski bloklar `apply_block` ile state'e uygulanırken bir hata alınırsa, node sessizce bozuk state ile ayağa kalkmak yerine **`std::process::exit(1)` ile kontrollü bir şekilde çöker (hard fail)**. Bu sayede veritabanı tutarsızlığı önlenir.
+
+BudZKVM için aynı kural geçerlidir: contract execution fail olursa blok seviyesi state transition da fail eder. Üretilen bloklarda contract tx ancak VM execution + proof verification başarılıysa yer alır ve `state_root` bu başarılı execution sonrasındaki hesap state'inden hesaplanır.
 
 ---
 

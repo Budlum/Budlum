@@ -14,6 +14,7 @@ pub struct GasSchedule {
     pub transfer_gas: u64,
     pub stake_gas: u64,
     pub vote_gas: u64,
+    pub contract_call_gas: u64,
 }
 
 impl crate::core::chain_config::Network {
@@ -26,6 +27,7 @@ impl crate::core::chain_config::Network {
                 transfer_gas: 21_000,
                 stake_gas: 45_000,
                 vote_gas: 35_000,
+                contract_call_gas: 50_000,
             },
             crate::core::chain_config::Network::Testnet => GasSchedule {
                 base_fee: 1,
@@ -34,6 +36,7 @@ impl crate::core::chain_config::Network {
                 transfer_gas: 21_000,
                 stake_gas: 35_000,
                 vote_gas: 25_000,
+                contract_call_gas: 35_000,
             },
             crate::core::chain_config::Network::Devnet => GasSchedule {
                 base_fee: 1,
@@ -42,6 +45,7 @@ impl crate::core::chain_config::Network {
                 transfer_gas: 1_000,
                 stake_gas: 2_000,
                 vote_gas: 1_500,
+                contract_call_gas: 5_000,
             },
         }
     }
@@ -53,6 +57,7 @@ pub enum TransactionType {
     Stake,
     Unstake,
     Vote,
+    ContractCall,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -127,6 +132,19 @@ impl Transaction {
             data,
             DEFAULT_CHAIN_ID,
             TransactionType::Vote,
+        )
+    }
+
+    pub fn new_contract_call(from: Address, fee: u64, nonce: u64, bytecode: Vec<u8>) -> Self {
+        Self::new_with_chain_id(
+            from,
+            Address::zero(),
+            0,
+            fee,
+            nonce,
+            bytecode,
+            DEFAULT_CHAIN_ID,
+            TransactionType::ContractCall,
         )
     }
 
@@ -213,6 +231,7 @@ impl Transaction {
             TransactionType::Stake => 1,
             TransactionType::Unstake => 2,
             TransactionType::Vote => 3,
+            TransactionType::ContractCall => 4,
         };
         hasher.update(&[type_byte]);
 
@@ -276,6 +295,16 @@ impl Transaction {
             }
             TransactionType::Unstake => {}
             TransactionType::Vote => {}
+            TransactionType::ContractCall => {
+                if self.amount != 0 {
+                    println!("Contract call TX amount must be 0");
+                    return false;
+                }
+                if self.data.is_empty() || self.data.len() % 8 != 0 {
+                    println!("Contract call TX data must be non-empty BudZKVM bytecode");
+                    return false;
+                }
+            }
         }
         true
     }
@@ -291,6 +320,7 @@ impl Transaction {
             TransactionType::Transfer => schedule.transfer_gas,
             TransactionType::Stake | TransactionType::Unstake => schedule.stake_gas,
             TransactionType::Vote => schedule.vote_gas,
+            TransactionType::ContractCall => schedule.contract_call_gas,
         };
         let signature_gas = if self.signature.is_some() {
             schedule.gas_per_signature
