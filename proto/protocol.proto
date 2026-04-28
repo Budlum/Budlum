@@ -89,6 +89,7 @@ message ProtoNetworkMessage {
         ProtoFinalityCert finality_cert = 17;
         ProtoGetQcBlob get_qc_blob = 18;
         ProtoQcBlobResponse qc_blob_response = 19;
+        ProtoQcFaultProof qc_fault_proof = 20;
     }
 }
 
@@ -195,4 +196,8 @@ message ProtoQcBlobResponse {
     string checkpoint_hash = 3;
     bytes blob_data = 4;
     bool found = 5;
+}
+
+message ProtoQcFaultProof {
+    bytes proof_data = 1;
 }

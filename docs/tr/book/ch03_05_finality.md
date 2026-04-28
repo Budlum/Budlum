@@ -73,6 +73,10 @@ Budlum'un üretim sürümünde imzalar sadece yan yana dizilmez (concatenation).
 
 Bu sayede “BLS cert geçerli ama PQ sidecar eksik/bozuk” durumu finalize edilemez.
 
+Eğer `FinalityCert`, ilgili `QC_BLOB` gelmeden önce ulaşırsa sertifika artık kaybolmaz. Node sertifikayı checkpoint yüksekliğine göre pending kuyruğuna alır, ağdan `GetQcBlob` ister ve blob başarılı şekilde import edildiğinde bekleyen sertifikayı tekrar işler. Böylece finality kabulü mesaj sırasına bağlı kalmaz.
+
+Validator doğrulaması da epoch alanını sadece etiket olarak kullanmaz; zincir bilinen epoch snapshot'larını saklar ve certificate/QC doğrulamasında ilgili epoch'un validator setini kullanır. Bu, validator set değiştikten sonra eski checkpoint'lerin yanlış set ile doğrulanmasını engeller.
+
 ---
 
 ## 4. Slashing: `DoubleVote` (Ters Oylama)
@@ -89,6 +93,7 @@ Finality katmanı artık sadece BLS double-vote suçlarını değil, checkpoint'
 
 - Eğer bir `QcFaultProof`, ilgili `QcBlob` içindeki bir yaprağın gerçekten geçersiz Dilithium imzası taşıdığını kanıtlarsa o checkpoint ve sonrasındaki finality kayıtları invalidation sürecine girer.
 - Slash kararı proof verdict'inden ayrı tutulur; bugünkü Merkle tabanlı invalid-Dilithium kanıtları slash etmez, ileride signed veya ZK-backed kanıtlar slashable verdict üretebilir.
+- `QcFaultProof` artık P2P mesajı olarak da taşınabilir. Gelen proof parse edilir, kayıtlı `QcBlob` ve epoch snapshot'ına karşı doğrulanır, ardından verdict uygulanır.
 - Bu yaklaşım, “bir kez finalize olduysa artık her şey sorgusuz doğru” yerine “finality ancak tüm güvenlik katmanları tutarlıysa korunur” prensibini uygular.
 
 ---

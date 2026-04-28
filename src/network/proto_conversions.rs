@@ -426,6 +426,11 @@ impl From<&NetworkMessage> for pb::ProtoNetworkMessage {
                 blob_data: blob_data.clone(),
                 found: *found,
             }),
+            NetworkMessage::QcFaultProof { proof_data } => {
+                pb::proto_network_message::Payload::QcFaultProof(pb::ProtoQcFaultProof {
+                    proof_data: proof_data.clone(),
+                })
+            }
         };
 
         pb::ProtoNetworkMessage {
@@ -561,6 +566,11 @@ impl TryFrom<pb::ProtoNetworkMessage> for NetworkMessage {
                     found: q.found,
                 })
             }
+            pb::proto_network_message::Payload::QcFaultProof(p) => {
+                Ok(NetworkMessage::QcFaultProof {
+                    proof_data: p.proof_data,
+                })
+            }
         }
     }
 }
@@ -620,6 +630,27 @@ mod tests {
             assert_eq!(orig_b, dec_b);
         } else {
             panic!("Decoded message is not a Block");
+        }
+    }
+
+    #[test]
+    fn test_qc_fault_proof_message_conversion() {
+        let proof_data = br#"{"version":1}"#.to_vec();
+        let msg = NetworkMessage::QcFaultProof {
+            proof_data: proof_data.clone(),
+        };
+
+        let proto_msg = pb::ProtoNetworkMessage::from(&msg);
+        let decoded_msg =
+            NetworkMessage::try_from(proto_msg).expect("Failed to decode QcFaultProof message");
+
+        match decoded_msg {
+            NetworkMessage::QcFaultProof {
+                proof_data: decoded,
+            } => {
+                assert_eq!(decoded, proof_data);
+            }
+            _ => panic!("Expected QcFaultProof message"),
         }
     }
 }

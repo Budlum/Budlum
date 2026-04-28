@@ -1,4 +1,4 @@
-use crate::chain::finality::{ValidatorEntry, ValidatorSetSnapshot};
+use crate::chain::finality::{FinalityCert, ValidatorEntry, ValidatorSetSnapshot};
 use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
 use crate::chain::snapshot::PruningManager;
 use crate::consensus::qc::{QcBlob, QcFaultProof, QcProofAction, QcProofVerdict};
@@ -31,6 +31,8 @@ pub struct Blockchain {
     pub finalized_hash: String,
     pub genesis_time: u128,
     pub verified_qc_blobs: BTreeMap<u64, QcBlob>,
+    pub validator_snapshots: BTreeMap<u64, ValidatorSetSnapshot>,
+    pub pending_finality_certs: BTreeMap<u64, Vec<FinalityCert>>,
 }
 impl Blockchain {
     pub fn new(
@@ -143,6 +145,8 @@ impl Blockchain {
             finalized_hash: restored_finalized_hash,
             genesis_time: 0,
             verified_qc_blobs: BTreeMap::new(),
+            validator_snapshots: BTreeMap::new(),
+            pending_finality_certs: BTreeMap::new(),
         };
 
         if let Some(first) = bc.chain.first() {
@@ -154,6 +158,7 @@ impl Blockchain {
                 .as_millis();
         }
 
+        bc.record_validator_snapshot(bc.state.epoch_index);
         bc
     }
 
@@ -239,11 +244,11 @@ impl Blockchain {
     }
 
     pub fn get_validator_set_hash(&self) -> String {
-        self.validator_snapshot_for_epoch(self.state.epoch_index)
+        self.build_validator_snapshot(self.state.epoch_index)
             .set_hash
     }
 
-    fn validator_snapshot_for_epoch(&self, epoch: u64) -> ValidatorSetSnapshot {
+    fn build_validator_snapshot(&self, epoch: u64) -> ValidatorSetSnapshot {
         let active_validators = self.state.get_active_validators();
         let entries: Vec<ValidatorEntry> = active_validators
             .into_iter()
@@ -256,6 +261,21 @@ impl Blockchain {
             })
             .collect();
         ValidatorSetSnapshot::new(epoch, entries)
+    }
+
+    fn record_validator_snapshot(&mut self, epoch: u64) {
+        let snapshot = self.build_validator_snapshot(epoch);
+        self.validator_snapshots.insert(epoch, snapshot);
+    }
+
+    fn validator_snapshot_for_epoch(&self, epoch: u64) -> ValidatorSetSnapshot {
+        if epoch == self.state.epoch_index {
+            return self.build_validator_snapshot(epoch);
+        }
+        self.validator_snapshots
+            .get(&epoch)
+            .cloned()
+            .unwrap_or_else(|| self.build_validator_snapshot(epoch))
     }
 
     pub fn get_qc_blob(&self, height: u64) -> Option<QcBlob> {
@@ -393,6 +413,7 @@ impl Blockchain {
             let _ = store.save_qc_blob(blob.checkpoint_height, &blob);
         }
 
+        self.process_pending_finality_certs(blob.checkpoint_height)?;
         Ok(())
     }
 
@@ -635,6 +656,7 @@ impl Blockchain {
         }
 
         self.state = committed_state;
+        self.record_validator_snapshot(self.state.epoch_index);
 
         if let Some(ref store) = self.storage {
             let _ = store.commit_block(&block, &block.state_root);
@@ -772,6 +794,7 @@ impl Blockchain {
         }
 
         self.state = commit_state;
+        self.record_validator_snapshot(self.state.epoch_index);
         self.mempool.set_min_fee(self.state.base_fee);
 
         self.chain.push(block);
@@ -923,6 +946,8 @@ impl Blockchain {
 
         self.chain = new_chain;
         self.state = new_state;
+        self.validator_snapshots.clear();
+        self.record_validator_snapshot(self.state.epoch_index);
 
         let mut new_pending = Vec::new();
 
@@ -1035,10 +1060,31 @@ impl Blockchain {
         Ok(())
     }
 
-    pub fn handle_finality_cert(
-        &mut self,
-        cert: crate::chain::finality::FinalityCert,
-    ) -> Result<(), String> {
+    fn process_pending_finality_certs(&mut self, checkpoint_height: u64) -> Result<(), String> {
+        let Some(certs) = self.pending_finality_certs.remove(&checkpoint_height) else {
+            return Ok(());
+        };
+
+        let mut last_err = None;
+        for cert in certs {
+            if let Err(e) = self.handle_finality_cert(cert.clone()) {
+                if e.contains("Missing verified QC blob") {
+                    self.pending_finality_certs
+                        .entry(checkpoint_height)
+                        .or_default()
+                        .push(cert);
+                }
+                last_err = Some(e);
+            }
+        }
+
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    pub fn handle_finality_cert(&mut self, cert: FinalityCert) -> Result<(), String> {
         if cert.checkpoint_height <= self.finalized_height {
             return Ok(());
         }
@@ -1068,12 +1114,19 @@ impl Blockchain {
 
         cert.verify(&snapshot)?;
 
-        let blob = self.get_qc_blob(cert.checkpoint_height).ok_or_else(|| {
-            format!(
-                "Missing verified QC blob for checkpoint {}",
-                cert.checkpoint_height
-            )
-        })?;
+        let blob = match self.get_qc_blob(cert.checkpoint_height) {
+            Some(blob) => blob,
+            None => {
+                self.pending_finality_certs
+                    .entry(cert.checkpoint_height)
+                    .or_default()
+                    .push(cert.clone());
+                return Err(format!(
+                    "Missing verified QC blob for checkpoint {}",
+                    cert.checkpoint_height
+                ));
+            }
+        };
         let signer_indices = cert.signer_indices(snapshot.validators.len());
         blob.verify_against_snapshot(
             &snapshot,
@@ -1117,6 +1170,8 @@ impl Clone for Blockchain {
             finalized_hash: self.finalized_hash.clone(),
             genesis_time: self.genesis_time,
             verified_qc_blobs: self.verified_qc_blobs.clone(),
+            validator_snapshots: self.validator_snapshots.clone(),
+            pending_finality_certs: self.pending_finality_certs.clone(),
         }
     }
 }

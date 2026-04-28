@@ -890,6 +890,40 @@ impl Node {
                                             }
                                         }
                                     }
+
+                                    NetworkMessage::QcFaultProof { proof_data } => {
+                                        let rate_limit_ok = self.peer_manager.lock()
+                                            .map(|mut pm| pm.check_blob_rate_limit(&peer_id))
+                                            .unwrap_or(false);
+                                        if !rate_limit_ok {
+                                            warn!("Peer {} exceeded blob rate limit or lock error. Ignoring QcFaultProof.", peer_id);
+                                            continue;
+                                        }
+
+                                        match serde_json::from_slice::<crate::consensus::qc::QcFaultProof>(&proof_data) {
+                                            Ok(proof) => {
+                                                match self.chain.handle_qc_fault_proof(proof).await {
+                                                    Ok(_) => {
+                                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                                            pm.report_good_behavior(&peer_id);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("Failed to apply QcFaultProof from {}: {}", peer_id, e);
+                                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                                            pm.report_bad_behavior(&peer_id);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("Failed to parse QcFaultProof from {}: {}", peer_id, e);
+                                                if let Ok(mut pm) = self.peer_manager.lock() {
+                                                    pm.report_bad_behavior(&peer_id);
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 }
                                 Err(e) => {

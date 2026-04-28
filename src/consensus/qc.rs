@@ -264,8 +264,12 @@ impl QcBlob {
                 ));
             }
 
-            let message =
-                pq_signing_message(self.epoch, &self.checkpoint_hash, entry.validator_index);
+            let message = pq_signing_message(
+                self.epoch,
+                self.checkpoint_height,
+                &self.checkpoint_hash,
+                entry.validator_index,
+            );
             PqKeyPair::verify(
                 &validator.pq_public_key,
                 &message,
@@ -307,8 +311,12 @@ impl QcBlob {
                 continue;
             }
 
-            let message =
-                pq_signing_message(self.epoch, &self.checkpoint_hash, entry.validator_index);
+            let message = pq_signing_message(
+                self.epoch,
+                self.checkpoint_height,
+                &self.checkpoint_hash,
+                entry.validator_index,
+            );
             if PqKeyPair::verify(
                 &validator.pq_public_key,
                 &message,
@@ -529,8 +537,12 @@ impl QcFaultProof {
                     return Err("Validator has no Dilithium public key".into());
                 }
 
-                let message =
-                    pq_signing_message(self.epoch, &self.checkpoint_hash, self.validator_index);
+                let message = pq_signing_message(
+                    self.epoch,
+                    self.checkpoint_height,
+                    &self.checkpoint_hash,
+                    self.validator_index,
+                );
                 if PqKeyPair::verify(&validator.pq_public_key, &message, dilithium_signature)
                     .is_ok()
                 {
@@ -553,10 +565,16 @@ impl QcFaultProof {
     }
 }
 
-pub fn pq_signing_message(epoch: u64, checkpoint_hash: &str, validator_index: u32) -> Vec<u8> {
+pub fn pq_signing_message(
+    epoch: u64,
+    checkpoint_height: u64,
+    checkpoint_hash: &str,
+    validator_index: u32,
+) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"BUDLUM_PQ_QC");
     msg.extend_from_slice(&epoch.to_le_bytes());
+    msg.extend_from_slice(&checkpoint_height.to_le_bytes());
     msg.extend_from_slice(checkpoint_hash.as_bytes());
     msg.extend_from_slice(&validator_index.to_le_bytes());
     msg
@@ -570,8 +588,7 @@ pub fn sign_attestation(
     validator_index: u32,
     validator_address: String,
 ) -> Result<PqSignatureEntry, String> {
-    let _ = checkpoint_height;
-    let message = pq_signing_message(epoch, checkpoint_hash, validator_index);
+    let message = pq_signing_message(epoch, checkpoint_height, checkpoint_hash, validator_index);
     let signature = pq_key
         .sign(&message)
         .map_err(|e| format!("Dilithium sign failed: {}", e))?;
@@ -757,12 +774,15 @@ mod tests {
 
     #[test]
     fn test_pq_signing_message_deterministic() {
-        let msg1 = pq_signing_message(1, "hash", 0);
-        let msg2 = pq_signing_message(1, "hash", 0);
+        let msg1 = pq_signing_message(1, 100, "hash", 0);
+        let msg2 = pq_signing_message(1, 100, "hash", 0);
         assert_eq!(msg1, msg2);
 
-        let msg3 = pq_signing_message(2, "hash", 0);
+        let msg3 = pq_signing_message(2, 100, "hash", 0);
         assert_ne!(msg1, msg3);
+
+        let msg4 = pq_signing_message(1, 101, "hash", 0);
+        assert_ne!(msg1, msg4);
     }
 
     #[test]

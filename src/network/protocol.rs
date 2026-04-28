@@ -119,6 +119,10 @@ pub enum NetworkMessage {
         blob_data: Vec<u8>,
         found: bool,
     },
+
+    QcFaultProof {
+        proof_data: Vec<u8>,
+    },
 }
 impl NetworkMessage {
     pub fn to_bytes(&self) -> Vec<u8> {

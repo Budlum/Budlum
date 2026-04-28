@@ -116,7 +116,7 @@ Bu makro, Go dilindeki `select` gibidir. Budlum'da artık daha zengin bir olay d
 -   **Maintenance:** TTL süresi dolan işlemleri siler.
 -   **Finality:** Periyodik olarak checkpoint oylaması (Prevote) yapar.
 -   **Metrics:** Prometheus üzerinden düğüm sağlığını dışarı sunar.
--   **QC Recovery:** Bir `FinalityCert` gelir ama ilgili `QC_BLOB` yerelde yoksa, node otomatik olarak `GetQcBlob` isteği başlatabilir.
+-   **QC Recovery:** Bir `FinalityCert` gelir ama ilgili `QC_BLOB` yerelde yoksa, node sertifikayı pending kuyruğuna alır ve otomatik olarak `GetQcBlob` isteği başlatır. Blob import edildiğinde pending sertifika tekrar işlenir.
 
 ---
 

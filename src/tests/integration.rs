@@ -341,11 +341,27 @@ mod integration_tests {
             )
             .unwrap()],
         );
-        blockchain.import_qc_blob(qc_blob).unwrap();
+        let pending_result = blockchain.handle_finality_cert(cert.clone());
+        assert!(pending_result.is_err());
+        assert!(pending_result
+            .unwrap_err()
+            .contains("Missing verified QC blob"));
+        assert_eq!(blockchain.finalized_height, 0);
+        assert_eq!(
+            blockchain
+                .pending_finality_certs
+                .get(&cert.checkpoint_height)
+                .map(|certs| certs.len()),
+            Some(1)
+        );
 
-        blockchain.handle_finality_cert(cert).unwrap();
+        blockchain.import_qc_blob(qc_blob).unwrap();
         assert_eq!(blockchain.finalized_height, 10);
         assert_eq!(blockchain.finalized_hash, checkpoint_block.hash);
+        assert!(blockchain
+            .pending_finality_certs
+            .get(&cert.checkpoint_height)
+            .is_none());
 
         let mut conflicting_block = Block::new(10, "wrong_prev".into(), vec![]);
         conflicting_block.hash = "conflicting_hash".into();

@@ -115,8 +115,8 @@ Budlum Core has undergone a rigorous production-readiness audit and is now equip
 
 -   **Cryptographic BLS Finality**: Mandatory BFT finality gadget using aggregate BLS12-381 signatures for immutable checkpoints.
 -   **On-Chain Governance**: Stake-weighted voting protocol for real-time network parameter updates (fees, rewards, etc.) without hard forks.
--   **Fast Sync (Snapshot-Based)**: Protocol for rapid node discovery and state synchronization using chunked P2P transfers. (See [Ch 5.3](docs/book/ch05_03_snapshots.md))
--   **Database Integrity Audit (FSCK)**: Built-in tool for verifying blockchain data consistency (`--check-db`) and self-repairing index corruptions (`--repair-db`). (See [Ch 5.1](docs/book/ch05_01_storage.md))
+-   **Fast Sync (Snapshot-Based)**: Protocol for rapid node discovery and state synchronization using chunked P2P transfers. (See [Ch 5.3](docs/en/book/ch05_03_snapshots.md))
+-   **Database Integrity Audit (FSCK)**: Built-in tool for verifying blockchain data consistency (`--check-db`) and self-repairing index corruptions (`--repair-db`). (See [Ch 5.1](docs/en/book/ch05_01_storage.md))
 -   **Deterministic Economics**: All reward and slashing calculations use **Saturating Fixed-Point Math** (`u64`).
 -   **Deterministic Slot-Timestamps**: Block timestamps are derived from `genesis_time + (index * SLOT_MS)`.
 -   **Deterministic Replay / Reorg Recovery**:
@@ -139,8 +139,8 @@ Budlum Core has undergone a rigorous production-readiness audit and is now equip
 -   **PQ Enforcement Pipeline**:
     *   Validator identity now includes Dilithium public keys.
     *   `QcBlobResponse` payloads are parsed, Merkle-checked, Dilithium-verified, and persisted before use.
-    *   `FinalityCert` acceptance is gated on the presence of a verified `QC_BLOB`.
-    *   Valid `QcFaultProof`s return explicit verdicts: current invalid-Dilithium proofs invalidate affected finality metadata, while slashable QC faults are reserved for stronger signed/ZK-backed evidence.
+    *   `FinalityCert` acceptance is gated on the presence of a verified `QC_BLOB`; certs that arrive first are queued and retried after blob import.
+    *   Valid `QcFaultProof`s are available over P2P and return explicit verdicts: current invalid-Dilithium proofs invalidate affected finality metadata, while slashable QC faults are reserved for stronger signed/ZK-backed evidence.
 -   **Binary Optimization**:
     *   **32-Byte Addressing**: All addresses are handled as raw 32-byte arrays instead of hex strings, reducing memory by 50% and eliminating hex-parsing overhead.
     *   **Binary Hashing**: Transaction and Block hashing now operates directly on bytes for maximum efficiency.

@@ -62,6 +62,9 @@ Blok zincirinde saniyede binlerce işlem olur. JSON kullanmak, ağı %30-40 yava
   2. `epoch` ve `checkpoint_height` eşleşmesi kontrol edilir.
   3. Merkle root ve Dilithium imzaları validator snapshot'ına karşı doğrulanır.
   4. Başarılıysa `QC_BLOB:{height}` olarak persist edilir.
+  5. Aynı checkpoint için pending `FinalityCert` varsa tekrar işlenir.
+- `QcFaultProof { proof_data }`:
+  Geçersiz PQ attestasyonu kanıtını ağda taşır. Alıcı node proof'u parse eder, ilgili `QC_BLOB` ve validator snapshot'ına karşı doğrular, sonra verdict'i uygular.
 
 Bu önemli bir farktır: ağ protokolü blob'u sadece “taşır”, ama kabul kararı zincir katmanında verilir.
 
