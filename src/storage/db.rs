@@ -153,6 +153,12 @@ impl Storage {
             Ok(None)
         }
     }
+    pub fn delete_qc_blob(&self, height: u64) -> std::io::Result<()> {
+        let key = format!("QC_BLOB:{}", height);
+        self.db.remove(key.as_bytes())?;
+        self.db.flush()?;
+        Ok(())
+    }
     pub fn save_finality_cert(
         &self,
         height: u64,
@@ -175,6 +181,12 @@ impl Storage {
         } else {
             Ok(None)
         }
+    }
+    pub fn delete_finality_cert(&self, height: u64) -> std::io::Result<()> {
+        let key = format!("FINALITY_CERT:{}", height);
+        self.db.remove(key.as_bytes())?;
+        self.db.flush()?;
+        Ok(())
     }
     pub fn save_canonical_height(&self, height: u64) -> std::io::Result<()> {
         self.db

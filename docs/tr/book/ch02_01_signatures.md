@@ -149,6 +149,9 @@ Kuantum bilgisayarların Ed25519 gibi klasik eliptik eğri şemalarını kırma 
 
 - **Kullanım Alanı:** Optimistic QC (PQ Attestation).
 - **Neden Dilithium?** NIST tarafından kuantum sonrası standart olarak seçilmiştir. Budlum, ana zincir performansını düşürmemek için bu ağır imzaları (yüzlerce byte) ana blok içine değil, yan kanal olan `QcBlob` içine gömer.
+- **Gerçek Doğrulama:** `src/crypto/primitives.rs` içindeki `PqKeyPair` yapısı, `pqcrypto-dilithium` üzerinden detached signature üretir ve doğrular.
+- **Validator Identity:** Artık validator kaydı sadece BLS/VRF ile sınırlı değildir; aktif validator kimliği `pq_public_key` bilgisini de taşır.
+- **Anahtar Paketi:** `ValidatorKeys` dosyaları Ed25519 imza anahtarı + VRF anahtarı + opsiyonel Dilithium anahtarını bir arada saklayabilir. Eski anahtar dosyaları geriye dönük olarak yüklenebilir, ancak PQ doğrulama gerektiren akışlarda `pq_public_key` eksik validator'lar geçerli sayılmaz.
 
 ### 3. Proof of Possession (PoP)
 
@@ -161,7 +164,8 @@ BLS şemasında saldırganların sahte anahtarlar üretmesini (Rogue-key attack)
 
 ## Özet
 
-`src/crypto.rs` dosyası, tüm sistemin güvenliğinin dayandığı temeldir.
+`src/crypto/primitives.rs` dosyası, tüm sistemin güvenliğinin dayandığı temeldir.
 1.  **Hibrit Güvenlik:** Ed25519 (Hız) + BLS (Verimlilik) + Dilithium (PQ Güvenlik).
 2.  **Ölçeklenebilirlik:** BLS agregasyonu sayesinde binlerce validatörle bile düşük ağ yükü.
 3.  **Geleceğe Hazırlık:** Kuantum ötesi senaryolara bugünden hazır mimari.
+4.  **State-Correctness Bağı:** PQ katmanı artık sadece “ek bir imza türü” değil; validator kimliği, finality gating ve QC fault-proof doğrulamasıyla zincirin karar mekanizmasına bağlıdır.

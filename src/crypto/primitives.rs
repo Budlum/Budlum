@@ -1,6 +1,11 @@
 use ed25519_dalek::{
     Signature, Signer, SigningKey, Verifier, VerifyingKey, SECRET_KEY_LENGTH, SIGNATURE_LENGTH,
 };
+use pqcrypto_dilithium::dilithium5;
+use pqcrypto_traits::sign::{
+    DetachedSignature as PqDetachedSignatureTrait, PublicKey as PqPublicKeyTrait,
+    SecretKey as PqSecretKeyTrait,
+};
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
 use std::io::{Read, Write};
@@ -76,6 +81,65 @@ use schnorrkel::Keypair as SchnorrkelKeypair;
 pub struct ValidatorKeys {
     pub sig_key: KeyPair,
     pub vrf_key: SchnorrkelKeypair,
+    pub pq_key: Option<PqKeyPair>,
+}
+
+#[derive(Clone)]
+pub struct PqKeyPair {
+    public_key: Vec<u8>,
+    secret_key: Vec<u8>,
+}
+
+impl PqKeyPair {
+    pub fn generate() -> Self {
+        let (public_key, secret_key) = dilithium5::keypair();
+        PqKeyPair {
+            public_key: public_key.as_bytes().to_vec(),
+            secret_key: secret_key.as_bytes().to_vec(),
+        }
+    }
+
+    pub fn from_bytes(public_key: &[u8], secret_key: &[u8]) -> Result<Self, CryptoError> {
+        if public_key.len() != dilithium5::public_key_bytes() {
+            return Err(CryptoError::InvalidKey(format!(
+                "Invalid Dilithium public key length: expected {}, got {}",
+                dilithium5::public_key_bytes(),
+                public_key.len()
+            )));
+        }
+        if secret_key.len() != dilithium5::secret_key_bytes() {
+            return Err(CryptoError::InvalidKey(format!(
+                "Invalid Dilithium secret key length: expected {}, got {}",
+                dilithium5::secret_key_bytes(),
+                secret_key.len()
+            )));
+        }
+        Ok(Self {
+            public_key: public_key.to_vec(),
+            secret_key: secret_key.to_vec(),
+        })
+    }
+
+    pub fn public_key_bytes(&self) -> &[u8] {
+        &self.public_key
+    }
+
+    pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let secret_key = dilithium5::SecretKey::from_bytes(&self.secret_key)
+            .map_err(|e| CryptoError::Signing(e.to_string()))?;
+        Ok(dilithium5::detached_sign(message, &secret_key)
+            .as_bytes()
+            .to_vec())
+    }
+
+    pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
+        let public_key = dilithium5::PublicKey::from_bytes(public_key)
+            .map_err(|e| CryptoError::Verification(e.to_string()))?;
+        let signature = dilithium5::DetachedSignature::from_bytes(signature)
+            .map_err(|e| CryptoError::Verification(e.to_string()))?;
+        dilithium5::verify_detached_signature(&signature, message, &public_key)
+            .map_err(|e| CryptoError::Verification(e.to_string()))
+    }
 }
 
 impl ValidatorKeys {
@@ -83,11 +147,20 @@ impl ValidatorKeys {
         let sig_key = KeyPair::generate()?;
         let mut csprng = rand_core::OsRng;
         let vrf_key = SchnorrkelKeypair::generate_with(&mut csprng);
-        Ok(ValidatorKeys { sig_key, vrf_key })
+        let pq_key = Some(PqKeyPair::generate());
+        Ok(ValidatorKeys {
+            sig_key,
+            vrf_key,
+            pq_key,
+        })
     }
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), CryptoError> {
         let mut bytes = self.sig_key.signing_key.as_bytes().to_vec();
         bytes.extend_from_slice(&self.vrf_key.to_bytes());
+        if let Some(pq_key) = &self.pq_key {
+            bytes.extend_from_slice(pq_key.public_key_bytes());
+            bytes.extend_from_slice(&pq_key.secret_key);
+        }
         std::fs::write(path.as_ref(), bytes).map_err(|e| CryptoError::Io(e.to_string()))?;
         #[cfg(unix)]
         {
@@ -105,7 +178,32 @@ impl ValidatorKeys {
         let sig_key = KeyPair::from_bytes(&bytes[0..32])?;
         let vrf_key = SchnorrkelKeypair::from_bytes(&bytes[32..128])
             .map_err(|e| CryptoError::InvalidKey(e.to_string()))?;
-        Ok(ValidatorKeys { sig_key, vrf_key })
+
+        let pq_key = if bytes.len() == 128 {
+            None
+        } else {
+            let expected_len =
+                128 + dilithium5::public_key_bytes() + dilithium5::secret_key_bytes();
+            if bytes.len() != expected_len {
+                return Err(CryptoError::InvalidKey(format!(
+                    "Invalid validator key file length: expected {} or {}, got {}",
+                    128,
+                    expected_len,
+                    bytes.len()
+                )));
+            }
+            let pq_pk_end = 128 + dilithium5::public_key_bytes();
+            Some(PqKeyPair::from_bytes(
+                &bytes[128..pq_pk_end],
+                &bytes[pq_pk_end..expected_len],
+            )?)
+        };
+
+        Ok(ValidatorKeys {
+            sig_key,
+            vrf_key,
+            pq_key,
+        })
     }
 }
 impl KeyPair {

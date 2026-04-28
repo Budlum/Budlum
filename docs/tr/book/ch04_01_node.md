@@ -118,6 +118,7 @@ Bu makro, Go dilindeki `select` gibidir. Budlum'da artık daha zengin bir olay d
 -   **Maintenance:** TTL süresi dolan işlemleri siler.
 -   **Finality:** Periyodik olarak checkpoint oylaması (Prevote) yapar.
 -   **Metrics:** Prometheus üzerinden düğüm sağlığını dışarı sunar.
+-   **QC Recovery:** Bir `FinalityCert` gelir ama ilgili `QC_BLOB` yerelde yoksa, node sertifikayı pending kuyruğuna alır ve otomatik olarak `GetQcBlob` isteği başlatır. Blob import edildiğinde pending sertifika tekrar işlenir.
 
 ---
 
@@ -196,4 +197,4 @@ Budlum'un üretim sürümünde, düğüm operatörleri için yeni bakım komutla
 ---
 
 **Tasarım Notu:**
-Burada blok geldiğinde `process_incoming_block` çağrılır. Bu fonksiyon, Bölüm 3'teki `validate_block` fonksiyonunu çağırır. Eğer blok geçerliyse zincire ekler, değilse göndereni banlar (`PeerManager`). Hepsi birbirine bağlıdır.
+Burada blok geldiğinde `process_incoming_block` çağrılır. Bu fonksiyon, Bölüm 3'teki `validate_block` fonksiyonunu çağırır. Eğer blok geçerliyse zincire ekler, değilse göndereni banlar (`PeerManager`). Aynı şekilde `QcBlobResponse` geldiğinde mesaj sadece loglanmaz; parse edilir, `ChainActor` üzerinden doğrulatılır ve ancak başarılıysa peer iyi davranış puanı alır.

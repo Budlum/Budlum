@@ -1,7 +1,11 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
+use crate::chain::finality::ValidatorSetSnapshot;
 use crate::core::chain_config::{MAX_QC_BLOB_BYTES, QC_BLOB_TTL_EPOCHS};
+use crate::crypto::primitives::PqKeyPair;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QcBlob {
@@ -21,14 +25,47 @@ pub struct PqSignatureEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PqFraudProof {
+pub struct QcFaultProof {
+    pub version: u8,
     pub epoch: u64,
+    pub checkpoint_height: u64,
+    pub checkpoint_hash: String,
     pub validator_index: u32,
     pub validator_address: String,
-    pub claimed_bls_sig: Vec<u8>,
-    pub dilithium_signature: Vec<u8>,
-    pub merkle_proof: Vec<Vec<u8>>,
-    pub leaf_index: u32,
+    pub kind: QcProofKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum QcProofKind {
+    InvalidDilithiumV1 {
+        dilithium_signature: Vec<u8>,
+        merkle_proof: Vec<Vec<u8>>,
+        leaf_index: u32,
+    },
+    ZkInvalidAttestationV1 {
+        proof_bytes: Vec<u8>,
+        public_inputs: ZkQcPublicInputs,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZkQcPublicInputs {
+    pub merkle_root: String,
+    pub pq_public_key_hash: String,
+    pub attestation_commitment: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QcProofAction {
+    InvalidateFinality,
+    SlashValidator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QcProofVerdict {
+    pub action: QcProofAction,
+    pub invalidate_from_height: Option<u64>,
+    pub slash_validator: bool,
 }
 
 impl QcBlob {
@@ -49,34 +86,33 @@ impl QcBlob {
         }
     }
 
-    pub fn compute_merkle_root(signatures: &[PqSignatureEntry]) -> String {
+    fn leaf_hash(entry: &PqSignatureEntry) -> [u8; 32] {
+        let mut hasher = Sha3_256::new();
+        hasher.update(entry.validator_index.to_le_bytes());
+        hasher.update(entry.validator_address.as_bytes());
+        hasher.update(&entry.dilithium_signature);
+        let result = hasher.finalize();
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&result);
+        arr
+    }
+
+    fn merkle_layers(signatures: &[PqSignatureEntry]) -> Vec<Vec<[u8; 32]>> {
         if signatures.is_empty() {
-            return String::from(
-                "0000000000000000000000000000000000000000000000000000000000000000",
-            );
+            return Vec::new();
         }
 
-        let mut leaves: Vec<[u8; 32]> = signatures
-            .iter()
-            .map(|entry| {
-                let mut hasher = Sha3_256::new();
-                hasher.update(entry.validator_index.to_le_bytes());
-                hasher.update(entry.validator_address.as_bytes());
-                hasher.update(&entry.dilithium_signature);
-                let result = hasher.finalize();
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&result);
-                arr
-            })
-            .collect();
+        let mut layers: Vec<Vec<[u8; 32]>> = Vec::new();
+        layers.push(signatures.iter().map(Self::leaf_hash).collect());
 
-        while leaves.len() > 1 {
+        while layers.last().map(|layer| layer.len()).unwrap_or(0) > 1 {
+            let current = layers.last().cloned().unwrap_or_default();
             let mut next_level = Vec::new();
             let mut i = 0;
-            while i < leaves.len() {
-                let left = &leaves[i];
-                let right = if i + 1 < leaves.len() {
-                    &leaves[i + 1]
+            while i < current.len() {
+                let left = &current[i];
+                let right = if i + 1 < current.len() {
+                    &current[i + 1]
                 } else {
                     left
                 };
@@ -89,10 +125,56 @@ impl QcBlob {
                 next_level.push(arr);
                 i += 2;
             }
-            leaves = next_level;
+            layers.push(next_level);
         }
 
-        hex::encode(leaves[0])
+        layers
+    }
+
+    pub fn compute_merkle_root(signatures: &[PqSignatureEntry]) -> String {
+        if signatures.is_empty() {
+            return String::from(
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            );
+        }
+
+        let layers = Self::merkle_layers(signatures);
+        hex::encode(
+            layers
+                .last()
+                .and_then(|layer| layer.first())
+                .copied()
+                .unwrap_or([0u8; 32]),
+        )
+    }
+
+    pub fn merkle_proof(&self, leaf_index: usize) -> Result<Vec<Vec<u8>>, String> {
+        if self.pq_signatures.is_empty() {
+            return Err("QcBlob has no PQ signatures".into());
+        }
+        if leaf_index >= self.pq_signatures.len() {
+            return Err(format!(
+                "Leaf index {} out of range for {} signatures",
+                leaf_index,
+                self.pq_signatures.len()
+            ));
+        }
+
+        let layers = Self::merkle_layers(&self.pq_signatures);
+        let mut proof = Vec::new();
+        let mut idx = leaf_index;
+
+        for layer in layers.iter().take(layers.len().saturating_sub(1)) {
+            let sibling_idx = if idx % 2 == 0 {
+                (idx + 1).min(layer.len().saturating_sub(1))
+            } else {
+                idx.saturating_sub(1)
+            };
+            proof.push(layer[sibling_idx].to_vec());
+            idx /= 2;
+        }
+
+        Ok(proof)
     }
 
     pub fn is_expired(&self, current_epoch: u64) -> bool {
@@ -119,41 +201,225 @@ impl QcBlob {
         let computed = Self::compute_merkle_root(&self.pq_signatures);
         computed == self.merkle_root
     }
+
+    pub fn verify_against_snapshot(
+        &self,
+        snapshot: &ValidatorSetSnapshot,
+        required_signers: Option<&[usize]>,
+        current_epoch: Option<u64>,
+    ) -> Result<(), String> {
+        if self.epoch != snapshot.epoch {
+            return Err(format!(
+                "QcBlob epoch mismatch: expected {}, got {}",
+                snapshot.epoch, self.epoch
+            ));
+        }
+        if self.checkpoint_height == 0 {
+            return Err("QcBlob checkpoint height must be > 0".into());
+        }
+        if self.checkpoint_hash.is_empty() {
+            return Err("QcBlob checkpoint hash is empty".into());
+        }
+        if let Some(epoch) = current_epoch {
+            if self.is_expired(epoch) {
+                return Err(format!(
+                    "QcBlob expired at epoch {} (created at {})",
+                    epoch, self.created_epoch
+                ));
+            }
+        }
+        self.validate_size()?;
+        if !self.verify_merkle_root() {
+            return Err("QcBlob merkle root mismatch".into());
+        }
+
+        let mut verified_indices = HashSet::new();
+        for entry in &self.pq_signatures {
+            let idx = entry.validator_index as usize;
+            let validator = snapshot.validators.get(idx).ok_or_else(|| {
+                format!(
+                    "QcBlob references unknown validator index {}",
+                    entry.validator_index
+                )
+            })?;
+
+            if validator.address.to_string() != entry.validator_address {
+                return Err(format!(
+                    "QcBlob validator address mismatch at index {}: expected {}, got {}",
+                    entry.validator_index, validator.address, entry.validator_address
+                ));
+            }
+
+            if validator.pq_public_key.is_empty() {
+                return Err(format!(
+                    "Validator {} has no Dilithium public key",
+                    validator.address
+                ));
+            }
+
+            if !verified_indices.insert(idx) {
+                return Err(format!(
+                    "Duplicate PQ signature for validator index {}",
+                    entry.validator_index
+                ));
+            }
+
+            let message = pq_signing_message(
+                self.epoch,
+                self.checkpoint_height,
+                &self.checkpoint_hash,
+                entry.validator_index,
+            );
+            PqKeyPair::verify(
+                &validator.pq_public_key,
+                &message,
+                &entry.dilithium_signature,
+            )
+            .map_err(|e| {
+                format!(
+                    "Invalid Dilithium signature for validator {}: {}",
+                    validator.address, e
+                )
+            })?;
+        }
+
+        if let Some(required_signers) = required_signers {
+            for signer_idx in required_signers {
+                if !verified_indices.contains(signer_idx) {
+                    return Err(format!(
+                        "QcBlob missing PQ attestation for validator index {}",
+                        signer_idx
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn detect_fault_proofs(&self, snapshot: &ValidatorSetSnapshot) -> Vec<QcFaultProof> {
+        let mut proofs = Vec::new();
+
+        for (leaf_index, entry) in self.pq_signatures.iter().enumerate() {
+            let Some(validator) = snapshot.validators.get(entry.validator_index as usize) else {
+                continue;
+            };
+            if validator.address.to_string() != entry.validator_address {
+                continue;
+            }
+            if validator.pq_public_key.is_empty() {
+                continue;
+            }
+
+            let message = pq_signing_message(
+                self.epoch,
+                self.checkpoint_height,
+                &self.checkpoint_hash,
+                entry.validator_index,
+            );
+            if PqKeyPair::verify(
+                &validator.pq_public_key,
+                &message,
+                &entry.dilithium_signature,
+            )
+            .is_err()
+            {
+                if let Ok(merkle_proof) = self.merkle_proof(leaf_index) {
+                    proofs.push(QcFaultProof::new_invalid_dilithium(
+                        self.epoch,
+                        self.checkpoint_height,
+                        self.checkpoint_hash.clone(),
+                        entry.validator_index,
+                        entry.validator_address.clone(),
+                        entry.dilithium_signature.clone(),
+                        merkle_proof,
+                        leaf_index as u32,
+                    ));
+                }
+            }
+        }
+
+        proofs
+    }
 }
 
-impl PqFraudProof {
-    pub fn new(
+impl QcFaultProof {
+    pub const CURRENT_VERSION: u8 = 1;
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_invalid_dilithium(
         epoch: u64,
+        checkpoint_height: u64,
+        checkpoint_hash: String,
         validator_index: u32,
         validator_address: String,
-        claimed_bls_sig: Vec<u8>,
         dilithium_signature: Vec<u8>,
         merkle_proof: Vec<Vec<u8>>,
         leaf_index: u32,
     ) -> Self {
-        PqFraudProof {
+        QcFaultProof {
+            version: Self::CURRENT_VERSION,
             epoch,
+            checkpoint_height,
+            checkpoint_hash,
             validator_index,
             validator_address,
-            claimed_bls_sig,
-            dilithium_signature,
-            merkle_proof,
-            leaf_index,
+            kind: QcProofKind::InvalidDilithiumV1 {
+                dilithium_signature,
+                merkle_proof,
+                leaf_index,
+            },
+        }
+    }
+
+    pub fn new_zk_invalid_attestation(
+        epoch: u64,
+        checkpoint_height: u64,
+        checkpoint_hash: String,
+        validator_index: u32,
+        validator_address: String,
+        proof_bytes: Vec<u8>,
+        public_inputs: ZkQcPublicInputs,
+    ) -> Self {
+        QcFaultProof {
+            version: Self::CURRENT_VERSION,
+            epoch,
+            checkpoint_height,
+            checkpoint_hash,
+            validator_index,
+            validator_address,
+            kind: QcProofKind::ZkInvalidAttestationV1 {
+                proof_bytes,
+                public_inputs,
+            },
+        }
+    }
+
+    fn invalid_dilithium_fields(&self) -> Option<(&Vec<u8>, &Vec<Vec<u8>>, u32)> {
+        match &self.kind {
+            QcProofKind::InvalidDilithiumV1 {
+                dilithium_signature,
+                merkle_proof,
+                leaf_index,
+            } => Some((dilithium_signature, merkle_proof, *leaf_index)),
+            QcProofKind::ZkInvalidAttestationV1 { .. } => None,
         }
     }
 
     pub fn verify_inclusion(&self, merkle_root: &str) -> Result<(), String> {
-        let mut hasher = Sha3_256::new();
-        hasher.update(self.validator_index.to_le_bytes());
-        hasher.update(self.validator_address.as_bytes());
-        hasher.update(&self.dilithium_signature);
-        let leaf_hash = hasher.finalize();
+        let (dilithium_signature, merkle_proof, leaf_index) =
+            self.invalid_dilithium_fields().ok_or_else(|| {
+                "Merkle inclusion is not available for this QC proof kind".to_string()
+            })?;
 
-        let mut current = [0u8; 32];
-        current.copy_from_slice(&leaf_hash);
+        let mut current = QcBlob::leaf_hash(&PqSignatureEntry {
+            validator_index: self.validator_index,
+            validator_address: self.validator_address.clone(),
+            dilithium_signature: dilithium_signature.clone(),
+        });
 
-        let mut idx = self.leaf_index;
-        for proof_element in &self.merkle_proof {
+        let mut idx = leaf_index;
+        for proof_element in merkle_proof {
             let mut hasher = Sha3_256::new();
             if idx % 2 == 0 {
                 hasher.update(&current);
@@ -178,45 +444,214 @@ impl PqFraudProof {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.dilithium_signature.is_empty() {
-            return Err("Empty Dilithium signature".into());
+        if self.version != Self::CURRENT_VERSION {
+            return Err(format!(
+                "Unsupported QC fault proof version {}",
+                self.version
+            ));
         }
-        if self.claimed_bls_sig.is_empty() {
-            return Err("Empty claimed BLS signature".into());
+        if self.checkpoint_height == 0 {
+            return Err("Empty checkpoint height".into());
         }
-        if self.merkle_proof.is_empty() {
-            return Err("Empty merkle proof".into());
+        if self.checkpoint_hash.is_empty() {
+            return Err("Empty checkpoint hash".into());
+        }
+        match &self.kind {
+            QcProofKind::InvalidDilithiumV1 {
+                dilithium_signature,
+                merkle_proof,
+                leaf_index,
+            } => {
+                if dilithium_signature.is_empty() {
+                    return Err("Empty Dilithium signature".into());
+                }
+                if merkle_proof.is_empty() && *leaf_index != 0 {
+                    return Err("Empty merkle proof".into());
+                }
+            }
+            QcProofKind::ZkInvalidAttestationV1 {
+                proof_bytes,
+                public_inputs,
+            } => {
+                if proof_bytes.is_empty() {
+                    return Err("Empty ZK QC proof".into());
+                }
+                if public_inputs.merkle_root.is_empty() {
+                    return Err("Empty ZK QC merkle root input".into());
+                }
+                if public_inputs.pq_public_key_hash.is_empty() {
+                    return Err("Empty ZK QC PQ public key hash input".into());
+                }
+                if public_inputs.attestation_commitment.is_empty() {
+                    return Err("Empty ZK QC attestation commitment input".into());
+                }
+            }
         }
         Ok(())
     }
+
+    pub fn verify_against_blob(
+        &self,
+        blob: &QcBlob,
+        snapshot: &ValidatorSetSnapshot,
+    ) -> Result<QcProofVerdict, String> {
+        self.validate()?;
+
+        if self.epoch != blob.epoch {
+            return Err("QC fault proof epoch mismatch".into());
+        }
+        if self.checkpoint_height != blob.checkpoint_height {
+            return Err("QC fault proof checkpoint height mismatch".into());
+        }
+        if self.checkpoint_hash != blob.checkpoint_hash {
+            return Err("QC fault proof checkpoint hash mismatch".into());
+        }
+
+        match &self.kind {
+            QcProofKind::InvalidDilithiumV1 {
+                dilithium_signature,
+                leaf_index,
+                ..
+            } => {
+                self.verify_inclusion(&blob.merkle_root)?;
+
+                let entry = blob
+                    .pq_signatures
+                    .get(*leaf_index as usize)
+                    .ok_or_else(|| format!("Leaf index {} out of range", leaf_index))?;
+                if entry.validator_index != self.validator_index
+                    || entry.validator_address != self.validator_address
+                    || entry.dilithium_signature != *dilithium_signature
+                {
+                    return Err("Fault proof leaf does not match blob contents".into());
+                }
+
+                let validator = snapshot
+                    .validators
+                    .get(self.validator_index as usize)
+                    .ok_or_else(|| format!("Unknown validator index {}", self.validator_index))?;
+                if validator.address.to_string() != self.validator_address {
+                    return Err("Fault proof validator address mismatch".into());
+                }
+                if validator.pq_public_key.is_empty() {
+                    return Err("Validator has no Dilithium public key".into());
+                }
+
+                let message = pq_signing_message(
+                    self.epoch,
+                    self.checkpoint_height,
+                    &self.checkpoint_hash,
+                    self.validator_index,
+                );
+                if PqKeyPair::verify(&validator.pq_public_key, &message, dilithium_signature)
+                    .is_ok()
+                {
+                    return Err("Fault proof targets a valid Dilithium signature".into());
+                }
+            }
+            QcProofKind::ZkInvalidAttestationV1 { public_inputs, .. } => {
+                if public_inputs.merkle_root != blob.merkle_root {
+                    return Err("ZK QC public input merkle root mismatch".into());
+                }
+                return Err("ZK QC verifier is not implemented".into());
+            }
+        }
+
+        Ok(QcProofVerdict {
+            action: QcProofAction::InvalidateFinality,
+            invalidate_from_height: Some(self.checkpoint_height),
+            slash_validator: false,
+        })
+    }
 }
 
-pub fn pq_signing_message(epoch: u64, checkpoint_hash: &str, validator_index: u32) -> Vec<u8> {
+pub fn pq_signing_message(
+    epoch: u64,
+    checkpoint_height: u64,
+    checkpoint_hash: &str,
+    validator_index: u32,
+) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"BUDLUM_PQ_QC");
     msg.extend_from_slice(&epoch.to_le_bytes());
+    msg.extend_from_slice(&checkpoint_height.to_le_bytes());
     msg.extend_from_slice(checkpoint_hash.as_bytes());
     msg.extend_from_slice(&validator_index.to_le_bytes());
     msg
 }
 
+pub fn sign_attestation(
+    pq_key: &PqKeyPair,
+    epoch: u64,
+    checkpoint_height: u64,
+    checkpoint_hash: &str,
+    validator_index: u32,
+    validator_address: String,
+) -> Result<PqSignatureEntry, String> {
+    let message = pq_signing_message(epoch, checkpoint_height, checkpoint_hash, validator_index);
+    let signature = pq_key
+        .sign(&message)
+        .map_err(|e| format!("Dilithium sign failed: {}", e))?;
+    Ok(PqSignatureEntry {
+        validator_index,
+        validator_address,
+        dilithium_signature: signature,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chain::finality::ValidatorEntry;
+    use crate::core::address::Address;
 
-    fn make_entries(n: usize) -> Vec<PqSignatureEntry> {
-        (0..n)
-            .map(|i| PqSignatureEntry {
-                validator_index: i as u32,
-                validator_address: format!("validator_{}", i),
-                dilithium_signature: vec![i as u8; 64],
+    fn make_snapshot_with_pq_keys(n: usize) -> (ValidatorSetSnapshot, Vec<PqKeyPair>) {
+        let mut validators = Vec::new();
+        let mut keys = Vec::new();
+
+        for i in 0..n {
+            let pq_key = PqKeyPair::generate();
+            let address = Address::from([(i as u8) + 1; 32]);
+            validators.push(ValidatorEntry {
+                address,
+                stake: 1_000,
+                bls_public_key: Vec::new(),
+                pop_signature: Vec::new(),
+                pq_public_key: pq_key.public_key_bytes().to_vec(),
+            });
+            keys.push(pq_key);
+        }
+
+        (ValidatorSetSnapshot::new(1, validators), keys)
+    }
+
+    fn make_signed_entries(
+        snapshot: &ValidatorSetSnapshot,
+        keys: &[PqKeyPair],
+        checkpoint_hash: &str,
+    ) -> Vec<PqSignatureEntry> {
+        snapshot
+            .validators
+            .iter()
+            .enumerate()
+            .map(|(idx, validator)| {
+                sign_attestation(
+                    &keys[idx],
+                    snapshot.epoch,
+                    100,
+                    checkpoint_hash,
+                    idx as u32,
+                    validator.address.to_string(),
+                )
+                .unwrap()
             })
             .collect()
     }
 
     #[test]
     fn test_qc_blob_creation() {
-        let entries = make_entries(4);
+        let (snapshot, keys) = make_snapshot_with_pq_keys(4);
+        let entries = make_signed_entries(&snapshot, &keys, "cp_hash");
         let blob = QcBlob::new(1, 100, "cp_hash".into(), entries);
         assert_eq!(blob.epoch, 1);
         assert_eq!(blob.checkpoint_height, 100);
@@ -226,7 +661,8 @@ mod tests {
 
     #[test]
     fn test_merkle_root_deterministic() {
-        let entries = make_entries(4);
+        let (snapshot, keys) = make_snapshot_with_pq_keys(4);
+        let entries = make_signed_entries(&snapshot, &keys, "cp_hash");
         let root1 = QcBlob::compute_merkle_root(&entries);
         let root2 = QcBlob::compute_merkle_root(&entries);
         assert_eq!(root1, root2);
@@ -234,9 +670,10 @@ mod tests {
 
     #[test]
     fn test_merkle_root_changes_with_data() {
-        let entries1 = make_entries(4);
-        let mut entries2 = make_entries(4);
-        entries2[0].dilithium_signature = vec![0xFF; 64];
+        let (snapshot, keys) = make_snapshot_with_pq_keys(4);
+        let entries1 = make_signed_entries(&snapshot, &keys, "cp_hash");
+        let mut entries2 = entries1.clone();
+        entries2[0].dilithium_signature[0] ^= 0xFF;
         let root1 = QcBlob::compute_merkle_root(&entries1);
         let root2 = QcBlob::compute_merkle_root(&entries2);
         assert_ne!(root1, root2);
@@ -251,7 +688,8 @@ mod tests {
 
     #[test]
     fn test_blob_expiry() {
-        let entries = make_entries(2);
+        let (snapshot, keys) = make_snapshot_with_pq_keys(2);
+        let entries = make_signed_entries(&snapshot, &keys, "cp");
         let blob = QcBlob::new(1, 100, "cp".into(), entries);
         assert!(!blob.is_expired(5));
         assert!(!blob.is_expired(11));
@@ -260,63 +698,97 @@ mod tests {
 
     #[test]
     fn test_blob_size_validation() {
-        let entries = make_entries(4);
+        let (snapshot, keys) = make_snapshot_with_pq_keys(4);
+        let entries = make_signed_entries(&snapshot, &keys, "cp");
         let blob = QcBlob::new(1, 100, "cp".into(), entries);
         assert!(blob.validate_size().is_ok());
     }
 
     #[test]
-    fn test_fraud_proof_validation() {
-        let proof = PqFraudProof::new(
-            1,
-            0,
-            "validator_0".into(),
-            vec![1; 48],
-            vec![1; 64],
-            vec![vec![0; 32]],
-            0,
-        );
-        assert!(proof.validate().is_ok());
+    fn test_qc_blob_verify_against_snapshot() {
+        let (snapshot, keys) = make_snapshot_with_pq_keys(3);
+        let entries = make_signed_entries(&snapshot, &keys, "cp");
+        let blob = QcBlob::new(snapshot.epoch, 100, "cp".into(), entries);
+        assert!(blob
+            .verify_against_snapshot(&snapshot, Some(&[0, 1, 2]), Some(snapshot.epoch))
+            .is_ok());
     }
 
     #[test]
-    fn test_fraud_proof_rejects_empty() {
-        let proof = PqFraudProof::new(
-            1,
-            0,
-            "validator_0".into(),
-            vec![],
-            vec![1; 64],
-            vec![vec![0; 32]],
-            0,
-        );
-        assert!(proof.validate().is_err());
+    fn test_detect_fault_proof_for_invalid_signature() {
+        let (snapshot, keys) = make_snapshot_with_pq_keys(2);
+        let mut entries = make_signed_entries(&snapshot, &keys, "cp");
+        entries[1].dilithium_signature[0] ^= 0xAA;
+        let blob = QcBlob::new(snapshot.epoch, 100, "cp".into(), entries);
+        let proofs = blob.detect_fault_proofs(&snapshot);
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].validator_index, 1);
+        let verdict = proofs[0].verify_against_blob(&blob, &snapshot).unwrap();
+        assert_eq!(verdict.action, QcProofAction::InvalidateFinality);
+        assert_eq!(verdict.invalidate_from_height, Some(100));
+        assert!(!verdict.slash_validator);
+    }
 
-        let proof2 = PqFraudProof::new(
-            1,
+    #[test]
+    fn test_fault_proof_rejects_valid_signature() {
+        let (snapshot, keys) = make_snapshot_with_pq_keys(1);
+        let entries = make_signed_entries(&snapshot, &keys, "cp");
+        let blob = QcBlob::new(snapshot.epoch, 100, "cp".into(), entries);
+        let proof = QcFaultProof::new_invalid_dilithium(
+            snapshot.epoch,
+            100,
+            "cp".into(),
             0,
-            "validator_0".into(),
-            vec![1; 48],
-            vec![],
-            vec![vec![0; 32]],
+            snapshot.validators[0].address.to_string(),
+            blob.pq_signatures[0].dilithium_signature.clone(),
+            blob.merkle_proof(0).unwrap(),
             0,
         );
-        assert!(proof2.validate().is_err());
+        assert!(proof.verify_against_blob(&blob, &snapshot).is_err());
+    }
+
+    #[test]
+    fn test_zk_qc_fault_proof_is_versioned_but_stubbed() {
+        let (snapshot, keys) = make_snapshot_with_pq_keys(1);
+        let entries = make_signed_entries(&snapshot, &keys, "cp");
+        let blob = QcBlob::new(snapshot.epoch, 100, "cp".into(), entries);
+        let proof = QcFaultProof::new_zk_invalid_attestation(
+            snapshot.epoch,
+            100,
+            "cp".into(),
+            0,
+            snapshot.validators[0].address.to_string(),
+            vec![1, 2, 3],
+            ZkQcPublicInputs {
+                merkle_root: blob.merkle_root.clone(),
+                pq_public_key_hash: "pq_pk_hash".into(),
+                attestation_commitment: "attestation_commitment".into(),
+            },
+        );
+
+        let result = proof.verify_against_blob(&blob, &snapshot);
+        assert!(result
+            .unwrap_err()
+            .contains("ZK QC verifier is not implemented"));
     }
 
     #[test]
     fn test_pq_signing_message_deterministic() {
-        let msg1 = pq_signing_message(1, "hash", 0);
-        let msg2 = pq_signing_message(1, "hash", 0);
+        let msg1 = pq_signing_message(1, 100, "hash", 0);
+        let msg2 = pq_signing_message(1, 100, "hash", 0);
         assert_eq!(msg1, msg2);
 
-        let msg3 = pq_signing_message(2, "hash", 0);
+        let msg3 = pq_signing_message(2, 100, "hash", 0);
         assert_ne!(msg1, msg3);
+
+        let msg4 = pq_signing_message(1, 101, "hash", 0);
+        assert_ne!(msg1, msg4);
     }
 
     #[test]
     fn test_single_entry_merkle() {
-        let entries = make_entries(1);
+        let (snapshot, keys) = make_snapshot_with_pq_keys(1);
+        let entries = make_signed_entries(&snapshot, &keys, "cp");
         let blob = QcBlob::new(1, 100, "cp".into(), entries);
         assert!(blob.verify_merkle_root());
     }

@@ -2,6 +2,8 @@
 
 A Budlum node is the bridge between the blockchain state machine and the peer-to-peer network. It receives blocks and transactions, validates them, gossips useful data, and asks peers for missing history.
 
+For PQ-QC, the node keeps finality robust against message ordering. If a `FinalityCert` arrives before its `QC_BLOB`, the chain queues the certificate, the node requests `GetQcBlob`, and blob import retries pending finality automatically.
+
 ## 1. Data Structures: The Connection Point
 
 ### Struct: `BudlumBehaviour`
@@ -50,4 +52,3 @@ Peer counts and network limits are tracked here so the node can maintain healthy
 ## 4. Maintenance and Operations
 
 Operational hardening includes periodic peer cleanup, sync health checks, request timeouts, and defensive handling of malformed messages. The node should degrade safely rather than panic on bad network input.
-

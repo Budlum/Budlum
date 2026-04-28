@@ -20,8 +20,12 @@ pub struct ValidatorSetSnapshot {
 pub struct ValidatorEntry {
     pub address: Address,
     pub stake: u64,
+    #[serde(default)]
     pub bls_public_key: Vec<u8>,
+    #[serde(default)]
     pub pop_signature: Vec<u8>,
+    #[serde(default)]
+    pub pq_public_key: Vec<u8>,
 }
 
 impl ValidatorSetSnapshot {
@@ -45,6 +49,7 @@ impl ValidatorSetSnapshot {
             hasher.update(v.address.0);
             hasher.update(v.stake.to_le_bytes());
             hasher.update(&v.bls_public_key);
+            hasher.update(&v.pq_public_key);
         }
         hex::encode(hasher.finalize())
     }
@@ -435,6 +440,18 @@ impl FinalityCert {
         }
         count
     }
+
+    pub fn signer_indices(&self, validator_count: usize) -> Vec<usize> {
+        let mut indices = Vec::new();
+        for idx in 0..validator_count {
+            let byte_idx = idx / 8;
+            let bit_idx = idx % 8;
+            if byte_idx < self.bitmap.len() && (self.bitmap[byte_idx] & (1 << bit_idx)) != 0 {
+                indices.push(idx);
+            }
+        }
+        indices
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +493,7 @@ mod tests {
                     stake: stake_each,
                     bls_public_key: pk_bytes,
                     pop_signature: pop_sig,
+                    pq_public_key: Vec::new(),
                 }
             })
             .collect();

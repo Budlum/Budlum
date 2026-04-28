@@ -42,7 +42,6 @@ Veritabanında tablolar yoktur, sadece Anahtarlar (Key) ve Değerler (Value) var
 | **State Root** | `STATE_ROOT:{Height}` | `Hash` | Her canonical blok için state root kaydı. |
 | **Canonical Height** | `CANONICAL_HEIGHT` | `u64` | Zincirin canonical ucunu gösteren yükseklik. |
 | **Son Blok**| `LAST` | `Hash` (String) | Zincirin en ucunu (Tip) gösteren işaretçidir. |
-| **Schema Version** | `SCHEMA_VERSION` | `u64` | Veritabanı migration seviyesini gösterir. |
 
 ---
 
@@ -141,23 +140,11 @@ Budlum'da reorg artık sadece blok gövdelerini yazmakla kalmaz; canonical metad
 
 Bu önemli bir ayrıntıdır, çünkü aksi halde node yeniden başlatıldığında disk üzerinde eski canonical bilgi ile yeni chain body birbirine karışabilir.
 
-## 6. Migration ve Snapshot Export
+## 6. QC / Finality Temizleme Yardımcıları
 
-`Storage::new` artık veritabanını açar açmaz `apply_migrations()` çağırır. Şu an migration sistemi başlangıç seviyesindedir ve `SCHEMA_VERSION = 1` işaretini yazar. Bu sayede sonraki release'lerde indeks veya veri formatı değişiklikleri kontrollü ve idempotent şekilde uygulanabilir.
+PQ enforcement ile birlikte storage katmanına küçük ama önemli iki yardımcı daha eklenmiştir:
 
-```rust
-pub fn apply_migrations(&self) -> std::io::Result<()> {
-    const CURRENT_SCHEMA_VERSION: u64 = 1;
-    let current = self.schema_version()?;
-    if current < CURRENT_SCHEMA_VERSION {
-        self.db.insert(
-            b"SCHEMA_VERSION",
-            CURRENT_SCHEMA_VERSION.to_string().as_bytes(),
-        )?;
-        self.db.flush()?;
-    }
-    Ok(())
-}
-```
+- `delete_qc_blob(height)`: Bir checkpoint'e ait doğrulanmış QC blob kaydını siler.
+- `delete_finality_cert(height)`: Belirli yükseklikteki finality sertifikasını temizler.
 
-Backup/recovery tarafında `create_snapshot(path)` helper'ı eklendi. Bu fonksiyon sled içindeki key-value çiftlerini JSON olarak export eder. Production kullanımında bunun etrafına zamanlanmış snapshot, incremental backup, integrity check ve off-site kopyalama işleri bağlanmalıdır.
+Bu fonksiyonlar özellikle `QcFaultProof` sonrası invalidation akışında kullanılır. Böylece yalnızca RAM'deki finality durumu değil, disk üzerindeki kanıt kayıtları da tutarlı kalır.

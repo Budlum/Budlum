@@ -279,11 +279,13 @@ mod integration_tests {
     }
     #[test]
     fn test_finality_checkpoint_enforcement() {
-        use crate::chain::finality::{FinalityCert, ValidatorEntry};
+        use crate::chain::finality::FinalityCert;
+        use crate::consensus::qc::{sign_attestation, QcBlob};
 
         let keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
         let sig_key = keys.sig_key.clone();
         let pubkey = Address::from(sig_key.public_key_bytes());
+        let pq_key = keys.pq_key.clone().unwrap();
 
         let consensus = Arc::new(PoSEngine::new(PoSConfig::default(), Some(keys)));
         let mut blockchain = Blockchain::new(consensus, None, 1337, None);
@@ -300,6 +302,7 @@ mod integration_tests {
 
         validator.bls_public_key = bls_pk.clone();
         validator.pop_signature = vec![0u8; 48];
+        validator.pq_public_key = pq_key.public_key_bytes().to_vec();
         blockchain.state.validators.insert(pubkey, validator);
 
         for _ in 1..=10 {
@@ -307,16 +310,6 @@ mod integration_tests {
         }
 
         let checkpoint_block = blockchain.chain[10].clone();
-
-        use bls12_381::G2Affine;
-        let valid_pk = G2Affine::generator().to_compressed().to_vec();
-
-        let _entry = ValidatorEntry {
-            address: pubkey,
-            stake: 1000,
-            bls_public_key: valid_pk.clone(),
-            pop_signature: Vec::new(),
-        };
 
         let mut cert = FinalityCert {
             epoch: 1,
@@ -334,9 +327,41 @@ mod integration_tests {
             .to_compressed()
             .to_vec();
 
-        blockchain.handle_finality_cert(cert).unwrap();
+        let qc_blob = QcBlob::new(
+            cert.epoch,
+            cert.checkpoint_height,
+            cert.checkpoint_hash.clone(),
+            vec![sign_attestation(
+                &pq_key,
+                cert.epoch,
+                cert.checkpoint_height,
+                &cert.checkpoint_hash,
+                0,
+                pubkey.to_string(),
+            )
+            .unwrap()],
+        );
+        let pending_result = blockchain.handle_finality_cert(cert.clone());
+        assert!(pending_result.is_err());
+        assert!(pending_result
+            .unwrap_err()
+            .contains("Missing verified QC blob"));
+        assert_eq!(blockchain.finalized_height, 0);
+        assert_eq!(
+            blockchain
+                .pending_finality_certs
+                .get(&cert.checkpoint_height)
+                .map(|certs| certs.len()),
+            Some(1)
+        );
+
+        blockchain.import_qc_blob(qc_blob).unwrap();
         assert_eq!(blockchain.finalized_height, 10);
         assert_eq!(blockchain.finalized_hash, checkpoint_block.hash);
+        assert!(blockchain
+            .pending_finality_certs
+            .get(&cert.checkpoint_height)
+            .is_none());
 
         let mut conflicting_block = Block::new(10, "wrong_prev".into(), vec![]);
         conflicting_block.hash = "conflicting_hash".into();
@@ -348,5 +373,180 @@ mod integration_tests {
         assert!(result
             .unwrap_err()
             .contains("conflicts with finalized checkpoint"));
+    }
+
+    #[test]
+    fn test_invalid_qc_blob_import_does_not_slash_validator() {
+        use crate::consensus::qc::{sign_attestation, QcBlob};
+
+        let keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
+        let sig_key = keys.sig_key.clone();
+        let pubkey = Address::from(sig_key.public_key_bytes());
+        let pq_key = keys.pq_key.clone().unwrap();
+
+        let consensus = Arc::new(PoSEngine::new(PoSConfig::default(), Some(keys)));
+        let mut blockchain = Blockchain::new(consensus, None, 1337, None);
+        blockchain.init_genesis_account(&pubkey);
+
+        let mut validator = crate::core::account::Validator::new(pubkey, 2_000);
+        validator.active = true;
+        validator.pq_public_key = pq_key.public_key_bytes().to_vec();
+        blockchain.state.validators.insert(pubkey, validator);
+
+        for _ in 1..=10 {
+            blockchain.produce_block(pubkey);
+        }
+
+        let checkpoint_hash = blockchain.chain[10].hash.clone();
+        let mut blob = QcBlob::new(
+            1,
+            10,
+            checkpoint_hash.clone(),
+            vec![
+                sign_attestation(&pq_key, 1, 10, &checkpoint_hash, 0, pubkey.to_string()).unwrap(),
+            ],
+        );
+        blob.pq_signatures[0].dilithium_signature[0] ^= 0x5A;
+        blob.merkle_root = QcBlob::compute_merkle_root(&blob.pq_signatures);
+
+        let result = blockchain.import_qc_blob(blob);
+
+        assert!(result.is_err());
+        assert!(blockchain.get_qc_blob(10).is_none());
+        let validator = blockchain.state.get_validator(&pubkey).unwrap();
+        assert!(!validator.slashed);
+        assert_eq!(validator.stake, 2_000);
+    }
+
+    #[test]
+    fn test_qc_blob_import_rejects_non_checkpoint_height() {
+        use crate::consensus::qc::{sign_attestation, QcBlob};
+
+        let keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
+        let sig_key = keys.sig_key.clone();
+        let pubkey = Address::from(sig_key.public_key_bytes());
+        let pq_key = keys.pq_key.clone().unwrap();
+
+        let consensus = Arc::new(PoSEngine::new(PoSConfig::default(), Some(keys)));
+        let mut blockchain = Blockchain::new(consensus, None, 1337, None);
+        blockchain.init_genesis_account(&pubkey);
+
+        let mut validator = crate::core::account::Validator::new(pubkey, 2_000);
+        validator.active = true;
+        validator.pq_public_key = pq_key.public_key_bytes().to_vec();
+        blockchain.state.validators.insert(pubkey, validator);
+
+        for _ in 1..=9 {
+            blockchain.produce_block(pubkey);
+        }
+
+        let block = blockchain.chain[9].clone();
+        let blob = QcBlob::new(
+            1,
+            9,
+            block.hash.clone(),
+            vec![sign_attestation(&pq_key, 1, 9, &block.hash, 0, pubkey.to_string()).unwrap()],
+        );
+
+        let result = blockchain.import_qc_blob(blob);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("not a valid checkpoint height"));
+        assert!(blockchain.get_qc_blob(9).is_none());
+    }
+
+    #[test]
+    fn test_qc_fault_proof_invalidates_cert_without_slashing() {
+        use crate::chain::finality::{FinalityCert, ValidatorEntry, ValidatorSetSnapshot};
+        use crate::consensus::qc::{sign_attestation, QcBlob};
+
+        let keys = crate::crypto::primitives::ValidatorKeys::generate().unwrap();
+        let sig_key = keys.sig_key.clone();
+        let pq_key = keys.pq_key.clone().unwrap();
+        let pubkey = Address::from(sig_key.public_key_bytes());
+
+        let consensus = Arc::new(PoSEngine::new(PoSConfig::default(), Some(keys)));
+        let mut blockchain = Blockchain::new(consensus, None, 1337, None);
+        blockchain.init_genesis_account(&pubkey);
+
+        let mut validator = crate::core::account::Validator::new(pubkey, 2_000);
+        validator.active = true;
+        validator.pq_public_key = pq_key.public_key_bytes().to_vec();
+
+        let mut sk_bytes = [0u8; 64];
+        sk_bytes[0] = 7;
+        let bls_sk = bls12_381::Scalar::from_bytes_wide(&sk_bytes);
+        let bls_pk_point = bls12_381::G2Affine::from(bls12_381::G2Projective::generator() * bls_sk);
+        validator.bls_public_key = bls_pk_point.to_compressed().to_vec();
+        validator.pop_signature = vec![0u8; 48];
+        blockchain.state.validators.insert(pubkey, validator);
+
+        for _ in 1..=10 {
+            blockchain.produce_block(pubkey);
+        }
+
+        let checkpoint_block = blockchain.chain[10].clone();
+        let mut cert = FinalityCert {
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: checkpoint_block.hash.clone(),
+            agg_sig_bls: Vec::new(),
+            bitmap: vec![0b0000_0001],
+            set_hash: blockchain.get_validator_set_hash(),
+        };
+
+        let msg = cert.signing_message();
+        let h_msg_point = crate::chain::finality::hash_to_g1(&msg);
+        let sig_point = bls12_381::G1Projective::from(h_msg_point) * bls_sk;
+        cert.agg_sig_bls = bls12_381::G1Affine::from(sig_point)
+            .to_compressed()
+            .to_vec();
+
+        let valid_blob = QcBlob::new(
+            cert.epoch,
+            cert.checkpoint_height,
+            cert.checkpoint_hash.clone(),
+            vec![sign_attestation(
+                &pq_key,
+                cert.epoch,
+                cert.checkpoint_height,
+                &cert.checkpoint_hash,
+                0,
+                pubkey.to_string(),
+            )
+            .unwrap()],
+        );
+        blockchain.import_qc_blob(valid_blob.clone()).unwrap();
+        blockchain.handle_finality_cert(cert).unwrap();
+        assert_eq!(blockchain.finalized_height, 10);
+
+        let snapshot = ValidatorSetSnapshot::new(
+            1,
+            vec![ValidatorEntry {
+                address: pubkey,
+                stake: 2_000,
+                bls_public_key: bls_pk_point.to_compressed().to_vec(),
+                pop_signature: vec![0u8; 48],
+                pq_public_key: pq_key.public_key_bytes().to_vec(),
+            }],
+        );
+
+        let mut invalid_blob = valid_blob.clone();
+        invalid_blob.pq_signatures[0].dilithium_signature[0] ^= 0x5A;
+        invalid_blob.merkle_root = QcBlob::compute_merkle_root(&invalid_blob.pq_signatures);
+        let proof = invalid_blob.detect_fault_proofs(&snapshot).pop().unwrap();
+
+        blockchain
+            .verified_qc_blobs
+            .insert(invalid_blob.checkpoint_height, invalid_blob);
+
+        blockchain.handle_qc_fault_proof(proof).unwrap();
+
+        let validator = blockchain.state.get_validator(&pubkey).unwrap();
+        assert!(!validator.slashed);
+        assert_eq!(validator.stake, 2_000);
+        assert_eq!(blockchain.finalized_height, 0);
     }
 }

@@ -2,7 +2,7 @@
 
 Bu bölüm, Budlum blok zincirinin "kesinlik" (finality) kazandığı **BLS Finalite Katmanı**'nı açıklar. Bu katman, uzun süreli zincir bölünmelerini (split) engeller ve saniyeler içinde geri alınamazlık garantisi verir.
 
-Kaynak Dosya: `src/consensus/finality.rs`
+Kaynak Dosyalar: `src/chain/finality.rs`, `src/chain/blockchain.rs`
 
 ---
 
@@ -14,6 +14,7 @@ Standart PoS veya PoW sistemlerinde bir bloğun "kesinleşmesi" için üzerine b
 - **Hız:** 100 blokta bir (Checkpoint) anında kesinlik sağlar.
 - **Güvenlik:** Kötü niyetli validatörlerin hisselerini anında slashing ile cezalandırır.
 - **Değiştirilemezlik:** Finalize edilen bir bloktan geriye dönük (reorg) asla gidilemez.
+- **PQ Bağlantısı:** BLS sertifikası tek başına yeterli değildir; imzalayan validator'ların ilgili `QcBlob` içindeki Dilithium attestasyonları da mevcut ve geçerli olmalıdır.
 
 ---
 
@@ -61,6 +62,21 @@ pub struct FinalityCert {
 ### 3.1. Agregasyon Matematiği (Hardening)
 Budlum'un üretim sürümünde imzalar sadece yan yana dizilmez (concatenation). `bls12_381` kütüphanesi kullanılarak G1 grubu üzerinde gerçek bir matematiksel toplama yapılır. Bu, sertifika boyutunun validatör sayısından bağımsız olarak her zaman sabit (96 byte) kalmasını sağlar.
 
+### 3.2. QC Gating
+`FinalityCert` kabulü artık yalnızca BLS aggregate signature doğrulaması değildir:
+
+1. Checkpoint yüksekliği ve hash yerel zincirle eşleşir.
+2. `ValidatorSetSnapshot` oluşturulur ve `set_hash` doğrulanır.
+3. Sertifikanın bitmap'inden imzalayan validator indeksleri çıkarılır.
+4. Aynı checkpoint için doğrulanmış `QC_BLOB` aranır.
+5. `QcBlob`, signer coverage ile birlikte Dilithium imzaları açısından doğrulanır.
+
+Bu sayede “BLS cert geçerli ama PQ sidecar eksik/bozuk” durumu finalize edilemez.
+
+Eğer `FinalityCert`, ilgili `QC_BLOB` gelmeden önce ulaşırsa sertifika artık kaybolmaz. Node sertifikayı checkpoint yüksekliğine göre pending kuyruğuna alır, ağdan `GetQcBlob` ister ve blob başarılı şekilde import edildiğinde bekleyen sertifikayı tekrar işler. Böylece finality kabulü mesaj sırasına bağlı kalmaz.
+
+Validator doğrulaması da epoch alanını sadece etiket olarak kullanmaz; zincir bilinen epoch snapshot'larını saklar ve certificate/QC doğrulamasında ilgili epoch'un validator setini kullanır. Bu, validator set değiştikten sonra eski checkpoint'lerin yanlış set ile doğrulanmasını engeller.
+
 ---
 
 ## 4. Slashing: `DoubleVote` (Ters Oylama)
@@ -70,6 +86,15 @@ Finalite katmanında en büyük suç, aynı epoch için iki farklı bloğa oy ve
 - **Senaryo:** Bir validatör hem A bloğuna hem de B bloğuna Precommit verirse, bu durum **Double Vote** suçunu oluşturur.
 - **Tespit:** `verify_double_vote` fonksiyonu, bir kişinin aynı epoch için iki farklı hash imzaladığını kanıtlar.
 - **Ceza:** Validatör derhal sistemden atılır ve bakiyesinin tamamı yakılabilir.
+
+## 4.1. QC Fault Proof ve Finality Invalidation
+
+Finality katmanı artık sadece BLS double-vote suçlarını değil, checkpoint'i destekleyen hatalı PQ attestasyonlarını da hesaba katar.
+
+- Eğer bir `QcFaultProof`, ilgili `QcBlob` içindeki bir yaprağın gerçekten geçersiz Dilithium imzası taşıdığını kanıtlarsa o checkpoint ve sonrasındaki finality kayıtları invalidation sürecine girer.
+- Slash kararı proof verdict'inden ayrı tutulur; bugünkü Merkle tabanlı invalid-Dilithium kanıtları slash etmez, ileride signed veya ZK-backed kanıtlar slashable verdict üretebilir.
+- `QcFaultProof` artık P2P mesajı olarak da taşınabilir. Gelen proof parse edilir, kayıtlı `QcBlob` ve epoch snapshot'ına karşı doğrulanır, ardından verdict uygulanır.
+- Bu yaklaşım, “bir kez finalize olduysa artık her şey sorgusuz doğru” yerine “finality ancak tüm güvenlik katmanları tutarlıysa korunur” prensibini uygular.
 
 ---
 
@@ -89,3 +114,4 @@ BLS Finalite Katmanı, Budlum'u daha dirençli ve kurumsal kullanım için güve
 1. **Verimlilik:** BLS ile binlerce imza tek bir sertifikada toplanır.
 2. **Kesinlik:** Checkpoint'ler üzerinden reorg riski sıfıra indirilir.
 3. **Ekonomik Güvenlik:** Double-vote kanıtları ile hile yapmanın maliyeti çok yüksektir.
+4. **Katmanlı Doğrulama:** Finality artık BLS cert + validator set hash + doğrulanmış PQ blob kombinasyonuna dayanır.
