@@ -9,3 +9,5 @@ Bu bölümde, Budlum projesinde desteklenen üç farklı konsensüs mekanizması
 3.  **Proof of Authority (PoA):** Özel ağlar için, belirli otoritelere güvenen sistem.
 
 Budlum, bu mekanizmalar arasında geçiş yapabilecek modüler bir yapı (`ConsensusEngine` trait) üzerine kurulmuştur.
+
+Ancak Budlum sadece mekanizma değiştirmekle kalmaz. Piyasada öncü bir **Multi-Consensus Settlement Mimarisi (Çoklu Konsensüs Uzlaşma Mimarisi)** sunar. Bu yapı sayesinde PoW, PoS ve PoA ağları tamamen izole alt ağlar (domainler) olarak aynı anda, tek bir ana uzlaşma (settlement) katmanı üzerinde çalışabilir. Bu bağımsız ağlar, kriptografik kanıtlarını bir Global Blok içerisinde birleştirerek, merkezi bir aracıya ihtiyaç duymadan birbirleri arasında otomatik ve güvenli varlık transferleri (Trustless Cross-Domain Bridge) yapabilirler.

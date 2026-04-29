@@ -58,4 +58,19 @@ pub trait BudlumApi {
 
     #[method(name = "bud_netPeerCount")]
     async fn net_peer_count(&self) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "bud_getSettlementInfo")]
+    async fn get_settlement_info(&self) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    #[method(name = "bud_getGlobalHeader")]
+    async fn get_global_header(&self, height: u64) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    #[method(name = "bud_getDomainCommitments")]
+    async fn get_domain_commitments(&self) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    #[method(name = "bud_submitDomainCommitment")]
+    async fn submit_domain_commitment(&self, commitment: crate::domain::DomainCommitment) -> Result<String, ErrorObjectOwned>;
+
+    #[method(name = "bud_submitCrossDomainMessage")]
+    async fn submit_cross_domain_message(&self, msg: crate::cross_domain::CrossDomainMessage) -> Result<String, ErrorObjectOwned>;
 }

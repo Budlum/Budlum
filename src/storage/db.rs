@@ -2,6 +2,10 @@ use crate::core::account::Account;
 use crate::core::address::Address;
 use crate::core::block::Block;
 use crate::core::transaction::Transaction;
+use crate::cross_domain::message::CrossDomainMessage;
+use crate::cross_domain::BridgeState;
+use crate::domain::{ConsensusDomain, DomainCommitment};
+use crate::settlement::GlobalBlockHeader;
 use sled::Db;
 use std::str::from_utf8;
 use tracing::info;
@@ -200,6 +204,123 @@ impl Storage {
         self.db.flush()?;
         Ok(())
     }
+
+    pub fn save_consensus_domain(&self, domain: &ConsensusDomain) -> std::io::Result<()> {
+        let key = format!("DOMAIN:{}", domain.id);
+        let val = serde_json::to_vec(domain)?;
+        self.db.insert(key.as_bytes(), val)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    pub fn load_consensus_domains(&self) -> std::io::Result<Vec<ConsensusDomain>> {
+        let mut domains: Vec<ConsensusDomain> = Vec::new();
+        for item in self.db.scan_prefix(b"DOMAIN:") {
+            let (_key, val) = item?;
+            domains.push(serde_json::from_slice(&val)?);
+        }
+        domains.sort_by_key(|domain| domain.id);
+        Ok(domains)
+    }
+
+    pub fn save_domain_commitment(&self, commitment: &DomainCommitment) -> std::io::Result<()> {
+        let key = format!(
+            "DOMAIN_COMMITMENT:{}:{}:{}",
+            commitment.domain_id, commitment.domain_height, commitment.sequence
+        );
+        let val = serde_json::to_vec(commitment)?;
+        self.db.insert(key.as_bytes(), val)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    pub fn load_domain_commitments(&self) -> std::io::Result<Vec<DomainCommitment>> {
+        let mut commitments: Vec<DomainCommitment> = Vec::new();
+        for item in self.db.scan_prefix(b"DOMAIN_COMMITMENT:") {
+            let (_key, val) = item?;
+            commitments.push(serde_json::from_slice(&val)?);
+        }
+        commitments.sort_by_key(|commitment| {
+            (
+                commitment.domain_id,
+                commitment.domain_height,
+                commitment.sequence,
+            )
+        });
+        Ok(commitments)
+    }
+
+    pub fn save_global_header(&self, header: &GlobalBlockHeader) -> std::io::Result<()> {
+        let key = format!("GLOBAL_HEADER:{}", header.global_height);
+        let hash_key = format!("GLOBAL_HEADER_HASH:{}", header.calculate_hash());
+        let val = serde_json::to_vec(header)?;
+
+        let mut batch = sled::Batch::default();
+        batch.insert(key.as_bytes(), val.as_slice());
+        batch.insert(
+            hash_key.as_bytes(),
+            header.global_height.to_string().as_bytes(),
+        );
+        batch.insert(
+            b"LAST_GLOBAL_HEIGHT",
+            header.global_height.to_string().as_bytes(),
+        );
+        self.db.apply_batch(batch)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    pub fn get_global_header(&self, height: u64) -> std::io::Result<Option<GlobalBlockHeader>> {
+        let key = format!("GLOBAL_HEADER:{}", height);
+        if let Some(val) = self.db.get(key.as_bytes())? {
+            Ok(Some(serde_json::from_slice(&val)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn load_global_headers(&self) -> std::io::Result<Vec<GlobalBlockHeader>> {
+        let mut headers: Vec<GlobalBlockHeader> = Vec::new();
+        for item in self.db.scan_prefix(b"GLOBAL_HEADER:") {
+            let (_key, val) = item?;
+            headers.push(serde_json::from_slice(&val)?);
+        }
+        headers.sort_by_key(|header| header.global_height);
+        Ok(headers)
+    }
+
+    pub fn save_bridge_state(&self, bridge_state: &BridgeState) -> std::io::Result<()> {
+        let val = serde_json::to_vec(bridge_state)?;
+        self.db.insert(b"BRIDGE_STATE", val)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    pub fn load_bridge_state(&self) -> std::io::Result<Option<BridgeState>> {
+        if let Some(val) = self.db.get(b"BRIDGE_STATE")? {
+            Ok(Some(serde_json::from_slice(&val)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn save_cross_domain_message(&self, message: &CrossDomainMessage) -> std::io::Result<()> {
+        let key = format!("XDOMAIN_MSG:{}", hex::encode(message.message_id));
+        let val = serde_json::to_vec(message)?;
+        self.db.insert(key.as_bytes(), val)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    pub fn load_cross_domain_messages(&self) -> std::io::Result<Vec<CrossDomainMessage>> {
+        let mut messages: Vec<CrossDomainMessage> = Vec::new();
+        for item in self.db.scan_prefix(b"XDOMAIN_MSG:") {
+            let (_key, val) = item?;
+            messages.push(serde_json::from_slice(&val)?);
+        }
+        Ok(messages)
+    }
+
     pub fn get_state_root(&self, height: u64) -> std::io::Result<Option<String>> {
         let key = format!("STATE_ROOT:{}", height);
         if let Some(val) = self.db.get(key.as_bytes())? {

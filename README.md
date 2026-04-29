@@ -18,7 +18,8 @@ Most blockchain frameworks are rigid, hard to reason about, or optimized for one
 
 Budlum is different:
 
-- 🔁 **Swap consensus engines**: PoW, PoS, PoA, finality, and future hybrid modes
+- 🔁 **Multi-Consensus Settlement**: Run PoW, PoS, and PoA concurrently on the same unified settlement layer.
+- 🌉 **Trustless Cross-Domain Bridge**: Native, automatic cryptographic asset locking and minting across isolated consensus domains.
 - 🧠 **Deterministic execution**: replay-safe state transitions and reorg recovery
 - 🧩 **Modular architecture**: consensus, networking, storage, state, mempool, and execution are replaceable
 - 🔒 **Security-first design**: hardened against spam, invalid states, malformed payloads, and unsafe replays
@@ -139,6 +140,13 @@ Mainnet startup requires a real bootnode. Configure `[bootnodes].addresses` in `
 ---
 
 ## 🧩 Core Features
+
+### 🌍 First-in-Market Multi-Consensus Settlement
+
+Unlike traditional monolithic chains or standard modular rollups, Budlum implements a **Multi-Consensus Settlement Architecture**.
+- **Concurrent Domains**: PoW, PoS, and PoA networks operate simultaneously as isolated domains.
+- **Global Settlement**: A unified settlement layer aggregates all domain commitments (state, tx, and event roots) into a deterministic Global Block Header.
+- **Cross-Domain Automation**: An integrated Bridge Lifecycle automatically locks assets in one domain, emits cryptographic Merkle proofs, and trustlessly mints them in another domain via the settlement layer. Replay attacks are cryptographically impossible.
 
 ### 🔗 Pluggable Consensus
 

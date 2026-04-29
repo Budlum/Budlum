@@ -69,6 +69,47 @@ impl RpcServer {
             "signature": t.signature.map(|s| format!("0x{}", hex::encode(s))),
         })
     }
+
+    fn bytes32_to_0x(bytes: [u8; 32]) -> String {
+        format!("0x{}", hex::encode(bytes))
+    }
+
+    fn global_header_to_json(h: crate::settlement::GlobalBlockHeader) -> serde_json::Value {
+        serde_json::json!({
+            "version": Self::to_hex(h.version as u64),
+            "globalHeight": Self::to_hex(h.global_height),
+            "hash": Self::bytes32_to_0x(h.calculate_hash_bytes()),
+            "previousGlobalHash": Self::bytes32_to_0x(h.previous_global_hash),
+            "chainId": Self::to_hex(h.chain_id),
+            "timestamp": Self::to_hex(h.timestamp_ms as u64),
+            "domainRegistryRoot": Self::bytes32_to_0x(h.domain_registry_root),
+            "domainCommitmentRoot": Self::bytes32_to_0x(h.domain_commitment_root),
+            "messageRoot": Self::bytes32_to_0x(h.message_root),
+            "bridgeStateRoot": Self::bytes32_to_0x(h.bridge_state_root),
+            "replayNonceRoot": Self::bytes32_to_0x(h.replay_nonce_root),
+            "proposer": h.proposer.map(|p| p.to_string()),
+            "settlementFinalityRoot": Self::bytes32_to_0x(h.settlement_finality_root),
+        })
+    }
+
+    fn domain_commitment_to_json(c: crate::domain::DomainCommitment) -> serde_json::Value {
+        serde_json::json!({
+            "domainId": c.domain_id,
+            "domainHeight": Self::to_hex(c.domain_height),
+            "domainBlockHash": Self::bytes32_to_0x(c.domain_block_hash),
+            "parentDomainBlockHash": Self::bytes32_to_0x(c.parent_domain_block_hash),
+            "stateRoot": Self::bytes32_to_0x(c.state_root),
+            "txRoot": Self::bytes32_to_0x(c.tx_root),
+            "eventRoot": Self::bytes32_to_0x(c.event_root),
+            "finalityProofHash": Self::bytes32_to_0x(c.finality_proof_hash),
+            "consensusKind": format!("{:?}", c.consensus_kind),
+            "validatorSetHash": Self::bytes32_to_0x(c.validator_set_hash),
+            "timestamp": Self::to_hex(c.timestamp_ms as u64),
+            "sequence": Self::to_hex(c.sequence),
+            "producer": c.producer.map(|p| p.to_string()),
+            "leafHash": Self::bytes32_to_0x(c.leaf_hash()),
+        })
+    }
 }
 
 #[jsonrpsee::core::async_trait]
@@ -236,5 +277,50 @@ impl BudlumApiServer for RpcServer {
                 .peer_count
                 .load(std::sync::atomic::Ordering::SeqCst) as u64,
         ))
+    }
+
+    async fn get_settlement_info(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
+        Ok(self.chain.get_settlement_info().await)
+    }
+
+    async fn get_global_header(&self, height: u64) -> Result<serde_json::Value, ErrorObjectOwned> {
+        match self.chain.get_global_header(height).await {
+            Some(header) => Ok(Self::global_header_to_json(header)),
+            None => Ok(serde_json::Value::Null),
+        }
+    }
+
+    async fn get_domain_commitments(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
+        let commitments = self.chain.get_domain_commitments().await;
+        Ok(serde_json::Value::Array(
+            commitments
+                .into_iter()
+                .map(Self::domain_commitment_to_json)
+                .collect(),
+        ))
+    }
+
+    async fn submit_domain_commitment(&self, commitment: crate::domain::DomainCommitment) -> Result<String, ErrorObjectOwned> {
+        let hash = hex::encode(commitment.leaf_hash());
+        let commitment_clone = commitment.clone();
+        
+        self.chain.submit_domain_commitment(commitment).await.map_err(|e| {
+            ErrorObjectOwned::owned(-32602, format!("Invalid domain commitment: {}", e), None::<()>)
+        })?;
+        
+        self.node.broadcast_domain_commitment_sync(commitment_clone);
+        Ok(format!("0x{}", hash))
+    }
+
+    async fn submit_cross_domain_message(&self, msg: crate::cross_domain::CrossDomainMessage) -> Result<String, ErrorObjectOwned> {
+        let msg_id = hex::encode(msg.message_id);
+        let msg_clone = msg.clone();
+        
+        self.chain.submit_cross_domain_message(msg).await.map_err(|e| {
+            ErrorObjectOwned::owned(-32602, format!("Invalid cross domain message: {}", e), None::<()>)
+        })?;
+        
+        self.node.broadcast_cross_domain_message_sync(msg_clone);
+        Ok(format!("0x{}", msg_id))
     }
 }

@@ -91,6 +91,9 @@ message ProtoNetworkMessage {
         ProtoGetQcBlob get_qc_blob = 18;
         ProtoQcBlobResponse qc_blob_response = 19;
         ProtoQcFaultProof qc_fault_proof = 20;
+        ProtoDomainCommitment domain_commitment = 21;
+        ProtoGlobalHeader global_header = 22;
+        ProtoCrossDomainMessage cross_domain_message = 23;
     }
 }
 
@@ -201,4 +204,16 @@ message ProtoQcBlobResponse {
 
 message ProtoQcFaultProof {
     bytes proof_data = 1;
+}
+
+message ProtoDomainCommitment {
+    bytes data = 1;
+}
+
+message ProtoGlobalHeader {
+    bytes data = 1;
+}
+
+message ProtoCrossDomainMessage {
+    bytes data = 1;
 }

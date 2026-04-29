@@ -433,6 +433,21 @@ impl From<&NetworkMessage> for pb::ProtoNetworkMessage {
                     proof_data: proof_data.clone(),
                 })
             }
+            NetworkMessage::DomainCommitment(commitment) => {
+                pb::proto_network_message::Payload::DomainCommitment(pb::ProtoDomainCommitment {
+                    data: serde_json::to_vec(commitment).unwrap_or_default(),
+                })
+            }
+            NetworkMessage::GlobalHeader(header) => {
+                pb::proto_network_message::Payload::GlobalHeader(pb::ProtoGlobalHeader {
+                    data: serde_json::to_vec(header).unwrap_or_default(),
+                })
+            }
+            NetworkMessage::CrossDomainMessage(msg) => {
+                pb::proto_network_message::Payload::CrossDomainMessage(pb::ProtoCrossDomainMessage {
+                    data: serde_json::to_vec(msg).unwrap_or_default(),
+                })
+            }
         };
 
         pb::ProtoNetworkMessage {
@@ -573,6 +588,21 @@ impl TryFrom<pb::ProtoNetworkMessage> for NetworkMessage {
                     proof_data: p.proof_data,
                 })
             }
+            pb::proto_network_message::Payload::DomainCommitment(c) => {
+                let commitment = serde_json::from_slice(&c.data)
+                    .map_err(|e| format!("Invalid domain commitment payload: {}", e))?;
+                Ok(NetworkMessage::DomainCommitment(commitment))
+            }
+            pb::proto_network_message::Payload::GlobalHeader(h) => {
+                let header = serde_json::from_slice(&h.data)
+                    .map_err(|e| format!("Invalid global header payload: {}", e))?;
+                Ok(NetworkMessage::GlobalHeader(header))
+            }
+            pb::proto_network_message::Payload::CrossDomainMessage(m) => {
+                let msg = serde_json::from_slice(&m.data)
+                    .map_err(|e| format!("Invalid cross domain message payload: {}", e))?;
+                Ok(NetworkMessage::CrossDomainMessage(msg))
+            }
         }
     }
 }
@@ -653,6 +683,88 @@ mod tests {
                 assert_eq!(decoded, proof_data);
             }
             _ => panic!("Expected QcFaultProof message"),
+        }
+    }
+
+    #[test]
+    fn test_domain_commitment_message_conversion() {
+        let commitment = crate::domain::DomainCommitment {
+            domain_id: 1,
+            domain_height: 42,
+            domain_block_hash: [1u8; 32],
+            parent_domain_block_hash: [2u8; 32],
+            state_root: [3u8; 32],
+            tx_root: [4u8; 32],
+            event_root: [5u8; 32],
+            finality_proof_hash: [6u8; 32],
+            consensus_kind: crate::domain::ConsensusKind::PoW,
+            validator_set_hash: [7u8; 32],
+            timestamp_ms: 123,
+            sequence: 9,
+            producer: None,
+        };
+        let msg = NetworkMessage::DomainCommitment(commitment.clone());
+        let proto_msg = pb::ProtoNetworkMessage::from(&msg);
+        let decoded_msg =
+            NetworkMessage::try_from(proto_msg).expect("Failed to decode DomainCommitment");
+
+        match decoded_msg {
+            NetworkMessage::DomainCommitment(decoded) => assert_eq!(decoded, commitment),
+            _ => panic!("Expected DomainCommitment message"),
+        }
+    }
+
+    #[test]
+    fn test_global_header_message_conversion() {
+        let header = crate::settlement::GlobalBlockHeader {
+            version: 1,
+            global_height: 7,
+            previous_global_hash: [1u8; 32],
+            chain_id: 1337,
+            timestamp_ms: 456,
+            domain_registry_root: [2u8; 32],
+            domain_commitment_root: [3u8; 32],
+            message_root: [4u8; 32],
+            bridge_state_root: [5u8; 32],
+            replay_nonce_root: [6u8; 32],
+            proposer: None,
+            settlement_finality_root: [7u8; 32],
+        };
+        let msg = NetworkMessage::GlobalHeader(header.clone());
+        let proto_msg = pb::ProtoNetworkMessage::from(&msg);
+        let decoded_msg =
+            NetworkMessage::try_from(proto_msg).expect("Failed to decode GlobalHeader");
+
+        match decoded_msg {
+            NetworkMessage::GlobalHeader(decoded) => assert_eq!(decoded, header),
+            _ => panic!("Expected GlobalHeader message"),
+        }
+    }
+
+    #[test]
+    fn test_cross_domain_message_conversion() {
+        let msg_inner = crate::cross_domain::CrossDomainMessage::new(
+            crate::cross_domain::message::CrossDomainMessageParams {
+                source_domain: 1,
+                target_domain: 2,
+                source_height: 10,
+                event_index: 0,
+                nonce: 42,
+                sender: crate::core::address::Address::zero(),
+                recipient: crate::core::address::Address::zero(),
+                payload_hash: [9u8; 32],
+                kind: crate::cross_domain::MessageKind::BridgeLock,
+                expiry_height: 100,
+            }
+        );
+        let msg = NetworkMessage::CrossDomainMessage(msg_inner.clone());
+        let proto_msg = pb::ProtoNetworkMessage::from(&msg);
+        let decoded_msg =
+            NetworkMessage::try_from(proto_msg).expect("Failed to decode CrossDomainMessage");
+
+        match decoded_msg {
+            NetworkMessage::CrossDomainMessage(decoded) => assert_eq!(decoded, msg_inner),
+            _ => panic!("Expected CrossDomainMessage"),
         }
     }
 }

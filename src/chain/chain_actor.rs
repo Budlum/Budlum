@@ -47,6 +47,25 @@ pub enum ChainCommand {
         crate::chain::snapshot::StateSnapshot,
         oneshot::Sender<Result<(), String>>,
     ),
+    GetSettlementInfo(oneshot::Sender<serde_json::Value>),
+    GetGlobalHeader(
+        u64,
+        oneshot::Sender<Option<crate::settlement::GlobalBlockHeader>>,
+    ),
+    GetDomainCommitments(oneshot::Sender<Vec<crate::domain::DomainCommitment>>),
+    RegisterConsensusDomain(
+        crate::domain::ConsensusDomain,
+        oneshot::Sender<Result<(), String>>,
+    ),
+    SubmitDomainCommitment(
+        crate::domain::DomainCommitment,
+        oneshot::Sender<Result<(), String>>,
+    ),
+    SubmitCrossDomainMessage(
+        crate::cross_domain::CrossDomainMessage,
+        oneshot::Sender<Result<(), String>>,
+    ),
+    SealGlobalHeader(oneshot::Sender<Result<crate::settlement::GlobalBlockHeader, String>>),
 }
 
 #[derive(Clone)]
@@ -293,6 +312,80 @@ impl ChainHandle {
             .await
             .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
+
+    pub async fn get_settlement_info(&self) -> serde_json::Value {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::GetSettlementInfo(tx)).await;
+        rx.await.unwrap_or_else(|_| {
+            serde_json::json!({
+                "error": "actor_dropped"
+            })
+        })
+    }
+
+    pub async fn get_global_header(
+        &self,
+        height: u64,
+    ) -> Option<crate::settlement::GlobalBlockHeader> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::GetGlobalHeader(height, tx))
+            .await;
+        rx.await.unwrap_or(None)
+    }
+
+    pub async fn get_domain_commitments(&self) -> Vec<crate::domain::DomainCommitment> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::GetDomainCommitments(tx)).await;
+        rx.await.unwrap_or_default()
+    }
+
+    pub async fn register_consensus_domain(
+        &self,
+        domain: crate::domain::ConsensusDomain,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::RegisterConsensusDomain(domain, tx))
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn submit_domain_commitment(
+        &self,
+        commitment: crate::domain::DomainCommitment,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::SubmitDomainCommitment(commitment, tx))
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn submit_cross_domain_message(
+        &self,
+        message: crate::cross_domain::CrossDomainMessage,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::SubmitCrossDomainMessage(message, tx))
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn seal_global_header(&self) -> Result<crate::settlement::GlobalBlockHeader, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::SealGlobalHeader(tx)).await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
 }
 
 pub struct ChainActor {
@@ -468,7 +561,105 @@ impl ChainActor {
                     let res = self.blockchain.apply_state_snapshot(snapshot);
                     let _ = res_tx.send(res.map_err(|e: String| e.to_string()));
                 }
+                ChainCommand::GetSettlementInfo(tx) => {
+                    let header = self.blockchain.build_global_header(None);
+                    let info = serde_json::json!({
+                        "globalHeight": self.blockchain.global_headers.len(),
+                        "latestGlobalHash": self.blockchain.global_headers.last().map(|h| h.calculate_hash()),
+                        "pendingGlobalHash": header.calculate_hash(),
+                        "domainRegistryRoot": hex::encode(header.domain_registry_root),
+                        "domainCommitmentRoot": hex::encode(header.domain_commitment_root),
+                        "bridgeStateRoot": hex::encode(header.bridge_state_root),
+                        "replayNonceRoot": hex::encode(header.replay_nonce_root),
+                        "domainCommitmentCount": self.blockchain.domain_commitment_registry.len(),
+                    });
+                    let _ = tx.send(info);
+                }
+                ChainCommand::GetGlobalHeader(height, tx) => {
+                    let header = self.blockchain.global_headers.get(height as usize).cloned();
+                    let _ = tx.send(header);
+                }
+                ChainCommand::GetDomainCommitments(tx) => {
+                    let commitments = self
+                        .blockchain
+                        .domain_commitment_registry
+                        .commitments_for_global_block();
+                    let _ = tx.send(commitments);
+                }
+                ChainCommand::RegisterConsensusDomain(domain, res_tx) => {
+                    let _ = res_tx.send(self.blockchain.register_consensus_domain(domain));
+                }
+                ChainCommand::SubmitDomainCommitment(commitment, res_tx) => {
+                    let _ = res_tx.send(self.blockchain.submit_domain_commitment(commitment));
+                }
+                ChainCommand::SubmitCrossDomainMessage(message, res_tx) => {
+                    let _ = res_tx.send(self.blockchain.message_registry.insert(message));
+                }
+                ChainCommand::SealGlobalHeader(res_tx) => {
+                    let _ = res_tx.send(self.blockchain.seal_global_header(None));
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain::blockchain::Blockchain;
+    use crate::consensus::pow::PoWEngine;
+    use crate::core::address::Address;
+    use std::sync::Arc;
+
+    async fn setup_actor() -> ChainHandle {
+        let consensus = Arc::new(PoWEngine::new(0));
+        let blockchain = Blockchain::new(consensus, None, 1337, None);
+        let (chain_actor, chain) = ChainActor::new(blockchain);
+        tokio::spawn(async move {
+            chain_actor.run().await;
+        });
+        chain
+    }
+
+    #[tokio::test]
+    async fn test_actor_submit_domain_commitment() {
+        let chain = setup_actor().await;
+        let domain = crate::domain::plugin::default_domain(
+            1,
+            crate::domain::ConsensusKind::PoW,
+            1337,
+            "pow-confirmation-depth",
+            0,
+        );
+        chain.register_consensus_domain(domain.clone()).await.unwrap();
+
+        let block = crate::core::block::Block::new(1, "aa".repeat(32), vec![]);
+        let commitment =
+            crate::domain::DomainCommitment::from_block(&domain, &block, [2u8; 32], [3u8; 32], 0)
+                .unwrap();
+
+        assert!(chain.submit_domain_commitment(commitment).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_actor_submit_cross_domain_message() {
+        let chain = setup_actor().await;
+        
+        let msg = crate::cross_domain::CrossDomainMessage::new(
+            crate::cross_domain::message::CrossDomainMessageParams {
+                source_domain: 1,
+                target_domain: 2,
+                source_height: 10,
+                event_index: 0,
+                nonce: 42,
+                sender: Address::zero(),
+                recipient: Address::zero(),
+                payload_hash: [9u8; 32],
+                kind: crate::cross_domain::MessageKind::BridgeLock,
+                expiry_height: 100,
+            }
+        );
+
+        assert!(chain.submit_cross_domain_message(msg).await.is_ok());
     }
 }

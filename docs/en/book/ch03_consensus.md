@@ -10,3 +10,5 @@ In this chapter, we will examine the three consensus mechanisms supported by the
 
 Budlum is built on a modular structure, the `ConsensusEngine` trait, that can switch between these mechanisms.
 
+However, Budlum goes beyond just switching engines. It pioneers a **Multi-Consensus Settlement Architecture**, allowing PoW, PoS, and PoA networks to operate concurrently as isolated domains. These independent networks settle their cryptographic proofs (commitments) into a unified Global Block, enabling trustless cross-domain automation and secure asset bridging without centralized intermediaries.
+

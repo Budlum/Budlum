@@ -173,4 +173,87 @@ mod tests {
         );
         assert_eq!(precheck3["accepted"], true);
     }
+
+    #[tokio::test]
+    async fn test_rpc_settlement_methods() {
+        let (server, chain) = setup().await;
+        let domain = crate::domain::plugin::default_domain(
+            1,
+            crate::domain::ConsensusKind::PoW,
+            1337,
+            "pow-confirmation-depth",
+            0,
+        );
+        chain
+            .register_consensus_domain(domain.clone())
+            .await
+            .unwrap();
+
+        let mut block = crate::core::block::Block::new(1, "aa".repeat(32), vec![]);
+        block.timestamp = 1234;
+        block.state_root = "11".repeat(32);
+        block.tx_root = block.calculate_tx_root();
+        block.hash = block.calculate_hash();
+        let commitment =
+            crate::domain::DomainCommitment::from_block(&domain, &block, [2u8; 32], [3u8; 32], 0)
+                .unwrap();
+        chain
+            .submit_domain_commitment(commitment.clone())
+            .await
+            .unwrap();
+        let sealed = chain.seal_global_header().await.unwrap();
+
+        let info = server.get_settlement_info().await.unwrap();
+        assert_eq!(info["globalHeight"], 1);
+        assert_eq!(info["domainCommitmentCount"], 1);
+        assert!(info["latestGlobalHash"].as_str().unwrap().len() == 64);
+
+        let header = server.get_global_header(0).await.unwrap();
+        assert_eq!(header["globalHeight"], "0x0");
+        assert_eq!(
+            header["hash"].as_str().unwrap(),
+            format!("0x{}", sealed.calculate_hash())
+        );
+
+        let missing = server.get_global_header(999).await.unwrap();
+        assert!(missing.is_null());
+
+        let commitments = server.get_domain_commitments().await.unwrap();
+        let commitments = commitments.as_array().unwrap();
+        assert_eq!(commitments.len(), 1);
+        assert_eq!(commitments[0]["domainId"], 1);
+        assert_eq!(
+            commitments[0]["domainBlockHash"],
+            format!("0x{}", hex::encode(commitment.domain_block_hash))
+        );
+
+        let mut block2 = block.clone();
+        block2.index = 2;
+        let new_commitment =
+            crate::domain::DomainCommitment::from_block(&domain, &block2, [4u8; 32], [5u8; 32], 1)
+                .unwrap();
+        let result = server.submit_domain_commitment(new_commitment.clone()).await.unwrap();
+        assert_eq!(result, format!("0x{}", hex::encode(new_commitment.leaf_hash())));
+        
+        let commitments2 = server.get_domain_commitments().await.unwrap();
+        assert_eq!(commitments2.as_array().unwrap().len(), 2);
+
+        let cross_domain_msg = crate::cross_domain::CrossDomainMessage::new(
+            crate::cross_domain::message::CrossDomainMessageParams {
+                source_domain: 1,
+                target_domain: 2,
+                source_height: 10,
+                event_index: 0,
+                nonce: 42,
+                sender: Address::zero(),
+                recipient: Address::zero(),
+                payload_hash: [9u8; 32],
+                kind: crate::cross_domain::MessageKind::BridgeLock,
+                expiry_height: 100,
+            }
+        );
+
+        let msg_result = server.submit_cross_domain_message(cross_domain_msg.clone()).await.unwrap();
+        assert_eq!(msg_result, format!("0x{}", hex::encode(cross_domain_msg.message_id)));
+    }
 }

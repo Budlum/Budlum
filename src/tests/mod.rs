@@ -7,4 +7,6 @@ pub mod hardening;
 #[cfg(test)]
 pub mod integration;
 #[cfg(test)]
+pub mod settlement_prod;
+#[cfg(test)]
 pub mod zkvm;

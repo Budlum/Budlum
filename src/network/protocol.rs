@@ -123,6 +123,10 @@ pub enum NetworkMessage {
     QcFaultProof {
         proof_data: Vec<u8>,
     },
+
+    DomainCommitment(crate::domain::DomainCommitment),
+    GlobalHeader(crate::settlement::GlobalBlockHeader),
+    CrossDomainMessage(crate::cross_domain::CrossDomainMessage),
 }
 impl NetworkMessage {
     pub fn to_bytes(&self) -> Vec<u8> {
