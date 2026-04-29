@@ -141,12 +141,17 @@ Mainnet startup requires a real bootnode. Configure `[bootnodes].addresses` in `
 
 ## 🧩 Core Features
 
-### 🌍 First-in-Market Multi-Consensus Settlement
+### 🌍 Multi-Consensus Settlement Architecture
 
-Unlike traditional monolithic chains or standard modular rollups, Budlum implements a **Multi-Consensus Settlement Architecture**.
-- **Concurrent Domains**: PoW, PoS, and PoA networks operate simultaneously as isolated domains.
-- **Global Settlement**: A unified settlement layer aggregates all domain commitments (state, tx, and event roots) into a deterministic Global Block Header.
-- **Cross-Domain Automation**: An integrated Bridge Lifecycle automatically locks assets in one domain, emits cryptographic Merkle proofs, and trustlessly mints them in another domain via the settlement layer. Replay attacks are cryptographically impossible.
+Unlike traditional monolithic chains or standard modular rollups, Budlum introduces a **Multi-Consensus Settlement Architecture**.
+
+- **Concurrent Domains**: PoW, PoS, and PoA networks operate simultaneously as isolated consensus domains, each producing independent blocks and state transitions.
+
+- **Global Settlement**: A unified settlement layer aggregates domain-level commitments (state roots, transaction roots, and event roots) into a deterministic **Global Block Header**, ensuring a consistent and verifiable system-wide state.
+
+- **Cross-Domain Automation**: An integrated bridge lifecycle enables assets to be locked in a source domain, proven via cryptographic Merkle proofs, verified on the settlement layer, and minted in a destination domain — without relying on centralized trust assumptions.
+
+- **Replay Protection**: Cross-domain operations are secured through domain-aware proof binding, nonce tracking, and deterministic settlement inclusion, effectively preventing replay attacks.
 
 ### 🔗 Pluggable Consensus
 
