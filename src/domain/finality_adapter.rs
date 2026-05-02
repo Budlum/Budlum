@@ -281,9 +281,7 @@ impl DomainFinalityAdapter for ZkFinalityAdapter {
         };
 
         if *proof_hash == [0u8; 32] {
-            return Ok(FinalityStatus::Rejected(
-                "ZK proof hash is zero".into(),
-            ));
+            return Ok(FinalityStatus::Rejected("ZK proof hash is zero".into()));
         }
         if *verifier_key_hash == [0u8; 32] {
             return Ok(FinalityStatus::Rejected(
@@ -335,6 +333,7 @@ mod tests {
             timestamp_ms: 123,
             sequence: 0,
             producer: None,
+            state_updates: std::collections::BTreeMap::new(),
         }
     }
 

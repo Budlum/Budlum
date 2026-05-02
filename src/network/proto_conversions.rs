@@ -438,15 +438,24 @@ impl From<&NetworkMessage> for pb::ProtoNetworkMessage {
                     data: serde_json::to_vec(commitment).unwrap_or_default(),
                 })
             }
+            NetworkMessage::VerifiedDomainCommitment(payload) => {
+                pb::proto_network_message::Payload::VerifiedDomainCommitment(
+                    pb::ProtoVerifiedDomainCommitment {
+                        data: serde_json::to_vec(payload).unwrap_or_default(),
+                    },
+                )
+            }
             NetworkMessage::GlobalHeader(header) => {
                 pb::proto_network_message::Payload::GlobalHeader(pb::ProtoGlobalHeader {
                     data: serde_json::to_vec(header).unwrap_or_default(),
                 })
             }
             NetworkMessage::CrossDomainMessage(msg) => {
-                pb::proto_network_message::Payload::CrossDomainMessage(pb::ProtoCrossDomainMessage {
-                    data: serde_json::to_vec(msg).unwrap_or_default(),
-                })
+                pb::proto_network_message::Payload::CrossDomainMessage(
+                    pb::ProtoCrossDomainMessage {
+                        data: serde_json::to_vec(msg).unwrap_or_default(),
+                    },
+                )
             }
         };
 
@@ -593,6 +602,11 @@ impl TryFrom<pb::ProtoNetworkMessage> for NetworkMessage {
                     .map_err(|e| format!("Invalid domain commitment payload: {}", e))?;
                 Ok(NetworkMessage::DomainCommitment(commitment))
             }
+            pb::proto_network_message::Payload::VerifiedDomainCommitment(c) => {
+                let payload = serde_json::from_slice(&c.data)
+                    .map_err(|e| format!("Invalid verified domain commitment payload: {}", e))?;
+                Ok(NetworkMessage::VerifiedDomainCommitment(payload))
+            }
             pb::proto_network_message::Payload::GlobalHeader(h) => {
                 let header = serde_json::from_slice(&h.data)
                     .map_err(|e| format!("Invalid global header payload: {}", e))?;
@@ -702,6 +716,7 @@ mod tests {
             timestamp_ms: 123,
             sequence: 9,
             producer: None,
+            state_updates: std::collections::BTreeMap::new(),
         };
         let msg = NetworkMessage::DomainCommitment(commitment.clone());
         let proto_msg = pb::ProtoNetworkMessage::from(&msg);
@@ -711,6 +726,59 @@ mod tests {
         match decoded_msg {
             NetworkMessage::DomainCommitment(decoded) => assert_eq!(decoded, commitment),
             _ => panic!("Expected DomainCommitment message"),
+        }
+    }
+
+    #[test]
+    fn test_verified_domain_commitment_message_conversion() {
+        let commitment = crate::domain::DomainCommitment {
+            domain_id: 1,
+            domain_height: 42,
+            domain_block_hash: [1u8; 32],
+            parent_domain_block_hash: [2u8; 32],
+            state_root: [3u8; 32],
+            tx_root: [4u8; 32],
+            event_root: [5u8; 32],
+            finality_proof_hash: crate::domain::hash_finality_proof(
+                &crate::domain::FinalityProof::PoW {
+                    confirmations: 64,
+                    total_work_hint: 1000,
+                },
+            ),
+            consensus_kind: crate::domain::ConsensusKind::PoW,
+            validator_set_hash: [7u8; 32],
+            timestamp_ms: 123,
+            sequence: 9,
+            producer: None,
+            state_updates: std::collections::BTreeMap::new(),
+        };
+        let payload = crate::domain::VerifiedDomainCommitment {
+            commitment: commitment.clone(),
+            proof: crate::domain::FinalityProof::PoW {
+                confirmations: 64,
+                total_work_hint: 1000,
+            },
+        };
+        let msg = NetworkMessage::VerifiedDomainCommitment(payload);
+        let proto_msg = pb::ProtoNetworkMessage::from(&msg);
+        let decoded_msg =
+            NetworkMessage::try_from(proto_msg).expect("Failed to decode VerifiedDomainCommitment");
+
+        match decoded_msg {
+            NetworkMessage::VerifiedDomainCommitment(decoded) => {
+                assert_eq!(decoded.commitment, commitment);
+                match decoded.proof {
+                    crate::domain::FinalityProof::PoW {
+                        confirmations,
+                        total_work_hint,
+                    } => {
+                        assert_eq!(confirmations, 64);
+                        assert_eq!(total_work_hint, 1000);
+                    }
+                    _ => panic!("Expected PoW finality proof"),
+                }
+            }
+            _ => panic!("Expected VerifiedDomainCommitment message"),
         }
     }
 
@@ -755,7 +823,7 @@ mod tests {
                 payload_hash: [9u8; 32],
                 kind: crate::cross_domain::MessageKind::BridgeLock,
                 expiry_height: 100,
-            }
+            },
         );
         let msg = NetworkMessage::CrossDomainMessage(msg_inner.clone());
         let proto_msg = pb::ProtoNetworkMessage::from(&msg);

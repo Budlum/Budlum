@@ -18,5 +18,5 @@ pub use plugin_registry::DomainPluginRegistry;
 pub use registry::ConsensusDomainRegistry;
 pub use types::{
     normalize_hash32, ConsensusDomain, ConsensusKind, DomainCommitment, DomainId, DomainStatus,
-    Hash32, RootScheme,
+    Hash32, RootScheme, VerifiedDomainCommitment,
 };

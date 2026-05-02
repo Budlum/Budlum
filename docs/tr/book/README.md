@@ -61,6 +61,9 @@ Ağ dayanıklılığı için **Kaos Testleri**, re-org koruması ve hata simüla
 ### 9. [Bölüm 9: Dizin Yapısı](ch09_directory_structure.md)
 Yeni **Katmanlı Modüler Mimari** ve dosya düzeni.
 
+### 11. [Bölüm 11: Çoklu Konsensüs Yerleşim ve Bizans Dayanıklılığı](ch11_multi_consensus_settlement.md)
+**Model B: Buffered Registry** mimarisi, ağ bölünmeleri ve Bizans saldırılarına karşı deterministik küresel uzlaşı kanıtları.
+
 ---
 
 ## Katkıda Bulunun

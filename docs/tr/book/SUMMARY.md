@@ -38,3 +38,4 @@
 
 - [Bölüm 9: Dizin Yapısı ve Modülerlik](ch09_directory_structure.md)
 - [Bölüm 10: Benchmark Sonuçları (Performance)](ch10_benchmark_results.md)
+- [Bölüm 11: Çoklu Konsensüs Yerleşim ve Bizans Dayanıklılığı](ch11_multi_consensus_settlement.md)

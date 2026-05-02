@@ -1,6 +1,7 @@
 use crate::core::address::Address;
 use crate::core::block::Block;
 use crate::core::hash::hash_fields_bytes;
+use crate::domain::finality_adapter::FinalityProof;
 use serde::{Deserialize, Serialize};
 
 pub type DomainId = u32;
@@ -77,6 +78,8 @@ pub struct ConsensusDomain {
     pub block_hash_scheme: RootScheme,
     pub state_root_scheme: RootScheme,
     pub tx_root_scheme: RootScheme,
+    pub last_committed_height: u64,
+    pub last_committed_hash: Hash32,
 }
 
 impl ConsensusDomain {
@@ -100,6 +103,7 @@ pub struct DomainCommitment {
     pub timestamp_ms: u128,
     pub sequence: u64,
     pub producer: Option<Address>,
+    pub state_updates: std::collections::BTreeMap<Address, u64>,
 }
 
 impl DomainCommitment {
@@ -144,6 +148,7 @@ impl DomainCommitment {
             timestamp_ms: block.timestamp,
             sequence,
             producer: block.producer,
+            state_updates: std::collections::BTreeMap::new(),
         })
     }
 
@@ -153,6 +158,12 @@ impl DomainCommitment {
             .producer
             .map(|address| address.as_bytes().to_vec())
             .unwrap_or_default();
+
+        let mut state_updates_bytes = Vec::new();
+        for (addr, nonce) in &self.state_updates {
+            state_updates_bytes.extend_from_slice(addr.as_bytes());
+            state_updates_bytes.extend_from_slice(&nonce.to_le_bytes());
+        }
 
         hash_fields_bytes(&[
             b"BDLM_DOMAIN_COMMITMENT_V1",
@@ -169,7 +180,20 @@ impl DomainCommitment {
             &self.timestamp_ms.to_le_bytes(),
             &self.sequence.to_le_bytes(),
             &producer,
+            &state_updates_bytes,
         ])
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedDomainCommitment {
+    pub commitment: DomainCommitment,
+    pub proof: FinalityProof,
+}
+
+impl VerifiedDomainCommitment {
+    pub fn leaf_hash(&self) -> Hash32 {
+        self.commitment.leaf_hash()
     }
 }
 

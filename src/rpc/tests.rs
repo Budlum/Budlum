@@ -227,16 +227,122 @@ mod tests {
             format!("0x{}", hex::encode(commitment.domain_block_hash))
         );
 
+        let domains = server.get_consensus_domains().await.unwrap();
+        assert_eq!(domains.as_array().unwrap().len(), 1);
+        assert_eq!(domains[0]["domainId"], 1);
+
+        let poa_domain = crate::domain::plugin::default_domain(
+            2,
+            crate::domain::ConsensusKind::PoA,
+            1338,
+            "poa-authority-quorum",
+            0,
+        );
+        let registration = server
+            .register_consensus_domain(poa_domain.clone())
+            .await
+            .unwrap();
+        assert_eq!(registration["domainId"], 2);
+        assert!(registration["domainRegistryRoot"]
+            .as_str()
+            .unwrap()
+            .starts_with("0x"));
+        assert!(server.register_consensus_domain(poa_domain).await.is_err());
+        assert_eq!(
+            server
+                .get_consensus_domains()
+                .await
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
         let mut block2 = block.clone();
         block2.index = 2;
+        let raw_commitment =
+            crate::domain::DomainCommitment::from_block(&domain, &block2, [4u8; 32], [5u8; 32], 1)
+                .unwrap();
+        let raw_err = server
+            .submit_domain_commitment(raw_commitment.clone())
+            .await
+            .unwrap_err();
+        assert!(raw_err
+            .message()
+            .contains("Raw domain commitment submission is disabled"));
+
+        let raw_rejected_commitments = server.get_domain_commitments().await.unwrap();
+        assert_eq!(raw_rejected_commitments.as_array().unwrap().len(), 1);
+
+        let proof2 = crate::domain::FinalityProof::PoW {
+            confirmations: 64,
+            total_work_hint: 4000,
+        };
         let new_commitment =
             crate::domain::DomainCommitment::from_block(&domain, &block2, [4u8; 32], [5u8; 32], 1)
                 .unwrap();
-        let result = server.submit_domain_commitment(new_commitment.clone()).await.unwrap();
-        assert_eq!(result, format!("0x{}", hex::encode(new_commitment.leaf_hash())));
-        
+        let mut new_commitment = new_commitment;
+        new_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&proof2);
+        let result = server
+            .submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
+                commitment: new_commitment.clone(),
+                proof: proof2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            format!("0x{}", hex::encode(new_commitment.leaf_hash()))
+        );
+
         let commitments2 = server.get_domain_commitments().await.unwrap();
         assert_eq!(commitments2.as_array().unwrap().len(), 2);
+
+        let mut block3 = block.clone();
+        block3.index = 3;
+        let proof = crate::domain::FinalityProof::PoW {
+            confirmations: 64,
+            total_work_hint: 5000,
+        };
+        let mut verified_commitment =
+            crate::domain::DomainCommitment::from_block(&domain, &block3, [6u8; 32], [7u8; 32], 2)
+                .unwrap();
+        verified_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&proof);
+        let verified_payload = crate::domain::VerifiedDomainCommitment {
+            commitment: verified_commitment.clone(),
+            proof,
+        };
+        let verified_result = server
+            .submit_verified_domain_commitment(verified_payload)
+            .await
+            .unwrap();
+        assert_eq!(
+            verified_result,
+            format!("0x{}", hex::encode(verified_commitment.leaf_hash()))
+        );
+
+        let mut block4 = block.clone();
+        block4.index = 4;
+        let weak_proof = crate::domain::FinalityProof::PoW {
+            confirmations: 1,
+            total_work_hint: 5001,
+        };
+        let mut weak_commitment =
+            crate::domain::DomainCommitment::from_block(&domain, &block4, [8u8; 32], [9u8; 32], 3)
+                .unwrap();
+        weak_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&weak_proof);
+        let weak_payload = crate::domain::VerifiedDomainCommitment {
+            commitment: weak_commitment,
+            proof: weak_proof,
+        };
+        assert!(server
+            .submit_verified_domain_commitment(weak_payload)
+            .await
+            .is_err());
+
+        let commitments3 = server.get_domain_commitments().await.unwrap();
+        assert_eq!(commitments3.as_array().unwrap().len(), 3);
 
         let cross_domain_msg = crate::cross_domain::CrossDomainMessage::new(
             crate::cross_domain::message::CrossDomainMessageParams {
@@ -250,10 +356,75 @@ mod tests {
                 payload_hash: [9u8; 32],
                 kind: crate::cross_domain::MessageKind::BridgeLock,
                 expiry_height: 100,
-            }
+            },
         );
 
-        let msg_result = server.submit_cross_domain_message(cross_domain_msg.clone()).await.unwrap();
-        assert_eq!(msg_result, format!("0x{}", hex::encode(cross_domain_msg.message_id)));
+        let msg_result = server
+            .submit_cross_domain_message(cross_domain_msg.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            msg_result,
+            format!("0x{}", hex::encode(cross_domain_msg.message_id))
+        );
+
+        let asset_id = [42u8; 32];
+        let bridge_registration = server.register_bridge_asset(asset_id, 1).await.unwrap();
+        assert_eq!(bridge_registration["status"], "registered");
+
+        let owner = Address::from([11u8; 32]);
+        let recipient = Address::from([12u8; 32]);
+        let lock_result = server
+            .lock_bridge_transfer(1, 2, 20, 0, asset_id, owner, recipient, 100, 1000)
+            .await
+            .unwrap();
+        let lock_event: crate::cross_domain::DomainEvent =
+            serde_json::from_value(lock_result["event"].clone()).unwrap();
+        let message_id = lock_event.message.as_ref().unwrap().message_id;
+
+        let mut event_tree = crate::cross_domain::DomainEventTree::new();
+        event_tree.push(lock_event.clone());
+
+        let mut bridge_block = block.clone();
+        bridge_block.index = 20;
+        let bridge_proof = crate::domain::FinalityProof::PoW {
+            confirmations: 64,
+            total_work_hint: 6000,
+        };
+        let mut bridge_commitment = crate::domain::DomainCommitment::from_block(
+            &domain,
+            &bridge_block,
+            event_tree.root(),
+            [0u8; 32],
+            4,
+        )
+        .unwrap();
+        bridge_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&bridge_proof);
+        server
+            .submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
+                commitment: bridge_commitment,
+                proof: bridge_proof,
+            })
+            .await
+            .unwrap();
+
+        let mint_result = server
+            .mint_bridge_transfer(1, 20, 4, None, lock_event, event_tree.proof(0).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(mint_result["status"], "minted");
+
+        let burn_result = server.burn_bridge_transfer(message_id, 2).await.unwrap();
+        assert_eq!(burn_result["status"], "burned");
+
+        let unlock_result = server.unlock_bridge_transfer(message_id, 1).await.unwrap();
+        assert_eq!(unlock_result["status"], "unlocked");
+
+        let rpc_sealed = server.seal_global_header().await.unwrap();
+        assert_eq!(rpc_sealed["globalHeight"], "0x1");
+        assert!(rpc_sealed["domainRegistryRoot"]
+            .as_str()
+            .unwrap()
+            .starts_with("0x"));
     }
 }

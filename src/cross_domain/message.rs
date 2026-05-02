@@ -33,6 +33,8 @@ impl MessageKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CrossDomainMessage {
     pub message_id: MessageId,
+    #[serde(default)]
+    pub correlation_id: Option<MessageId>,
     pub source_domain: DomainId,
     pub target_domain: DomainId,
     pub source_height: u64,
@@ -49,6 +51,7 @@ impl CrossDomainMessage {
     pub fn new(params: CrossDomainMessageParams) -> Self {
         let mut message = CrossDomainMessage {
             message_id: [0u8; 32],
+            correlation_id: None,
             source_domain: params.source_domain,
             target_domain: params.target_domain,
             source_height: params.source_height,
@@ -64,10 +67,19 @@ impl CrossDomainMessage {
         message
     }
 
+    pub fn new_correlated(params: CrossDomainMessageParams, correlation_id: MessageId) -> Self {
+        let mut message = Self::new(params);
+        message.correlation_id = Some(correlation_id);
+        message.message_id = message.calculate_message_id();
+        message
+    }
+
     pub fn calculate_message_id(&self) -> MessageId {
         let kind = self.kind.as_bytes();
+        let correlation_id = self.correlation_id.unwrap_or([0u8; 32]);
         hash_fields_bytes(&[
-            b"BDLM_CROSS_DOMAIN_MESSAGE_V1",
+            b"BDLM_CROSS_DOMAIN_MESSAGE_V2",
+            &correlation_id,
             &self.source_domain.to_le_bytes(),
             &self.target_domain.to_le_bytes(),
             &self.source_height.to_le_bytes(),

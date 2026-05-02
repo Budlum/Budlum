@@ -94,6 +94,7 @@ message ProtoNetworkMessage {
         ProtoDomainCommitment domain_commitment = 21;
         ProtoGlobalHeader global_header = 22;
         ProtoCrossDomainMessage cross_domain_message = 23;
+        ProtoVerifiedDomainCommitment verified_domain_commitment = 24;
     }
 }
 
@@ -207,6 +208,10 @@ message ProtoQcFaultProof {
 }
 
 message ProtoDomainCommitment {
+    bytes data = 1;
+}
+
+message ProtoVerifiedDomainCommitment {
     bytes data = 1;
 }
 

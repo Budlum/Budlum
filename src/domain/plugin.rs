@@ -242,6 +242,7 @@ pub fn default_domain(
         block_hash_scheme: RootScheme::BudlumBlockV2,
         state_root_scheme: RootScheme::BudlumBlockV2,
         tx_root_scheme: RootScheme::BudlumBlockV2,
+        last_committed_height: 0,
+        last_committed_hash: [0u8; 32],
     }
 }
-

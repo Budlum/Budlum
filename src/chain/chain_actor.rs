@@ -53,6 +53,7 @@ pub enum ChainCommand {
         oneshot::Sender<Option<crate::settlement::GlobalBlockHeader>>,
     ),
     GetDomainCommitments(oneshot::Sender<Vec<crate::domain::DomainCommitment>>),
+    GetConsensusDomains(oneshot::Sender<Vec<crate::domain::ConsensusDomain>>),
     RegisterConsensusDomain(
         crate::domain::ConsensusDomain,
         oneshot::Sender<Result<(), String>>,
@@ -61,10 +62,60 @@ pub enum ChainCommand {
         crate::domain::DomainCommitment,
         oneshot::Sender<Result<(), String>>,
     ),
+    SubmitVerifiedDomainCommitment(
+        crate::domain::VerifiedDomainCommitment,
+        oneshot::Sender<Result<(), String>>,
+    ),
     SubmitCrossDomainMessage(
         crate::cross_domain::CrossDomainMessage,
         oneshot::Sender<Result<(), String>>,
     ),
+    BuildGlobalHeader(oneshot::Sender<Result<crate::settlement::GlobalBlockHeader, String>>),
+    GetDomainHeight(crate::domain::DomainId, oneshot::Sender<Result<u64, String>>),
+    RegisterBridgeAsset {
+        asset_id: crate::cross_domain::AssetId,
+        domain: crate::domain::DomainId,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    LockBridgeTransfer {
+        source_domain: crate::domain::DomainId,
+        target_domain: crate::domain::DomainId,
+        source_height: u64,
+        event_index: u32,
+        asset_id: crate::cross_domain::AssetId,
+        owner: crate::core::address::Address,
+        recipient: crate::core::address::Address,
+        amount: u128,
+        expiry_height: u64,
+        response: oneshot::Sender<
+            Result<
+                (
+                    crate::cross_domain::BridgeTransfer,
+                    crate::cross_domain::DomainEvent,
+                ),
+                String,
+            >,
+        >,
+    },
+    MintBridgeTransferFromVerifiedEvent {
+        source_domain: crate::domain::DomainId,
+        source_height: u64,
+        sequence: u64,
+        expected_block_hash: Option<crate::domain::Hash32>,
+        event: crate::cross_domain::DomainEvent,
+        proof: crate::cross_domain::MerkleProof,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    BurnBridgeTransfer {
+        message_id: crate::cross_domain::MessageId,
+        domain: crate::domain::DomainId,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    UnlockBridgeTransfer {
+        message_id: crate::cross_domain::MessageId,
+        source_domain: crate::domain::DomainId,
+        response: oneshot::Sender<Result<(), String>>,
+    },
     SealGlobalHeader(oneshot::Sender<Result<crate::settlement::GlobalBlockHeader, String>>),
 }
 
@@ -341,6 +392,24 @@ impl ChainHandle {
         rx.await.unwrap_or_default()
     }
 
+    pub async fn get_domain_height(&self, domain_id: crate::domain::DomainId) -> Result<u64, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::GetDomainHeight(domain_id, tx)).await;
+        rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn build_global_header(&self, _dummy: Option<()>) -> Result<crate::settlement::GlobalBlockHeader, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::BuildGlobalHeader(tx)).await;
+        rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn get_consensus_domains(&self) -> Vec<crate::domain::ConsensusDomain> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::GetConsensusDomains(tx)).await;
+        rx.await.unwrap_or_default()
+    }
+
     pub async fn register_consensus_domain(
         &self,
         domain: crate::domain::ConsensusDomain,
@@ -367,6 +436,19 @@ impl ChainHandle {
             .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
+    pub async fn submit_verified_domain_commitment(
+        &self,
+        payload: crate::domain::VerifiedDomainCommitment,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::SubmitVerifiedDomainCommitment(payload, tx))
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
     pub async fn submit_cross_domain_message(
         &self,
         message: crate::cross_domain::CrossDomainMessage,
@@ -375,6 +457,124 @@ impl ChainHandle {
         let _ = self
             .tx
             .send(ChainCommand::SubmitCrossDomainMessage(message, tx))
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn register_bridge_asset(
+        &self,
+        asset_id: crate::cross_domain::AssetId,
+        domain: crate::domain::DomainId,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::RegisterBridgeAsset {
+                asset_id,
+                domain,
+                response: tx,
+            })
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn lock_bridge_transfer(
+        &self,
+        source_domain: crate::domain::DomainId,
+        target_domain: crate::domain::DomainId,
+        source_height: u64,
+        event_index: u32,
+        asset_id: crate::cross_domain::AssetId,
+        owner: crate::core::address::Address,
+        recipient: crate::core::address::Address,
+        amount: u128,
+        expiry_height: u64,
+    ) -> Result<
+        (
+            crate::cross_domain::BridgeTransfer,
+            crate::cross_domain::DomainEvent,
+        ),
+        String,
+    > {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::LockBridgeTransfer {
+                source_domain,
+                target_domain,
+                source_height,
+                event_index,
+                asset_id,
+                owner,
+                recipient,
+                amount,
+                expiry_height,
+                response: tx,
+            })
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn mint_bridge_transfer_from_verified_event(
+        &self,
+        source_domain: crate::domain::DomainId,
+        source_height: u64,
+        sequence: u64,
+        expected_block_hash: Option<crate::domain::Hash32>,
+        event: crate::cross_domain::DomainEvent,
+        proof: crate::cross_domain::MerkleProof,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::MintBridgeTransferFromVerifiedEvent {
+                source_domain,
+                source_height,
+                sequence,
+                expected_block_hash,
+                event,
+                proof,
+                response: tx,
+            })
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn burn_bridge_transfer(
+        &self,
+        message_id: crate::cross_domain::MessageId,
+        domain: crate::domain::DomainId,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::BurnBridgeTransfer {
+                message_id,
+                domain,
+                response: tx,
+            })
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn unlock_bridge_transfer(
+        &self,
+        message_id: crate::cross_domain::MessageId,
+        source_domain: crate::domain::DomainId,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::UnlockBridgeTransfer {
+                message_id,
+                source_domain,
+                response: tx,
+            })
             .await;
         rx.await
             .unwrap_or_else(|_| Err("Actor dropped".to_string()))
@@ -586,14 +786,100 @@ impl ChainActor {
                         .commitments_for_global_block();
                     let _ = tx.send(commitments);
                 }
+                ChainCommand::GetConsensusDomains(tx) => {
+                    let _ = tx.send(self.blockchain.domain_registry.domains());
+                }
                 ChainCommand::RegisterConsensusDomain(domain, res_tx) => {
                     let _ = res_tx.send(self.blockchain.register_consensus_domain(domain));
                 }
                 ChainCommand::SubmitDomainCommitment(commitment, res_tx) => {
                     let _ = res_tx.send(self.blockchain.submit_domain_commitment(commitment));
                 }
+                ChainCommand::SubmitVerifiedDomainCommitment(payload, res_tx) => {
+                    let _ = res_tx.send(
+                        self.blockchain
+                            .submit_verified_domain_commitment(payload.commitment, payload.proof),
+                    );
+                }
                 ChainCommand::SubmitCrossDomainMessage(message, res_tx) => {
-                    let _ = res_tx.send(self.blockchain.message_registry.insert(message));
+                    let _ = res_tx.send(self.blockchain.submit_cross_domain_message(message));
+                }
+                ChainCommand::BuildGlobalHeader(res_tx) => {
+                    let header = self.blockchain.build_global_header(None);
+                    let _ = res_tx.send(Ok(header));
+                }
+                ChainCommand::GetDomainHeight(domain_id, res_tx) => {
+                    let res = self.blockchain.domain_registry.get(domain_id)
+                        .map(|d| d.last_committed_height)
+                        .ok_or_else(|| format!("Domain {} not found", domain_id));
+                    let _ = res_tx.send(res);
+                }
+                ChainCommand::RegisterBridgeAsset {
+                    asset_id,
+                    domain,
+                    response,
+                } => {
+                    let _ = response.send(self.blockchain.register_bridge_asset(asset_id, domain));
+                }
+                ChainCommand::LockBridgeTransfer {
+                    source_domain,
+                    target_domain,
+                    source_height,
+                    event_index,
+                    asset_id,
+                    owner,
+                    recipient,
+                    amount,
+                    expiry_height,
+                    response,
+                } => {
+                    let _ = response.send(self.blockchain.lock_bridge_transfer(
+                        source_domain,
+                        target_domain,
+                        source_height,
+                        event_index,
+                        asset_id,
+                        owner,
+                        recipient,
+                        amount,
+                        expiry_height,
+                    ));
+                }
+                ChainCommand::MintBridgeTransferFromVerifiedEvent {
+                    source_domain,
+                    source_height,
+                    sequence,
+                    expected_block_hash,
+                    event,
+                    proof,
+                    response,
+                } => {
+                    let _ =
+                        response.send(self.blockchain.mint_bridge_transfer_from_verified_event(
+                            source_domain,
+                            source_height,
+                            sequence,
+                            expected_block_hash,
+                            event,
+                            &proof,
+                        ));
+                }
+                ChainCommand::BurnBridgeTransfer {
+                    message_id,
+                    domain,
+                    response,
+                } => {
+                    let _ = response.send(self.blockchain.burn_bridge_transfer(message_id, domain));
+                }
+                ChainCommand::UnlockBridgeTransfer {
+                    message_id,
+                    source_domain,
+                    response,
+                } => {
+                    let _ = response.send(
+                        self.blockchain
+                            .unlock_bridge_transfer(message_id, source_domain),
+                    );
                 }
                 ChainCommand::SealGlobalHeader(res_tx) => {
                     let _ = res_tx.send(self.blockchain.seal_global_header(None));
@@ -631,7 +917,10 @@ mod tests {
             "pow-confirmation-depth",
             0,
         );
-        chain.register_consensus_domain(domain.clone()).await.unwrap();
+        chain
+            .register_consensus_domain(domain.clone())
+            .await
+            .unwrap();
 
         let block = crate::core::block::Block::new(1, "aa".repeat(32), vec![]);
         let commitment =
@@ -642,9 +931,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_actor_submit_verified_domain_commitment() {
+        let chain = setup_actor().await;
+        let domain = crate::domain::plugin::default_domain(
+            1,
+            crate::domain::ConsensusKind::PoW,
+            1337,
+            "pow-confirmation-depth",
+            0,
+        );
+        chain
+            .register_consensus_domain(domain.clone())
+            .await
+            .unwrap();
+
+        let block = crate::core::block::Block::new(1, "aa".repeat(32), vec![]);
+        let proof = crate::domain::FinalityProof::PoW {
+            confirmations: 64,
+            total_work_hint: 1000,
+        };
+        let mut commitment =
+            crate::domain::DomainCommitment::from_block(&domain, &block, [2u8; 32], [3u8; 32], 0)
+                .unwrap();
+        commitment.finality_proof_hash = crate::domain::hash_finality_proof(&proof);
+
+        let payload = crate::domain::VerifiedDomainCommitment { commitment, proof };
+        assert!(chain
+            .submit_verified_domain_commitment(payload)
+            .await
+            .is_ok());
+        assert_eq!(chain.get_domain_commitments().await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_actor_submit_cross_domain_message() {
         let chain = setup_actor().await;
-        
+
         let msg = crate::cross_domain::CrossDomainMessage::new(
             crate::cross_domain::message::CrossDomainMessageParams {
                 source_domain: 1,
@@ -657,7 +979,7 @@ mod tests {
                 payload_hash: [9u8; 32],
                 kind: crate::cross_domain::MessageKind::BridgeLock,
                 expiry_height: 100,
-            }
+            },
         );
 
         assert!(chain.submit_cross_domain_message(msg).await.is_ok());

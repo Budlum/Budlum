@@ -60,6 +60,13 @@ impl DomainCommitmentRegistry {
         self.commitments.get(&(domain_id, domain_height, sequence))
     }
 
+    pub fn find_by_height(&self, domain_id: DomainId, height: u64) -> Option<DomainCommitment> {
+        self.commitments
+            .values()
+            .find(|c| c.domain_id == domain_id && c.domain_height == height)
+            .cloned()
+    }
+
     pub fn get_by_block_hash(
         &self,
         domain_id: DomainId,
@@ -111,6 +118,7 @@ mod tests {
             timestamp_ms: 123,
             sequence,
             producer: None,
+            state_updates: std::collections::BTreeMap::new(),
         }
     }
 

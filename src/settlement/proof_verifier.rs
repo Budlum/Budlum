@@ -171,6 +171,7 @@ mod tests {
             timestamp_ms: 123,
             sequence: 0,
             producer: None,
+            state_updates: std::collections::BTreeMap::new(),
         }
     }
 

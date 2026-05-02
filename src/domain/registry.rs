@@ -27,6 +27,10 @@ impl ConsensusDomainRegistry {
         self.domains.get(&id)
     }
 
+    pub fn get_mut(&mut self, id: DomainId) -> Option<&mut ConsensusDomain> {
+        self.domains.get_mut(&id)
+    }
+
     pub fn set_status(&mut self, id: DomainId, status: DomainStatus) -> Result<(), String> {
         let domain = self
             .domains
@@ -40,6 +44,10 @@ impl ConsensusDomainRegistry {
         self.domains
             .values()
             .filter(|domain| domain.status == DomainStatus::Active)
+    }
+
+    pub fn domains(&self) -> Vec<ConsensusDomain> {
+        self.domains.values().cloned().collect()
     }
 
     pub fn root(&self) -> Hash32 {

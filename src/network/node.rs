@@ -58,10 +58,28 @@ impl NodeClient {
         let _ = self.sender.send(NodeCommand::ListPeers).await;
     }
     pub fn broadcast_domain_commitment_sync(&self, commitment: crate::domain::DomainCommitment) {
-        let _ = self.sender.try_send(NodeCommand::Broadcast("blocks".into(), NetworkMessage::DomainCommitment(commitment)));
+        let _ = self.sender.try_send(NodeCommand::Broadcast(
+            "blocks".into(),
+            NetworkMessage::DomainCommitment(commitment),
+        ));
     }
-    pub fn broadcast_cross_domain_message_sync(&self, msg: crate::cross_domain::CrossDomainMessage) {
-        let _ = self.sender.try_send(NodeCommand::Broadcast("blocks".into(), NetworkMessage::CrossDomainMessage(msg)));
+    pub fn broadcast_verified_domain_commitment_sync(
+        &self,
+        payload: crate::domain::VerifiedDomainCommitment,
+    ) {
+        let _ = self.sender.try_send(NodeCommand::Broadcast(
+            "blocks".into(),
+            NetworkMessage::VerifiedDomainCommitment(payload),
+        ));
+    }
+    pub fn broadcast_cross_domain_message_sync(
+        &self,
+        msg: crate::cross_domain::CrossDomainMessage,
+    ) {
+        let _ = self.sender.try_send(NodeCommand::Broadcast(
+            "blocks".into(),
+            NetworkMessage::CrossDomainMessage(msg),
+        ));
     }
 }
 #[tokio::test]
@@ -947,18 +965,30 @@ impl Node {
                                         }
                                     }
                                     NetworkMessage::DomainCommitment(commitment) => {
-                                        info!("Received DomainCommitment from {} for domain {}", peer_id, commitment.domain_id);
-                                        let commitment_clone = commitment.clone();
+                                        warn!(
+                                            "Ignoring raw DomainCommitment from {} for domain {}; verified finality proof is required",
+                                            peer_id, commitment.domain_id
+                                        );
+                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                            pm.report_bad_behavior(&peer_id);
+                                        }
+                                    }
+                                    NetworkMessage::VerifiedDomainCommitment(payload) => {
+                                        info!(
+                                            "Received VerifiedDomainCommitment from {} for domain {}",
+                                            peer_id, payload.commitment.domain_id
+                                        );
+                                        let payload_clone = payload.clone();
                                         let chain = self.chain.clone();
                                         let swarm_cmd_tx = self.command_tx.clone();
                                         tokio::spawn(async move {
-                                            match chain.submit_domain_commitment(commitment_clone.clone()).await {
+                                            match chain.submit_verified_domain_commitment(payload_clone.clone()).await {
                                                 Ok(_) => {
-                                                    let msg = NetworkMessage::DomainCommitment(commitment_clone);
+                                                    let msg = NetworkMessage::VerifiedDomainCommitment(payload_clone);
                                                     let _ = swarm_cmd_tx.send(NodeCommand::Broadcast("blocks".into(), msg)).await;
                                                 }
                                                 Err(e) => {
-                                                    warn!("Failed to process DomainCommitment from {}: {}", peer_id, e);
+                                                    warn!("Failed to process VerifiedDomainCommitment from {}: {}", peer_id, e);
                                                 }
                                             }
                                         });

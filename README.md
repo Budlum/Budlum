@@ -141,12 +141,22 @@ Mainnet startup requires a real bootnode. Configure `[bootnodes].addresses` in `
 
 ## 🧩 Core Features
 
-### 🌍 First-in-Market Multi-Consensus Settlement
+### 🌍 Byzantine-Hardened Multi-Consensus Settlement
 
-Unlike traditional monolithic chains or standard modular rollups, Budlum implements a **Multi-Consensus Settlement Architecture**.
+Unlike traditional monolithic chains or standard modular rollups, Budlum implements a **Hardened Multi-Consensus Settlement Architecture**.
 - **Concurrent Domains**: PoW, PoS, and PoA networks operate simultaneously as isolated domains.
-- **Global Settlement**: A unified settlement layer aggregates all domain commitments (state, tx, and event roots) into a deterministic Global Block Header.
-- **Cross-Domain Automation**: An integrated Bridge Lifecycle automatically locks assets in one domain, emits cryptographic Merkle proofs, and trustlessly mints them in another domain via the settlement layer. Replay attacks are cryptographically impossible.
+- **Byzantine Resilience (Model B)**: A buffered settlement layer ensures global state convergence even under extreme network chaos (partitions, delays, and out-of-order message propagation).
+- **Global Settlement**: A unified settlement layer aggregates all domain commitments into a deterministic Global Block Header.
+- **Equivocation Protection**: Automatic detection and global freezing of consensus domains that produce conflicting states.
+- **Cross-Domain Automation**: An integrated Bridge Lifecycle trustlessly mints assets via the settlement layer with cryptographic Merkle proof validation.
+
+### 🛡️ Multi-Consensus Hardening (Model B)
+
+Budlum's settlement layer is designed for high-availability distributed environments:
+- **Registry-First Idempotency**: All valid domain commitments are archived in a deterministic registry, ensuring identical Merkle roots across all honest nodes regardless of message arrival order.
+- **Buffered State Progression**: Commitments are applied to the canonical state in strict chronological order. Out-of-order heights are buffered and automatically processed as soon as the sequence gap is filled.
+- **Stale Nonce Protection**: Cross-domain state updates are validated against local account nonces; stale or double-spend commitments are archived but never applied to the state.
+- **Convergence Verification**: Hardened by an 18-test "Chaos Matrix" that validates state parity across independent nodes under simulated Byzantine network conditions.
 
 ### 🔗 Pluggable Consensus
 

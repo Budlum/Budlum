@@ -188,7 +188,8 @@ async fn main() {
 
     let pruning_manager = PruningManager::new(1000, 100, "./data/snapshots".to_string());
 
-    let mut blockchain = Blockchain::new(consensus.clone(), storage, chain_id, Some(pruning_manager));
+    let mut blockchain =
+        Blockchain::new(consensus.clone(), storage, chain_id, Some(pruning_manager));
 
     let domain_id = 1u32;
     let (domain_kind, adapter_name, min_conf) = match consensus_type {
@@ -197,7 +198,13 @@ async fn main() {
         ConsensusType::PoA => (ConsensusKind::PoA, "poa-authority-quorum", 0u64),
     };
 
-    let domain_def = default_domain(domain_id, domain_kind.clone(), chain_id, adapter_name, min_conf);
+    let domain_def = default_domain(
+        domain_id,
+        domain_kind.clone(),
+        chain_id,
+        adapter_name,
+        min_conf,
+    );
     if blockchain.domain_registry.get(domain_id).is_none() {
         if let Err(e) = blockchain.register_consensus_domain(domain_def) {
             println!("Domain kaydi basarisiz: {}", e);
@@ -206,11 +213,12 @@ async fn main() {
         }
     }
 
-    let plugin: std::sync::Arc<dyn budlum_core::domain::ConsensusDomainPlugin> = match consensus_type {
-        ConsensusType::PoW => std::sync::Arc::new(PoWDomainPlugin::new(consensus.clone())),
-        ConsensusType::PoS => std::sync::Arc::new(PoSDomainPlugin::new(consensus.clone())),
-        ConsensusType::PoA => std::sync::Arc::new(PoADomainPlugin::new(consensus.clone())),
-    };
+    let plugin: std::sync::Arc<dyn budlum_core::domain::ConsensusDomainPlugin> =
+        match consensus_type {
+            ConsensusType::PoW => std::sync::Arc::new(PoWDomainPlugin::new(consensus.clone())),
+            ConsensusType::PoS => std::sync::Arc::new(PoSDomainPlugin::new(consensus.clone())),
+            ConsensusType::PoA => std::sync::Arc::new(PoADomainPlugin::new(consensus.clone())),
+        };
     if let Err(e) = blockchain.plugin_registry.register(domain_id, plugin) {
         println!("Plugin kaydi basarisiz: {}", e);
     }

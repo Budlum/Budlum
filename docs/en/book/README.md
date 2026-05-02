@@ -61,6 +61,9 @@ Integration with the outside world. The **Budlum Standard** (`bud_`) methods and
 ### 9. [Chapter 9: Directory Structure](ch09_directory_structure.md)
 The new **Layered Modular Architecture** and file layout.
 
+### 11. [Chapter 11: Multi-Consensus Settlement & Byzantine Resilience](ch11_multi_consensus_settlement.md)
+**Model B: Buffered Registry** architecture, network partition recovery, and deterministic global consensus proofs under Byzantine conditions.
+
 ---
 
 ## Contributing

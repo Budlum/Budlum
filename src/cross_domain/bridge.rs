@@ -142,13 +142,15 @@ impl BridgeState {
         if !message.verify_id() {
             return Err(BridgeError("Invalid cross-domain message id".into()));
         }
-        self.replay
-            .mark_processed(message.message_id)
-            .map_err(BridgeError)?;
         let transfer = self
             .transfers
-            .get_mut(&message.message_id)
+            .get(&message.message_id)
             .ok_or_else(|| BridgeError("Unknown bridge transfer".into()))?;
+        if self.replay.is_processed(&message.message_id) {
+            return Err(BridgeError(
+                "Cross-domain message was already processed".into(),
+            ));
+        }
         if transfer.status
             != (BridgeStatus::Locked {
                 domain: message.source_domain,
@@ -158,6 +160,14 @@ impl BridgeState {
                 "Transfer is not locked on source domain".into(),
             ));
         }
+        self.replay
+            .mark_processed(message.message_id)
+            .map_err(BridgeError)?;
+
+        let transfer = self
+            .transfers
+            .get_mut(&message.message_id)
+            .ok_or_else(|| BridgeError("Unknown bridge transfer".into()))?;
 
         transfer.status = BridgeStatus::Minted {
             domain: message.target_domain,
@@ -172,17 +182,66 @@ impl BridgeState {
     }
 
     pub fn burn(&mut self, message_id: MessageId, domain: DomainId) -> Result<(), BridgeError> {
+        self.burn_with_event(message_id, domain, 0, 0, 0)
+            .map(|_| ())
+    }
+
+    pub fn burn_with_event(
+        &mut self,
+        message_id: MessageId,
+        domain: DomainId,
+        domain_height: u64,
+        event_index: u32,
+        expiry_height: u64,
+    ) -> Result<DomainEvent, BridgeError> {
         let transfer = self
             .transfers
-            .get_mut(&message_id)
+            .get(&message_id)
             .ok_or_else(|| BridgeError("Unknown bridge transfer".into()))?;
         if transfer.status != (BridgeStatus::Minted { domain }) {
             return Err(BridgeError("Transfer is not minted on burn domain".into()));
         }
+        let asset_id = transfer.asset_id;
+        let amount = transfer.amount;
+        let source_domain = transfer.source_domain;
+        let owner = transfer.owner;
+        let recipient = transfer.recipient;
+
+        let nonce = self.replay.next_nonce(domain, source_domain, recipient);
+        let payload_hash = bridge_payload_hash(asset_id, amount);
+        let message = CrossDomainMessage::new_correlated(
+            CrossDomainMessageParams {
+                source_domain: domain,
+                target_domain: source_domain,
+                source_height: domain_height,
+                event_index,
+                nonce,
+                sender: recipient,
+                recipient: owner,
+                payload_hash,
+                kind: MessageKind::BridgeBurn,
+                expiry_height,
+            },
+            message_id,
+        );
+        let event = DomainEvent {
+            domain_id: domain,
+            domain_height,
+            event_index,
+            kind: DomainEventKind::BridgeBurned,
+            emitter: recipient,
+            message: Some(message),
+            payload_hash,
+        };
+
+        let transfer = self
+            .transfers
+            .get_mut(&message_id)
+            .ok_or_else(|| BridgeError("Unknown bridge transfer".into()))?;
         transfer.status = BridgeStatus::Burned { domain };
         self.asset_locations
             .insert(transfer.asset_id, BridgeStatus::Burned { domain });
-        Ok(())
+        Ok(event)
     }
 
     pub fn unlock(
@@ -234,6 +293,16 @@ impl BridgeState {
         self.replay.root()
     }
 
+    pub fn source_event_hash(&self, message_id: &MessageId) -> Option<Hash32> {
+        self.transfers
+            .get(message_id)
+            .map(|transfer| transfer.source_event_hash)
+    }
+
+    pub fn transfer(&self, message_id: &MessageId) -> Option<&BridgeTransfer> {
+        self.transfers.get(message_id)
+    }
+
     fn require_asset_status(
         &self,
         asset_id: AssetId,
@@ -252,7 +321,7 @@ impl BridgeState {
     }
 }
 
-fn bridge_payload_hash(asset_id: AssetId, amount: u128) -> Hash32 {
+pub fn bridge_payload_hash(asset_id: AssetId, amount: u128) -> Hash32 {
     hash_fields_bytes(&[b"BDLM_BRIDGE_PAYLOAD_V1", &asset_id, &amount.to_le_bytes()])
 }
 

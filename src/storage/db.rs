@@ -290,7 +290,8 @@ impl Storage {
     }
 
     pub fn save_bridge_state(&self, bridge_state: &BridgeState) -> std::io::Result<()> {
-        let val = serde_json::to_vec(bridge_state)?;
+        let val = bincode::serialize(bridge_state)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         self.db.insert(b"BRIDGE_STATE", val)?;
         self.db.flush()?;
         Ok(())
@@ -298,7 +299,10 @@ impl Storage {
 
     pub fn load_bridge_state(&self) -> std::io::Result<Option<BridgeState>> {
         if let Some(val) = self.db.get(b"BRIDGE_STATE")? {
-            Ok(Some(serde_json::from_slice(&val)?))
+            let decoded = bincode::deserialize(&val)
+                .or_else(|_| serde_json::from_slice(&val))
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            Ok(Some(decoded))
         } else {
             Ok(None)
         }
