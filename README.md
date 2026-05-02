@@ -1,374 +1,156 @@
 # ⚡ Budlum Core
 
-> Build your own Layer-1 blockchain: modular, deterministic, privacy-ready, and ZKVM-native.
-
-Budlum Core is a Rust-based Layer-1 blockchain framework for engineers, protocol researchers, and builders who want a real chain core they can inspect, modify, and extend.
-
-If this project helps your research or experiments, please support it:
-
-⭐ **Star the repo** to help more builders discover Budlum  
-🍴 **Fork it** to experiment with your own consensus, VM, privacy, or network design  
-🧠 **Open issues and discussions** if you want to shape the roadmap
+> **An experimental research framework for Layer-1 blockchain design: modular, deterministic, and multi-consensus native.**
 
 ---
 
-## 🚀 Why Budlum?
+> [!CAUTION]
+> **Experimental Research Prototype (v0.1-settlement-prototype)**
+>
+> Budlum Core is currently in an early research and development phase. The codebase is provided for architectural review, protocol experimentation, and educational purposes. It is **NOT** production-ready, has not been audited, and should **NOT** be used for any financial transactions or production-grade applications.
 
-Most blockchain frameworks are rigid, hard to reason about, or optimized for one fixed worldview.
+---
 
-Budlum is different:
+Budlum Core is a Rust-based Layer-1 blockchain framework designed for engineers and protocol researchers who want to explore modular consensus, deterministic state settlement, and cross-domain interoperability.
 
-- 🔁 **Multi-Consensus Settlement**: Run PoW, PoS, and PoA concurrently on the same unified settlement layer.
-- 🌉 **Trustless Cross-Domain Bridge**: Native, automatic cryptographic asset locking and minting across isolated consensus domains.
-- 🧠 **Deterministic execution**: replay-safe state transitions and reorg recovery
-- 🧩 **Modular architecture**: consensus, networking, storage, state, mempool, and execution are replaceable
-- 🔒 **Security-first design**: hardened against spam, invalid states, malformed payloads, and unsafe replays
-- 🌐 **High-performance networking**: libp2p, GossipSub, request/response sync, and peer reputation
-- 🧪 **Research-friendly**: ideal for L1 experiments, custom chains, privacy systems, and execution-layer design
-- 🕶️ **Privacy roadmap**: future privacy layer inspired by Monero-style privacy and Zcash-style zero-knowledge systems
-- 🤖 **AI execution roadmap**: future AI-assisted execution layer for smarter protocol automation and validation flows
+If this project helps your research, please support it:
+⭐ **Star the repo** | 🍴 **Fork it** | 🧠 **Open a discussion**
+
+---
+
+## 🏗️ Architectural Vision
+
+Most blockchain frameworks are optimized for a single consensus worldview. Budlum is designed as a **Universal Settlement Layer** to research how heterogeneous networks (PoW, PoS, BFT) can achieve deterministic state convergence without centralized intermediaries.
+
+- 🔁 **Multi-Consensus Research**: Infrastructure for running parallel consensus domains on a unified settlement layer.
+- 🌉 **Cross-Domain Interoperability**: Experimental cryptographic bridge for asset movement between isolated domains.
+- 🧠 **Deterministic Execution**: Research into replay-safe state transitions and consistent global headers.
+- 🧩 **Modular Core**: Decoupled consensus, networking, and execution layers for rapid prototyping.
+- 🌐 **Peer-to-Peer Foundation**: Built on `libp2p` with GossipSub and custom request/response synchronization.
 
 ---
 
 ## 🏗️ Architecture Overview
-
-Budlum is structured as loosely coupled modules connected through Rust traits and explicit state boundaries.
 
 ```mermaid
 graph TD
     User(("User")) --> CLI["CLI / RPC"]
     CLI --> Node["Node Service"]
 
-    subgraph "Core Chain"
+    subgraph "Settlement Layer"
         Node --> ChainHandle["ChainHandle"]
         ChainHandle --> ChainActor["ChainActor"]
-        ChainActor --> State["Deterministic Account State"]
-        ChainActor --> Mempool["Anti-Spam Mempool"]
-        ChainActor --> Storage["Atomic Storage"]
+        ChainActor --> State["Global Account State"]
+        ChainActor --> Buffer["Pending Commitment Buffer"]
+        ChainActor --> Storage["Atomic Persistence"]
     end
 
-    subgraph "Consensus"
+    subgraph "Consensus Domains"
         ChainActor -.-> Engine["ConsensusEngine Trait"]
         Engine --> PoW["Proof of Work"]
         Engine --> PoS["Proof of Stake + VRF"]
         Engine --> PoA["Proof of Authority"]
-        Engine --> Finality["BLS Finality"]
-        Engine --> QC["PQ-ready QC"]
+        Engine --> BFT["BFT Finality Adapters"]
     end
 
-    subgraph "Execution"
+    subgraph "Execution & ZK"
         ChainActor --> Executor["State Executor"]
-        Executor --> ZKVM["BudZKVM Contract Engine"]
-        Executor -.->|future| PrivateVM["Private / Custom VM"]
-        Executor -.->|future| AIExec["AI Execution Layer"]
+        Executor --> ZKVM["BudZKVM (Experimental)"]
     end
 
     subgraph "Networking"
         Node --> Libp2p["libp2p Swarm"]
         Libp2p --> Gossip["GossipSub"]
-        Libp2p --> Sync["Req/Resp Sync"]
-        Libp2p --> Reputation["Peer Reputation"]
+        Libp2p --> Reputation["Peer Scoring"]
     end
 ```
 
-### Core Modules
+---
 
-| Module | Path | Purpose |
-| :--- | :--- | :--- |
-| Core types | `src/core/` | Blocks, transactions, accounts, addresses, chain config, governance |
-| Chain | `src/chain/` | Blockchain state, `ChainActor`, snapshots, finality wiring |
-| Consensus | `src/consensus/` | PoW, PoS, PoA, BLS finality, QC, slashing |
-| Execution | `src/execution/` | Deterministic state transitions and BudZKVM contract execution |
-| Networking | `src/network/` | libp2p node, protocol messages, sync codec, peer scoring |
-| Mempool | `src/mempool/` | Fee ordering, nonce queues, anti-spam checks |
-| Storage | `src/storage/` | sled-backed persistence, schema versioning, integrity checks |
-| RPC | `src/rpc/` | JSON-RPC server and `bud_` methods |
-| Docs | `docs/tr/book/`, `docs/en/book/` | Technical book covering architecture, consensus, storage, networking, and RPC |
+## 🧩 Research Prototype Features (v0.1)
+
+### 🌍 Multi-Consensus Settlement (Model B)
+An implementation of a **Byzantine-Hardened Settlement Layer** designed for network chaos:
+- **Registry-First Approach**: Validly structured domain commitments are archived for deterministic replay and auditability, while canonical state application is gated by verification, ordering, and conflict checks.
+- **Byzantine Resilience**: Global state convergence verified via an 18-test "Chaos Matrix" under simulated partitions and delays.
+- **Equivocation Immunity**: Protocol-level detection and global freezing of domains that produce conflicting commitments.
+- **Idempotent Processing**: Identical commitments produce the same state root regardless of arrival order.
+
+### 🛡️ Post-Quantum Readiness (Experimental)
+- Research into Dilithium-based checkpoint attestations.
+- `FinalityCert` logic requiring verified `QC_BLOB` metadata.
+- PQ-fault-proof infrastructure for invalid attestation detection.
+
+### ⚙️ BudZKVM Execution (In-Progress)
+- Research into STARK-proven contract execution inside the L1 path.
+- Gas-limited deterministic VM execution (Prototype).
+- Atomic rejection of invalid bytecode or failed proofs.
+
+### 🌐 Networking & Resilience
+- **libp2p Integration**: Robust P2P transport with peer reputation.
+- **Operational Resilience**: Anti-spam mempool, fee-based ordering, and database integrity audits.
+- **Deterministic Restarts**: State recovery from persistent Sled-backed storage.
 
 ---
 
-## ⚡ Quick Start
+## 🧪 Verification & Test Coverage
+
+Budlum Core is built with a "Test-First" engineering mindset. The architecture is validated against extreme edge cases and adversarial scenarios.
+
+- **Total Tests**: `263` (All passing ✅)
+- **Byzantine Chaos Matrix**: 18 specific scenarios covering network partitions, packet duplication, out-of-order delivery, and domain equivocation.
+- **Distributed Devnet Simulation**: Verified gossip convergence across a 5-node `libp2p` mesh with isolated storage.
+- **Persistence Recovery**: State and pending buffers are recovered after simulated node crashes during pending commitment cycles.
+- **Shared-State Safety**: Deterministic double-spend protection across heterogeneous consensus domains.
+
+To run the full suite:
+```bash
+nix develop --command cargo test
+```
+
+---
+
+## ⚡ Quick Start (Local Devnet Only)
 
 ### Requirements
-
 - Rust `1.70+`
-- `protoc`
+- `protoc` (Protocol Buffers)
 
 ### Build
-
 ```bash
 git clone https://github.com/rade/budlum-core.git
 cd budlum-core
 cargo build --release
 ```
 
-### Run a Node
-
-#### ⛏️ Proof of Work
+### Run a Research Node
+Budlum is currently designed for local experimentation. Use the following flags to test different consensus adapters:
 
 ```bash
+# Proof of Work
 ./target/release/budlum-core --consensus pow --difficulty 3 --port 4001
-```
 
-#### 🧠 Proof of Stake
-
-```bash
+# Proof of Stake
 ./target/release/budlum-core --consensus pos --min-stake 5000 --db-path ./data/pos_node
 ```
 
-#### 🏛️ Proof of Authority
+---
 
-```bash
-./target/release/budlum-core --consensus poa --config config/devnet.toml
-```
+## 🗺️ Research Roadmap
 
-#### 🔗 Join a Network
-
-```bash
-./target/release/budlum-core --bootstrap /ip4/127.0.0.1/tcp/4001/p2p/12D3K...
-```
-
-#### ⚙️ Use a Network Config
-
-```bash
-./target/release/budlum-core --config config/devnet.toml
-./target/release/budlum-core --config config/testnet.toml
-```
-
-Mainnet startup requires a real bootnode. Configure `[bootnodes].addresses` in `config/mainnet.toml` or pass `--bootstrap`.
+- [ ] **ZKVM Optimizations**: Improving STARK proof generation performance.
+- [ ] **Formal Verification**: Researching TLA+ models for settlement convergence.
+- [ ] **Privacy Layer**: Exploring Monero-style and Zcash-style privacy primitives.
+- [ ] **AI Execution Layer**: Investigating AI-assisted protocol automation and risk scoring.
+- [ ] **Economic Hardening**: Finalizing validator slashing and reward mechanics.
 
 ---
 
-## 🧩 Core Features
+## 🤝 Contributing & Research
 
-### 🌍 Byzantine-Hardened Multi-Consensus Settlement
+Budlum is built for protocol researchers and developers who like looking under the hood. We welcome technical reviews, protocol design discussions, and security feedback.
 
-Unlike traditional monolithic chains or standard modular rollups, Budlum implements a **Hardened Multi-Consensus Settlement Architecture**.
-- **Concurrent Domains**: PoW, PoS, and PoA networks operate simultaneously as isolated domains.
-- **Byzantine Resilience (Model B)**: A buffered settlement layer ensures global state convergence even under extreme network chaos (partitions, delays, and out-of-order message propagation).
-- **Global Settlement**: A unified settlement layer aggregates all domain commitments into a deterministic Global Block Header.
-- **Equivocation Protection**: Automatic detection and global freezing of consensus domains that produce conflicting states.
-- **Cross-Domain Automation**: An integrated Bridge Lifecycle trustlessly mints assets via the settlement layer with cryptographic Merkle proof validation.
-
-### 🛡️ Multi-Consensus Hardening (Model B)
-
-Budlum's settlement layer is designed for high-availability distributed environments:
-- **Registry-First Idempotency**: All valid domain commitments are archived in a deterministic registry, ensuring identical Merkle roots across all honest nodes regardless of message arrival order.
-- **Buffered State Progression**: Commitments are applied to the canonical state in strict chronological order. Out-of-order heights are buffered and automatically processed as soon as the sequence gap is filled.
-- **Stale Nonce Protection**: Cross-domain state updates are validated against local account nonces; stale or double-spend commitments are archived but never applied to the state.
-- **Convergence Verification**: Hardened by an 18-test "Chaos Matrix" that validates state parity across independent nodes under simulated Byzantine network conditions.
-
-### 🔗 Pluggable Consensus
-
-- PoW with SHA3 Hashcash
-- PoS with VRF-based proposer selection
-- PoA with validator rotation
-- BLS finality layer
-- Slashing checks for unsafe validator behavior
-- PQ-ready QC / Dilithium attestation path
-
-### 🛡️ PQ-QC Finality Enforcement
-
-- Validator identity includes Dilithium public keys for post-quantum checkpoint attestations.
-- `FinalityCert` acceptance requires a verified `QC_BLOB` for the same checkpoint.
-- Certificates that arrive before their QC blob are queued and retried after `QcBlob` import.
-- PQ attestations sign `epoch`, `checkpoint_height`, `checkpoint_hash`, and `validator_index`.
-- Validator snapshots are tracked by epoch and rebuilt during restart replay for historical verification.
-- `QcFaultProof` is available over P2P; valid invalid-Dilithium proofs invalidate affected finality/QC metadata without directly slashing validators.
-- ZK-backed slashable QC proofs are versioned in the data model but remain future scope.
-
-### ⚙️ Deterministic Execution
-
-- Replay-safe state transitions
-- Slot-based timestamps
-- Fixed-point economic calculations
-- Deterministic restart and reorg recovery
-- Atomic block application
-- Canonical state root tracking
-
-### 🧠 BudZKVM Execution
-
-- Contract execution inside the L1 path
-- `TransactionType::ContractCall` support
-- Gas-limited deterministic VM execution
-- STARK proof generation and verification
-- Invalid bytecode, failed proof, or VM failure rejects the transaction atomically
-
-### 🌐 Networking
-
-- libp2p transport
-- GossipSub block and transaction broadcast
-- Request/response sync protocol
-- Headers-first synchronization
-- Snapshot-based fast sync path
-- Peer reputation and protocol-level DoS protection
-- Chain ID and protocol-version isolation
-
-### 🛡️ Production Hardening
-
-- Anti-spam mempool
-- Fee-based transaction ordering
-- Replace-by-fee support
-- Sequential nonce queues
-- Database integrity checks with `--check-db`
-- Index repair path with `--repair-db`
-- Atomic persistence
-- Snapshot export helpers
-- Reorg-safe canonical metadata
-- Payload size and signature validation
-
----
-
-## 🕶️ Privacy & Private Execution Roadmap
-
-Budlum is designed to grow toward privacy-native Layer-1 experimentation.
-
-Planned research directions:
-
-- **Privacy layer** inspired by Monero-style sender/receiver privacy and Zcash-style zero-knowledge proofs
-- **Private transaction types** for shielded transfers and selective disclosure
-- **Custom private VM** for confidential execution workflows
-- **Proof-carrying execution** where private computation can be verified without exposing internal state
-- **Privacy-aware mempool rules** to reduce metadata leakage
-- **Auditable privacy primitives** with explicit cryptographic boundaries
-
-The goal is not to clone Monero or Zcash. The goal is to make Budlum a clean Rust playground for privacy-preserving L1 design.
-
----
-
-## 🤖 AI Execution Layer Roadmap
-
-Budlum also leaves room for future AI-assisted protocol infrastructure.
-
-Possible directions:
-
-- AI-assisted transaction simulation and risk scoring
-- Intelligent mempool filtering under spam conditions
-- Automated state anomaly detection
-- AI-guided validator operations and monitoring
-- Protocol research agents for testing consensus and reorg scenarios
-- Custom backend services running alongside the node for analysis, orchestration, and developer tooling
-
-This layer is planned as an optional extension. Core consensus and execution must remain deterministic, auditable, and reproducible.
-
----
-
-## 🔧 CLI Reference
-
-Usage:
-
-```bash
-cargo run -- [OPTIONS]
-```
-
-| Flag | Description | Default |
-| :--- | :--- | :--- |
-| `--consensus <TYPE>` | `pow`, `pos`, `poa` | `pow` |
-| `--network <NAME>` | `mainnet`, `testnet`, `devnet` | `devnet` |
-| `--config <PATH>` | TOML config file | `None` |
-| `--rpc-host <ADDR>` | JSON-RPC listen address | `127.0.0.1` |
-| `--rpc-port <PORT>` | JSON-RPC listen port | `8545` |
-| `--port <PORT>` | P2P listen port | Network default |
-| `--db-path <PATH>` | Database directory | `./data/budlum.db` |
-| `--difficulty <N>` | PoW mining difficulty | `2` |
-| `--min-stake <AMT>` | PoS minimum stake | `1000` |
-| `--validator-address` | Address to mine/validate for | `None` |
-| `--bootstrap <ADDR>` | Peer multiaddr to join | `None` |
-| `--check-db` | Run database integrity audit | `false` |
-| `--repair-db` | Rebuild indexes from raw block data | `false` |
-
----
-
-## 📚 Documentation
-
-Full technical documentation lives in:
-
-👉 Turkish: [`docs/tr/book/README.md`](docs/tr/book/README.md)
-
-👉 English: [`docs/en/book/README.md`](docs/en/book/README.md)
-
-Includes:
-
-- Architecture deep dive
-- Core block and transaction model
-- Consensus design
-- Cryptography and signatures
-- Networking protocols
-- Storage and snapshots
-- JSON-RPC API
-- Chaos engineering notes
-- Benchmark results
-
----
-
-## 🛠️ Development
-
-### Run Tests
-
-```bash
-cargo test
-```
-
-With Nix:
-
-```bash
-nix develop --command cargo test
-```
-
-### Format & Lint
-
-```bash
-cargo fmt
-cargo clippy
-```
-
----
-
-## 🧠 Use Cases
-
-- Build custom Layer-1 chains
-- Experiment with consensus algorithms
-- Research deterministic execution
-- Prototype ZK-native systems
-- Explore privacy-preserving chain design
-- Develop custom private VM concepts
-- Build chain-specific backend services
-- Study real-world blockchain architecture in Rust
-
----
-
-## 🗺️ Roadmap
-
-- [ ] ZKVM optimizations
-- [ ] Parallel execution engine
-- [ ] Multi-chain interoperability
-- [ ] Advanced governance modules
-- [ ] Privacy layer for shielded transactions
-- [ ] Private/custom VM execution path
-- [ ] AI-assisted execution layer
-- [ ] Operator backend and analytics services
-- [ ] Public devnet and validator onboarding
-
----
-
-## 🤝 Contributing
-
-Budlum is early, experimental, and built for people who like looking under the hood.
-
-Ways to help:
-
-- ⭐ Star the repo
-- 🍴 Fork and build your own chain variant
-- 🧪 Run tests and report issues
-- 📚 Improve docs
-- 🧠 Open protocol design discussions
-- 🔐 Review privacy, consensus, and VM ideas
-
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
-
-For security-sensitive reports, use [`SECURITY.md`](SECURITY.md) instead of opening a public issue.
-
-Pull requests are welcome.
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before participating. For security-sensitive reports, please use [`SECURITY.md`](SECURITY.md).
 
 ---
 
