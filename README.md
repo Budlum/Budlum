@@ -1,17 +1,19 @@
 # ⚡ Budlum Core
 
-> **An experimental research framework for Layer-1 blockchain design: modular, deterministic, and multi-consensus native.**
+> Build your own Layer-1 blockchain: modular, deterministic, privacy-ready, and ZKVM-native.
+
+Budlum Core is a Rust-based Layer-1 blockchain framework for engineers, protocol researchers, and builders who want a real chain core they can inspect, modify, and extend.
 
 ---
 
 > [!CAUTION]
-> **Experimental Research Prototype (v0.1-settlement-prototype)**
->
+> ### Experimental Research Prototype (v0.1-settlement-prototype)
 > Budlum Core is currently in an early research and development phase. The codebase is provided for architectural review, protocol experimentation, and educational purposes. It is **NOT** production-ready, has not been audited, and should **NOT** be used for any financial transactions or production-grade applications.
+> 
+> For more technical details and active research, please check the [`feat/mutlic`](https://github.com/rade/budlum-core/tree/feat/mutlic) branch.
 
 ---
 
-Budlum Core is a Rust-based Layer-1 blockchain framework designed for engineers and protocol researchers who want to explore modular consensus, deterministic state settlement, and cross-domain interoperability.
 
 If this project helps your research, please support it:
 ⭐ **Star the repo** | 🍴 **Fork it** | 🧠 **Open a discussion**
