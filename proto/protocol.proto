@@ -95,6 +95,7 @@ message ProtoNetworkMessage {
         ProtoGlobalHeader global_header = 22;
         ProtoCrossDomainMessage cross_domain_message = 23;
         ProtoVerifiedDomainCommitment verified_domain_commitment = 24;
+        ProtoSlashingEvidence slashing_evidence = 25;
     }
 }
 

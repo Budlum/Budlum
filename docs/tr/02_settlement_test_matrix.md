@@ -29,7 +29,7 @@ graph TD
         Buffer[Bekleme Tamponu]
         Verifier[Kesinlik Doğrulayıcı]
         State[Küresel Hesap Durumu]
-        Storage[(Sled DB Kalıcılık)]
+        Storage[(Storage Trait + Atomic Batch)]
     end
 
     D1 -- "Taahhüt + Kanıt" --> P2P[GossipSub Mesh]
@@ -44,6 +44,7 @@ graph TD
 
     Verifier -- "Eşdeğerlik Tespit Edildi" --> Freeze[Domaini Küresel Dondur]
     Freeze --> Registry
+    Registry --> Bond[Operatör Bond'u]
 ```
 
 ## 3. Mevcut Riskler ve Sınırlamalar
@@ -51,19 +52,22 @@ graph TD
 ### Riskler
 - **Erken Aşama Adapterlar:** Kesinlik kanıtı adapterları (PoS/BFT), tam kriptografik BLS/Ed25519 doğrulaması yerine şimdilik üst düzey imza eşiği mantığını kullanmaktadır.
 - **Ağ Ölçeği:** Kontrollü bir harness içinde 5 düğümle test edilmiş olsa da, yüksek gecikmeli 100+ düğüm altındaki davranış henüz benchmark edilmemiştir.
-- **Ekonomik Güvenlik:** Kesinleşmiş bir ekonomik slashing modelinin eksikliği, Bizans davranışı için şimdilik finansal bir caydırıcılık olmadığı, sadece protokol düzeyinde izolasyon sağlandığı anlamına gelir.
+- **Ekonomik Güvenlik:** Validator slashing ve ödüller devnet seviyesindeki PoS akışları için uygulanmıştır; domain registration artık operatör kimliği ve bond gerektirir. Mainnet seviyesinde yönetişim, bond boyutlandırması ve audit incelemesi hâlâ gereklidir.
 
 ### Sınırlamalar
-- **Üretime Hazır Değil:** Kod tabanı profesyonel güvenlik denetimleri gerektirir.
+- **Kontrollü Public Devnet'e Hazır:** Mevcut kod açık deneysel uyarılarla public devnet çalıştırabilir.
+- **Mainnet'e Hazır Değil:** Kod tabanı mainnet öncesi profesyonel güvenlik denetimleri, operasyonel sertleştirme, fuzzing ve API/error cleanup gerektirir.
 - **Resmi Doğrulama:** Konsensüs yakınsaması için TLA+ veya resmi kanıtlar bulunmamaktadır.
-- **Kamuya Açık Testnet:** Şimdilik yerel devnet simülasyon harness'ları ile sınırlıdır.
-- **Validator Ekonomisi:** Küresel katman için ödül dağıtımı ve validator seçimi henüz uygulanmamıştır.
+- **Public Testnet Kapsamı:** Public devnet uygundur; audited production/mainnet deployment uygun değildir.
+- **Structured Errors:** `BudlumError` vardır ve kritik execution path'leri bunu kullanır; fakat birkaç API'de `Result<T, String>` uyumluluğu korunmaktadır.
 
-## 4. Budlum Core v0.1 — Çoklu Konsensüs Yerleşim Prototipi
-Deponun mevcut durumu **v0.1-settlement-prototype** sürümünü temsil etmektedir.
+## 4. Budlum Core v0.1 — Kontrollü Public Devnet Adayı
+Deponun mevcut durumu **kontrollü public devnet adayıdır**; audited mainnet implementasyonu değildir.
 
 **Temel Başarılar:**
 - [x] Heterojen domainler için deterministik küresel durum.
 - [x] Bizans eşdeğerlik bağışıklığı (Model B).
-- [x] Kalıcı sırasız yürütme tamponlaması (Out-of-order buffering).
+- [x] Taahhüt + domain yükseklik/hash güncellemeleri için atomik settlement kalıcılığı.
 - [x] Dağıtık düğüm yakınsaması doğrulandı.
+- [x] Slashing evidence gossip ve blok dahil etme akışı.
+- [x] Devnet seviyesinde PoS slashing/reward execution.

@@ -206,11 +206,11 @@ VM panic, out-of-gas, malformed bytecode veya proof verification failure durumun
 
 ---
 
-### Fonksiyon: `apply_block` (Blok Seviyesi State Determinism)
+### Fonksiyon: `apply_block_checked` ve legacy `apply_block`
 
-`apply_transaction` sadece tek bir işlemi uygularken, `apply_block` koca bir bloğun tüm işlemlerini sırayla işleterek state'i (bakiye durumunu) bir sonraki evreye geçirir.
+`apply_transaction` sadece tek bir işlemi uygularken, `apply_block_checked` koca bir bloğun tüm işlemlerini sırayla işleterek state'i bir sonraki evreye geçirir.
 
-**Güvenlik ve Determinism Kuralı:** Mainnet Hardening kapsamında, bu fonksiyon artık **hataları yutmaz**. `apply_block` işlemi bir `Result<(), String>` döner. Eğer blok içindeki tek bir işlem dahi (yetersiz bakiye veya hatalı nonce sebebiyle) `apply_transaction` aşamasında başarısız olursa, blok anında reddedilir ve süreç iptal edilir.
+**Güvenlik ve Determinism Kuralı:** Mainnet Hardening kapsamında, kritik execution path artık **hataları yutmaz**. `apply_block_checked` işlemi `BudlumResult<()>` döner ve yapılandırılmış `BudlumError` taşır. Geriye dönük uyumluluk için legacy `apply_block` wrapper'ı hâlâ `Result<(), String>` döner. Eğer blok içindeki tek bir işlem dahi başarısız olursa, blok anında reddedilir ve süreç iptal edilir.
 Ayrıca node ilk başlatılırken (`init` süreci) diskten okunan eski bloklar `apply_block` ile state'e uygulanırken bir hata alınırsa, node sessizce bozuk state ile ayağa kalkmak yerine **`std::process::exit(1)` ile kontrollü bir şekilde çöker (hard fail)**. Bu sayede veritabanı tutarsızlığı önlenir.
 
 BudZKVM için aynı kural geçerlidir: contract execution fail olursa blok seviyesi state transition da fail eder. Üretilen bloklarda contract tx ancak VM execution + proof verification başarılıysa yer alır ve `state_root` bu başarılı execution sonrasındaki hesap state'inden hesaplanır.

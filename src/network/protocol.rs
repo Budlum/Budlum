@@ -126,6 +126,7 @@ pub enum NetworkMessage {
 
     DomainCommitment(crate::domain::DomainCommitment),
     VerifiedDomainCommitment(crate::domain::VerifiedDomainCommitment),
+    SlashingEvidence(crate::consensus::pos::SlashingEvidence),
     GlobalHeader(crate::settlement::GlobalBlockHeader),
     CrossDomainMessage(crate::cross_domain::CrossDomainMessage),
 }

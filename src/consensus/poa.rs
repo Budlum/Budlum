@@ -2,6 +2,7 @@ use super::{ConsensusEngine, ConsensusError};
 use crate::core::account::{AccountState, Validator};
 use crate::core::address::Address;
 use crate::core::block::Block;
+use tracing::{info, warn};
 #[derive(Debug, Clone)]
 pub struct PoAConfig {
     pub block_period: u64,
@@ -100,7 +101,7 @@ impl ConsensusEngine for PoAEngine {
         let expected_signer_addr = self.prepare_common(block, state)?;
 
         if let Some(expected_signer_addr) = expected_signer_addr {
-            println!(
+            info!(
                 "PoA: Block {} should be proposed by: {}",
                 block.index, expected_signer_addr
             );
@@ -110,13 +111,13 @@ impl ConsensusEngine for PoAEngine {
                 let our_addr = Address::from(kp.public_key_bytes());
                 if our_addr == expected_signer_addr {
                     block.sign(kp);
-                    println!(
-                        " PoA: Block {} signed by us ({})",
+                    info!(
+                        "PoA: Block {} signed by us ({})",
                         block.index, expected_signer_addr
                     );
                 }
             } else {
-                println!(" PoA: No keypair configured, cannot sign block");
+                warn!("PoA: No keypair configured, cannot sign block");
             }
         }
 
@@ -124,7 +125,7 @@ impl ConsensusEngine for PoAEngine {
             block.hash = block.calculate_hash();
         }
 
-        println!("PoA: Block {} prepared", block.index);
+        info!("PoA: Block {} prepared", block.index);
         Ok(())
     }
 
@@ -171,7 +172,7 @@ impl ConsensusEngine for PoAEngine {
                 return Err(ConsensusError("Invalid block signature".into()));
             }
 
-            println!(
+            info!(
                 "PoA: Block {} signature verified (producer: {})",
                 block.index, producer
             );

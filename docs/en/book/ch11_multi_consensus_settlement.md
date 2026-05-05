@@ -27,11 +27,11 @@ This formula enforces the **"Forward-only and Greater-than"** nonce rule, making
 
 ## 3. Practical Implementation: Coding the Settlement Engine
 
-### Step 1: Commitment Acceptance and Equivocation Detection
+### Step 1: Commitment Acceptance, Equivocation Detection, and Atomic Persistence
 
 ```rust
 pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Result<(), String> {
-    let domain = self.validate_domain_commitment_metadata(&commitment)?;
+    self.validate_domain_commitment_metadata(&commitment)?;
     
     if let Some(existing) = self.domain_commitment_registry.find_by_height(
         commitment.domain_id,
@@ -43,11 +43,17 @@ pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Resu
             d_mut.status = DomainStatus::Frozen;
             return Err("Equivocation detected! Domain frozen.".into());
         }
-        return Ok(()); // Idempotency
+        return Ok(());
     }
 
     self.domain_commitment_registry.insert(commitment.clone())?;
-    self.apply_pending_commitments(commitment.domain_id)?;
+    let updated_domains = self.apply_pending_commitments(commitment.domain_id)?;
+
+    if let Some(store) = &self.storage {
+        store.save_domain_commitment_batch(&commitment, &updated_domains)
+            .map_err(|e| format!("Failed to persist settlement batch: {}", e))?;
+    }
+
     Ok(())
 }
 ```
@@ -55,7 +61,9 @@ pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Resu
 ### Step 2: Asynchronous Buffering (The Apply Loop)
 
 ```rust
-fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<(), String> {
+fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<Vec<ConsensusDomain>, String> {
+    let mut updated_domains = Vec::new();
+
     loop {
         let last_height = self.domain_registry.get(domain_id).unwrap().last_committed_height;
         let next_height = last_height + 1;
@@ -69,13 +77,21 @@ fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<(), Strin
                 }
             }
             // ... state application logic ...
+            updated_domains.push(self.domain_registry.get(domain_id).unwrap().clone());
         } else {
             break; 
         }
     }
-    Ok(())
+
+    Ok(updated_domains)
 }
 ```
+
+The important production-hardening detail is that commitment persistence and domain height/hash persistence are written through one storage batch. A restart should not observe "commitment exists, height did not move" as a durable state.
+
+### Step 3: Domain Operators and Slashing Evidence Gossip
+
+Domain registration now carries an operator address and minimum bond, creating a concrete economic hook for frozen domains. Validator-level equivocation is handled separately: PoS engines generate `SlashingEvidence`, nodes gossip it as `NetworkMessage::SlashingEvidence`, and block producers include pending evidence so execution can slash stake deterministically.
 
 ## 4. Byzantine Chaos Matrix: Proving the Truth
 
@@ -89,6 +105,7 @@ The settlement layer remains deterministic across all of the following chaos sce
 1.  **Gossip Convergence:** Data arriving in different orders (gossip) eventually reaches the same `GlobalBlockHeader` hash (excluding timestamp) on all honest nodes.
 2.  **Persistence Recovery:** Buffered (pending) blocks or "Frozen" domain statuses are fully restored from disk even after a node crash.
 3.  **Adversarial Finality:** Rejection of attacks made with incorrect PoS/PoW proofs or insufficient confirmation depths.
+4.  **Atomic Recovery:** Commitment insertions and domain height updates survive restart as one durable settlement transition.
 
 ## Phase 3: Distributed Devnet Simulation (Distributed Test Harness)
 
@@ -131,4 +148,4 @@ async fn test_order_independence() {
 
 ## 5. Conclusion
 
-Budlum's Multi-Consensus Settlement Layer is a deterministic haven against network turmoil and Byzantine attacks, providing a unified foundation for the future of decentralized systems.
+Budlum's Multi-Consensus Settlement Layer is now a controlled public devnet candidate: deterministic under Byzantine settlement tests, economically wired for devnet-grade slashing and rewards, and still explicitly awaiting audit, operational hardening, and formal verification before mainnet.

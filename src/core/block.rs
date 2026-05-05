@@ -3,6 +3,7 @@ use crate::core::hash::hash_fields_bytes;
 use crate::core::transaction::Transaction;
 use crate::crypto::primitives::{verify_signature, KeyPair};
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
 use crate::consensus::pos::SlashingEvidence;
@@ -242,10 +243,13 @@ impl Block {
         self.hash = hex::encode(binary_hash);
         let signature = keypair.sign(&binary_hash);
         self.signature = Some(signature.to_vec());
-        println!(
+        info!(
             "Block {} signed by {}",
             self.index,
-            self.producer.as_ref().unwrap()
+            self.producer
+                .as_ref()
+                .map(|producer| producer.to_string())
+                .unwrap_or_default()
         );
     }
 
@@ -253,14 +257,14 @@ impl Block {
         let producer_addr = match &self.producer {
             Some(p) => p,
             None => {
-                println!("Block has no producer");
+                warn!("Block has no producer");
                 return false;
             }
         };
         let signature = match &self.signature {
             Some(s) => s,
             None => {
-                println!("Block has no signature");
+                warn!("Block has no signature");
                 return false;
             }
         };
@@ -272,11 +276,11 @@ impl Block {
         }
         match crate::crypto::primitives::verify_signature(&binary_hash, signature, public_key) {
             Ok(()) => {
-                println!("Block {} signature verified", self.index);
+                info!("Block {} signature verified", self.index);
                 true
             }
             Err(e) => {
-                println!("Signature verification failed: {}", e);
+                warn!("Signature verification failed: {}", e);
                 false
             }
         }
@@ -287,7 +291,7 @@ impl Block {
             None => return false,
         };
         if producer != expected_pubkey {
-            println!(
+            warn!(
                 "Wrong producer. Expected: {}, Got: {}",
                 expected_pubkey, producer
             );

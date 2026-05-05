@@ -11,12 +11,14 @@ The goal of Budlum is to create a **Universal Settlement Layer** that:
 - Enforces a single, unified global account state.
 - Ensures Byzantine fault tolerance at the settlement level.
 - Provides a "Registry-First" approach where all commitments are recorded before verification, ensuring out-of-order data resilience.
+- Persists commitment acceptance and domain height updates atomically so restart recovery cannot observe a half-committed settlement transition.
 
 ## 3. Consensus Domain Model
 A **Consensus Domain** is an independent blockchain or execution environment with its own rules.
 - **Identity:** Each domain has a unique `DomainId`.
 - **Kind:** Defines the consensus type (PoW, PoS, etc.).
-- **Registry:** The Settlement Layer tracks all active domains, their current heights, and their `ValidatorSetHash`.
+- **Operator Identity:** Each registered domain carries an operator address and minimum bond. Registrations without an operator bond are rejected.
+- **Registry:** The Settlement Layer tracks all active domains, their current heights, their operator bond, and their `ValidatorSetHash`.
 - **Adapters:** Each domain uses a specific `FinalityAdapter` to prove its state transitions to the Settlement Layer.
 
 ## 4. DomainCommitment Structure
@@ -52,19 +54,26 @@ Commitments are spread via a **Gossip Mesh** (`libp2p-gossipsub`).
 If a domain behaves maliciously (equivocation):
 - **Evidence:** The conflicting commitments are stored in the registry as proof.
 - **Global Freeze:** The domain's status is changed to `Frozen`. No further commitments from this domain will ever be accepted.
-- **Slashing:** The frozen status serves as a trigger for global slashing protocols.
+- **Slashing Trigger:** Frozen domains provide an economic penalty hook through the operator bond model.
+
+Validator-level equivocation is handled separately by PoS slashing evidence:
+- A node that detects double-signing stores `SlashingEvidence`.
+- Evidence is gossiped as a top-level `NetworkMessage::SlashingEvidence`.
+- Producers include pending evidence in later blocks, where state execution applies stake slashing.
 
 ## 10. Persistence and Crash Recovery
-The layer uses a persistent **Sled DB** to store:
+The layer currently uses a persistent **Sled DB** behind a `BlockchainStorage` trait. Values are written with binary serialization and legacy JSON reads are still tolerated during migration. The storage backend stores:
 - All domain commitments (verified and pending).
 - The current status of all domains.
 - The global state tree.
-- Node restart logic ensures that `pending_buffer` and `Frozen` statuses are restored immediately, preventing "equivocation-on-restart" attacks.
+- Atomic settlement batches covering commitment insert + domain height/hash updates.
+- Node restart logic ensures that pending commitments and `Frozen` statuses are restored immediately, preventing "equivocation-on-restart" attacks.
 
 ## 11. Current Limitations
-While functional, the current prototype has the following limitations:
-- **Not Production-Ready:** Security audits and performance optimizations are ongoing.
-- **Economic Model:** Validator slashing and reward economics are not yet finalized.
+The current repository is suitable for a controlled public devnet, but not for audited mainnet deployment:
+- **Audit Pending:** Security audits and performance hardening are still required.
+- **Operational Hardening:** RPC rate limiting/auth, Docker/systemd packaging, health checks, fuzzing, and full clippy cleanup are still open.
+- **Error Refactor:** Structured `BudlumError` exists and critical execution paths use it, but some public APIs still expose legacy `Result<T, String>` wrappers.
 - **Formal Verification:** The mathematical invariants have not yet been formally verified using TLA+ or similar tools.
 - **Early Adapters:** PoS and BFT adapters currently use simulated signature counts.
 

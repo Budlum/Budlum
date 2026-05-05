@@ -1,6 +1,7 @@
 use libp2p::PeerId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tracing::warn;
 pub const INVALID_BLOCK_PENALTY: i32 = -10;
 pub const INVALID_TX_PENALTY: i32 = -5;
 pub const OVERSIZED_MESSAGE_PENALTY: i32 = -3;
@@ -179,7 +180,7 @@ impl PeerManager {
     pub fn ban_peer(&mut self, peer_id: &PeerId) {
         let score = self.get_or_create(peer_id);
         score.banned_until = Some(Instant::now() + BAN_DURATION);
-        println!("Peer {} banned for {:?}", peer_id, BAN_DURATION);
+        warn!("Peer {} banned for {:?}", peer_id, BAN_DURATION);
     }
     pub fn is_banned(&self, peer_id: &PeerId) -> bool {
         self.peers

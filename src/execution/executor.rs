@@ -1,12 +1,20 @@
 use crate::core::account::AccountState;
 use crate::core::address::Address;
 use crate::core::transaction::{Transaction, TransactionType};
+use crate::error::{BudlumError, BudlumResult};
 use crate::execution::zkvm::{ZkVmExecutor, DEFAULT_CONTRACT_GAS_LIMIT};
 
 pub struct Executor;
 
 impl Executor {
     pub fn apply_transaction(state: &mut AccountState, tx: &Transaction) -> Result<(), String> {
+        Self::apply_transaction_checked(state, tx).map_err(|e| e.message().to_string())
+    }
+
+    pub fn apply_transaction_checked(
+        state: &mut AccountState,
+        tx: &Transaction,
+    ) -> BudlumResult<()> {
         if tx.from == Address::zero() {
             return Ok(());
         }
@@ -16,7 +24,10 @@ impl Executor {
         {
             let sender_account = state.get_or_create(&tx.from);
             if sender_account.balance < total_cost {
-                return Err("Insufficient balance".into());
+                return Err(BudlumError::validation(
+                    "insufficient_balance",
+                    "Insufficient balance",
+                ));
             }
         }
 
@@ -47,19 +58,25 @@ impl Executor {
             TransactionType::Unstake => {
                 let sender_start_balance = state.get_balance(&tx.from);
                 if sender_start_balance < tx.fee {
-                    return Err("Insufficient balance for fee".into());
+                    return Err(BudlumError::validation(
+                        "insufficient_fee_balance",
+                        "Insufficient balance for fee",
+                    ));
                 }
 
                 if let Some(validator) = state.get_validator_mut(&tx.from) {
                     if validator.stake < tx.amount {
-                        return Err("Insufficient stake".into());
+                        return Err(BudlumError::validation(
+                            "insufficient_stake",
+                            "Insufficient stake",
+                        ));
                     }
                     validator.stake = validator.stake.saturating_sub(tx.amount);
                     if validator.stake == 0 {
                         validator.active = false;
                     }
                 } else {
-                    return Err("Not a validator".into());
+                    return Err(BudlumError::validation("not_validator", "Not a validator"));
                 }
 
                 state
@@ -99,19 +116,29 @@ impl Executor {
                             let voter_stake =
                                 state.get_validator(&tx.from).map(|v| v.stake).unwrap_or(0);
                             if voter_stake == 0 {
-                                return Err("Only validators can vote in governance".into());
+                                return Err(BudlumError::validation(
+                                    "governance_voter_not_validator",
+                                    "Only validators can vote in governance",
+                                ));
                             }
 
                             if let Some(proposal) = state.governance.find_proposal_mut(proposal_id)
                             {
-                                proposal.add_vote(tx.from, voter_stake, vote_for)?;
+                                proposal
+                                    .add_vote(tx.from, voter_stake, vote_for)
+                                    .map_err(|e| {
+                                        BudlumError::validation("governance_vote_failed", e)
+                                    })?;
                                 tracing::info!(
                                     "Governance Vote: Proposal {} from {}",
                                     proposal_id,
                                     tx.from
                                 );
                             } else {
-                                return Err("Proposal not found".into());
+                                return Err(BudlumError::validation(
+                                    "proposal_not_found",
+                                    "Proposal not found",
+                                ));
                             }
                         } else {
                             // Likely a Proposal: [duration (8), ProposalType (...)]
@@ -120,8 +147,12 @@ impl Executor {
                             let duration = u64::from_le_bytes(dur_bytes);
 
                             let p_type: crate::core::governance::ProposalType =
-                                serde_json::from_slice(&tx.data[8..])
-                                    .map_err(|e| format!("Invalid proposal data: {}", e))?;
+                                serde_json::from_slice(&tx.data[8..]).map_err(|e| {
+                                    BudlumError::validation(
+                                        "invalid_proposal_data",
+                                        format!("Invalid proposal data: {}", e),
+                                    )
+                                })?;
 
                             let id = state.governance.create_proposal(
                                 tx.from,
@@ -139,7 +170,8 @@ impl Executor {
                 }
             }
             TransactionType::ContractCall => {
-                ZkVmExecutor::execute_bytecode(&tx.data, DEFAULT_CONTRACT_GAS_LIMIT)?;
+                ZkVmExecutor::execute_bytecode(&tx.data, DEFAULT_CONTRACT_GAS_LIMIT)
+                    .map_err(|e| BudlumError::validation("contract_execution_failed", e))?;
 
                 let sender = state.get_or_create(&tx.from);
                 sender.balance = sender.balance.saturating_sub(tx.fee);
@@ -155,13 +187,25 @@ impl Executor {
         transactions: &[Transaction],
         block_producer: Option<&Address>,
     ) -> Result<(), String> {
+        Self::apply_block_checked(state, transactions, block_producer)
+            .map_err(|e| e.message().to_string())
+    }
+
+    pub fn apply_block_checked(
+        state: &mut AccountState,
+        transactions: &[Transaction],
+        block_producer: Option<&Address>,
+    ) -> BudlumResult<()> {
         let mut total_fees: u64 = 0;
         for tx in transactions {
             if tx.from == Address::zero() {
                 continue;
             }
-            if let Err(e) = Self::apply_transaction(state, tx) {
-                return Err(format!("TX apply failed: {}", e));
+            if let Err(e) = Self::apply_transaction_checked(state, tx) {
+                return Err(BudlumError::validation(
+                    "transaction_apply_failed",
+                    format!("TX apply failed: {}", e),
+                ));
             }
             total_fees = total_fees.saturating_add(tx.fee);
         }

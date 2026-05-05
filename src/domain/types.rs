@@ -64,12 +64,24 @@ impl RootScheme {
     }
 }
 
+fn default_domain_operator() -> Option<Address> {
+    Some(Address::zero())
+}
+
+fn default_domain_operator_bond() -> u64 {
+    crate::domain::registry::MIN_DOMAIN_OPERATOR_BOND
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConsensusDomain {
     pub id: DomainId,
     pub kind: ConsensusKind,
     pub status: DomainStatus,
     pub domain_chain_id: u64,
+    #[serde(default = "default_domain_operator")]
+    pub operator: Option<Address>,
+    #[serde(default = "default_domain_operator_bond")]
+    pub operator_bond: u64,
     pub config_hash: Hash32,
     pub validator_set_hash: Hash32,
     pub finality_adapter: String,
@@ -85,6 +97,10 @@ pub struct ConsensusDomain {
 impl ConsensusDomain {
     pub fn is_active(&self) -> bool {
         self.status == DomainStatus::Active
+    }
+
+    pub fn has_operator_bond(&self, minimum_bond: u64) -> bool {
+        self.operator.is_some() && self.operator_bond >= minimum_bond
     }
 }
 

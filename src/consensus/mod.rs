@@ -50,6 +50,11 @@ pub trait ConsensusEngine: Send + Sync {
     fn load_state(&self, _storage: &crate::storage::db::Storage) -> Result<(), ConsensusError> {
         Ok(())
     }
+    fn drain_slashing_evidence(
+        &self,
+    ) -> Result<Vec<crate::consensus::pos::SlashingEvidence>, ConsensusError> {
+        Ok(Vec::new())
+    }
     fn consensus_type(&self) -> &'static str;
     fn info(&self) -> String;
     fn validate_timestamp(
@@ -109,9 +114,10 @@ pub trait ConsensusEngine: Send + Sync {
         if let Some(ancestor) = common_ancestor {
             let reorg_depth = current_chain.len() - ancestor.index as usize - 1;
             if reorg_depth > MAX_REORG_DEPTH {
-                println!(
-                    " Rejecting deep reorg: {} blocks (max: {})",
-                    reorg_depth, MAX_REORG_DEPTH
+                tracing::warn!(
+                    "Rejecting deep reorg: {} blocks (max: {})",
+                    reorg_depth,
+                    MAX_REORG_DEPTH
                 );
                 return false;
             }

@@ -1,13 +1,18 @@
 # ⚡ Budlum Core
 
-> **An experimental research framework for Layer-1 blockchain design: modular, deterministic, and multi-consensus native.**
+> **A controlled public-devnet candidate for Layer-1 blockchain research: modular, deterministic, and multi-consensus native.**
+
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/rade/budlum-core)
+[![Test Coverage](https://img.shields.io/badge/tests-263%2B-blue)](https://github.com/rade/budlum-core)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust Version](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
 ---
 
 > [!CAUTION]
-> **Experimental Research Prototype (v0.1-settlement-prototype)**
+> **Controlled Public Devnet Candidate (v0.1-devnet-candidate)**
 >
-> Budlum Core is currently in an early research and development phase. The codebase is provided for architectural review, protocol experimentation, and educational purposes. It is **NOT** production-ready, has not been audited, and should **NOT** be used for any financial transactions or production-grade applications.
+> Budlum Core is suitable for controlled public devnet experiments with clear risk disclaimers. It is **NOT** audited mainnet software, has not completed professional security review, and should **NOT** be used for financial transactions or production applications carrying real value.
 
 ---
 
@@ -22,11 +27,13 @@ If this project helps your research, please support it:
 
 Most blockchain frameworks are optimized for a single consensus worldview. Budlum is designed as a **Universal Settlement Layer** to research how heterogeneous networks (PoW, PoS, BFT) can achieve deterministic state convergence without centralized intermediaries.
 
-- 🔁 **Multi-Consensus Research**: Infrastructure for running parallel consensus domains on a unified settlement layer.
-- 🌉 **Cross-Domain Interoperability**: Experimental cryptographic bridge for asset movement between isolated domains.
+### Why Budlum?
+- 🔁 **Heterogeneous Settlement**: Infrastructure for running parallel consensus domains (PoW, PoS, BFT) on a unified settlement layer.
+- 🌉 **Trustless Interop**: Experimental cryptographic bridge for asset movement between isolated domains.
 - 🧠 **Deterministic Execution**: Research into replay-safe state transitions and consistent global headers.
 - 🧩 **Modular Core**: Decoupled consensus, networking, and execution layers for rapid prototyping.
-- 🌐 **Peer-to-Peer Foundation**: Built on `libp2p` with GossipSub and custom request/response synchronization.
+- 🌐 **P2P Native**: Built on `libp2p` with GossipSub and headers-first synchronization.
+- 🛠️ **Developer First**: Fully documented JSON-RPC API and 100% test-verified core paths.
 
 ---
 
@@ -67,13 +74,15 @@ graph TD
 
 ---
 
-## 🧩 Research Prototype Features (v0.1)
+## 🧩 Devnet Candidate Features (v0.1)
 
 ### 🌍 Multi-Consensus Settlement (Model B)
 An implementation of a **Byzantine-Hardened Settlement Layer** designed for network chaos:
 - **Registry-First Approach**: Validly structured domain commitments are archived for deterministic replay and auditability, while canonical state application is gated by verification, ordering, and conflict checks.
 - **Byzantine Resilience**: Global state convergence verified via an 18-test "Chaos Matrix" under simulated partitions and delays.
 - **Equivocation Immunity**: Protocol-level detection and global freezing of domains that produce conflicting commitments.
+- **Atomic Settlement Persistence**: Commitment insertions and domain height/hash updates are persisted in one storage batch.
+- **Domain Operator Bonds**: Domain registration requires operator identity and a minimum bond, creating an economic hook for frozen domains.
 - **Idempotent Processing**: Identical commitments produce the same state root regardless of arrival order.
 
 ### 🛡️ Post-Quantum Readiness (Experimental)
@@ -88,8 +97,16 @@ An implementation of a **Byzantine-Hardened Settlement Layer** designed for netw
 
 ### 🌐 Networking & Resilience
 - **libp2p Integration**: Robust P2P transport with peer reputation.
+- **Automatic Sync Start**: Handshake height gaps trigger headers-first sync, and `bud_syncing` reports real sync state.
+- **Slashing Evidence Gossip**: PoS double-sign evidence is gossiped as a network message and included by later producers.
 - **Operational Resilience**: Anti-spam mempool, fee-based ordering, and database integrity audits.
 - **Deterministic Restarts**: State recovery from persistent Sled-backed storage.
+
+### 💰 Devnet Validator Economics
+- Block rewards are distributed through the execution layer.
+- Verified slashing evidence deducts validator stake and marks validators as slashed.
+- Structured `BudlumError` exists and critical execution paths use checked APIs, while some compatibility wrappers still expose legacy string errors.
+- Logging in consensus, network, block, and blockchain paths uses `tracing` instead of raw stdout prints.
 
 ---
 
@@ -110,7 +127,7 @@ nix develop --command cargo test
 
 ---
 
-## ⚡ Quick Start (Local Devnet Only)
+## ⚡ Quick Start (Local / Controlled Public Devnet)
 
 ### Requirements
 - Rust `1.70+`
@@ -123,8 +140,8 @@ cd budlum-core
 cargo build --release
 ```
 
-### Run a Research Node
-Budlum is currently designed for local experimentation. Use the following flags to test different consensus adapters:
+### Run a Devnet Node
+Use the following flags to test different consensus adapters:
 
 ```bash
 # Proof of Work
@@ -134,21 +151,45 @@ Budlum is currently designed for local experimentation. Use the following flags 
 ./target/release/budlum-core --consensus pos --min-stake 5000 --db-path ./data/pos_node
 ```
 
+### 🛠️ Developer Experience (JSON-RPC)
+
+Interact with the node using standard JSON-RPC 2.0. Every core action is exposed via the `bud_` namespace.
+
+```bash
+# Get current block height
+curl -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"bud_blockNumber","params":[],"id":1}' http://localhost:8545
+
+# Get balance of a researcher address
+curl -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"bud_getBalance","params":["0x..."],"id":1}' http://localhost:8545
+```
+
+See the full [**Protocol Specification**](SPECIFICATION.md) for a detailed API reference.
+
 ---
 
 ## 🗺️ Research Roadmap
 
+- [x] **Devnet Economic Hardening**: Validator reward distribution and slashing execution.
+- [x] **Settlement Atomicity**: Atomic commitment + domain height/hash persistence.
+- [x] **Sync Hardening**: Handshake-triggered headers-first sync and real sync status reporting.
 - [ ] **ZKVM Optimizations**: Improving STARK proof generation performance.
 - [ ] **Formal Verification**: Researching TLA+ models for settlement convergence.
+- [ ] **Mainnet Operations**: RPC rate limiting/auth, Docker/systemd packaging, health checks, and production runbooks.
+- [ ] **Security Testing**: Fuzzing, expanded property tests, clippy cleanup, and external audit preparation.
 - [ ] **Privacy Layer**: Exploring Monero-style and Zcash-style privacy primitives.
 - [ ] **AI Execution Layer**: Investigating AI-assisted protocol automation and risk scoring.
-- [ ] **Economic Hardening**: Finalizing validator slashing and reward mechanics.
 
 ---
 
-## 🤝 Contributing & Research
+## 🤝 Join the Research
 
 Budlum is built for protocol researchers and developers who like looking under the hood. We welcome technical reviews, protocol design discussions, and security feedback.
+
+### How to Contribute:
+1. ⭐ **Star the Repository**: It helps other researchers find our work.
+2. 🍴 **Fork & Experiment**: Try building a custom `ConsensusKind`!
+3. 🧠 **Open a Discussion**: Have an idea for the Privacy Layer or AI Execution?
+4. 🐛 **Report Bugs**: Use GitHub Issues for any technical anomalies.
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before participating. For security-sensitive reports, please use [`SECURITY.md`](SECURITY.md).
 

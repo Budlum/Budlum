@@ -51,11 +51,10 @@ For contract calls, Budlum applies an all-or-nothing rule:
 3.  `ZkVmExecutor::execute_bytecode` decodes bytecode, runs the VM with a gas limit, produces a proof, and verifies the proof.
 4.  Only if every step succeeds are the fee and nonce committed.
 
-### `apply_block`
+### `apply_block_checked` and legacy `apply_block`
 
-Block-level application is deterministic. In Mainnet hardening, `apply_block` returns `Result<(), String>` and does not swallow errors. If any transaction fails, the whole block is rejected.
+Block-level application is deterministic. Critical execution paths use `apply_block_checked`, which returns `BudlumResult<()>` and carries structured `BudlumError` data. The legacy `apply_block` wrapper still returns `Result<(), String>` for compatibility. If any transaction fails, the whole block is rejected.
 
 ### `apply_slashing`
 
 Slashing applies economic justice. A validator that signs conflicting data can be removed or penalized according to evidence verified by the chain.
-

@@ -4,7 +4,7 @@ Bir blok zinciri sadece ağı ve konsensüsü değil, aynı zamanda verilerin na
 
 Veri katmanı üç ana bileşenden oluşur:
 
-1.  **Kalıcı Depolama (Storage):** Blokların ve durumun (State) diske yazıldığı yer. (Sled DB)
+1.  **Kalıcı Depolama (Storage):** Blokların ve durumun `BlockchainStorage` trait'i üzerinden diske yazıldığı yer; mevcut backend Sled'dir.
 2.  **Geçici Bellek (Mempool):** Henüz onaylanmamış işlemlerin RAM'de tutulduğu havuz.
 3.  **Veri Budama (Pruning):** Disk alanından tasarruf etmek için eski verilerin silinmesi ve sadece özetlerin (Snapshot) saklanması.
 

@@ -22,7 +22,8 @@ Ağdaki tüm iletişim bir enum (numaralandırılmış yapı) üzerinden geçer.
 4.  **Finalite Oyları (Prevote / Precommit)**: BLS tabanlı finalite katmanı oyları.
 5.  **FinalityCert**: Bir checkpoint'in finalize edildiğini kanıtlayan eşik imzalı sertifika.
 6.  **QC İstekleri (GetQcBlob / QcBlobResponse)**: Checkpoint'e ait Dilithium attestasyon blob'unun istenmesi, parse edilmesi ve doğrulanması için kullanılır.
-7.  **NewTip / Sync Mesajları**: Zincir senkronizasyonu için kullanılan `GetBlocksByHeight` vb. mesajlar.
+7.  **SlashingEvidence:** Validator double-sign kanıtını gossip eder; böylece sadece tespit eden node değil, diğer producer'lar da kanıtı bloğa dahil edebilir.
+8.  **NewTip / Sync Mesajları**: Zincir senkronizasyonu için kullanılan `GetBlocksByHeight` vb. mesajlar.
 
 *Tam Liste kaynak kodu üzerinden incelenebilir: `src/network/protocol.rs`*
 
@@ -39,7 +40,12 @@ Budlum Core iletişimi **GossipSub** üzerinden yürütür. Ancak her veri Gossi
 - **Protokol Kimliği:** `/budlum/sync/1.0.0`
 - **SyncCodec:** Veriyi `length-prefixed` (uzunluk ön ekli) şekilde serileştiren ve akış (stream) üzerinden güvenli aktaran özel bir yapı.
 - **Aktör Entegrasyonu:** `Node` asenkron döngüsü, gelen istekleri `ChainActor`'a iletir; böylece blok ve headerlar kilitlenme (lock) olmadan yüksek hızda servis edilir.
+- **Handshake ile Otomatik Sync:** Peer handshake içinde daha yüksek `best_height` bildirirse node otomatik `GetHeaders` başlatır ve gerçek senkronizasyon durumunu `bud_syncing` üzerinden döner.
 - **Neden?** GossipSub "herkese bağırır". Senkronizasyonda ise sadece bir kişiye "bana X ile Y arasındaki blokları ver" deriz. Bu ağ trafiğini %90 azaltırken, senkronizasyon hızını 5-10 kat artırır.
+
+## Slashing Evidence Gossip
+
+`NetworkMessage::SlashingEvidence`, PoS equivocation kanıtını mesh üzerinde taşır. Alıcı node kanıtı `ChainActor`'a submit eder, geçerli kanıtı yeniden yayar ve blok üreticileri pending kanıtları sonraki bloklara dahil ederek stake slashing'in deterministik uygulanmasını sağlar.
 
 ## Serileştirme (Serialization)
 

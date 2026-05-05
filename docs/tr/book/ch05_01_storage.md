@@ -1,6 +1,6 @@
-# Bölüm 5.1: Kalıcı Depolama (Sled DB)
+# Bölüm 5.1: Kalıcı Depolama
 
-Bu bölüm, verilerin RAM'den diske nasıl aktarıldığını, `sled` veritabanı yapısını ve "Key-Value" tasarımını analiz eder.
+Bu bölüm, verilerin RAM'den diske nasıl aktarıldığını, mevcut `sled` backend'ini ve storage katmanının neden bir trait arkasına alındığını analiz eder.
 
 Kaynak Dosya: `src/storage/db.rs`
 
@@ -8,7 +8,7 @@ Kaynak Dosya: `src/storage/db.rs`
 
 ## 1. Veri Yapıları: Sled Nedir?
 
-Budlum, `SQL` (Tablolar) yerine `NoSQL` (Key-Value) kullanır. Gömülü (Embedded) bir veritabanı olan **Sled** seçilmiştir.
+Budlum şu anda `SQL` yerine `NoSQL` key-value modeli kullanan gömülü **Sled** backend'i ile çalışır. Production hardening yaklaşımı trait-first ilerler: zincir mantığı `BlockchainStorage` arayüzüne bağımlıdır, `Storage` ise bunun mevcut implementasyonudur.
 
 ### Neden Sled?
 1.  **Gömülü:** Kurulum gerektirmez (PostgreSQL kurulumu gerekmez). Kodun içindedir. Programla birlikte derlenir.
@@ -23,6 +23,10 @@ pub struct Storage {
     db: Db, // Sled veritabanı handle'ı
 }
 ```
+
+### Trait: `BlockchainStorage`
+
+`BlockchainStorage`, zincir katmanının ihtiyaç duyduğu storage sözleşmesini tanımlar: blok okuma/yazma, canonical commit, domain commitment, consensus state, mempool kalıcılığı ve settlement batch'leri. Bu sınır, ileride RocksDB backend'ine geçişi consensus ve execution kodunu yeniden yazmadan mümkün kılar.
 
 ---
 
@@ -43,6 +47,8 @@ Veritabanında tablolar yoktur, sadece Anahtarlar (Key) ve Değerler (Value) var
 | **Canonical Height** | `CANONICAL_HEIGHT` | `u64` | Zincirin canonical ucunu gösteren yükseklik. |
 | **Son Blok**| `LAST` | `Hash` (String) | Zincirin en ucunu (Tip) gösteren işaretçidir. |
 
+Değerler artık kompaktlık ve hız için binary serialization ile yazılır. Geçiş sürecinde eski JSON kayıtları okunmaya devam eder; bu sayede mevcut araştırma veritabanları açılabilir.
+
 ---
 
 ## 3. Kod Analizi
@@ -56,7 +62,7 @@ pub fn commit_block(&self, block: &Block, state_root: &str) -> io::Result<()> {
     let mut batch = sled::Batch::default();
     
     // 1. Bloğu hazırla
-    let serialized = serde_json::to_vec(block)?;
+    let serialized = bincode::serialize(block)?;
     batch.insert(block.hash.as_bytes(), serialized);
     
     // 2. Yükseklik indexini hazırla
@@ -140,7 +146,11 @@ Budlum'da reorg artık sadece blok gövdelerini yazmakla kalmaz; canonical metad
 
 Bu önemli bir ayrıntıdır, çünkü aksi halde node yeniden başlatıldığında disk üzerinde eski canonical bilgi ile yeni chain body birbirine karışabilir.
 
-## 6. QC / Finality Temizleme Yardımcıları
+## 6. Atomik Settlement Batch
+
+`save_domain_commitment_batch`, domain commitment kaydı ile domain `last_committed_height` ve son hash güncellemelerini tek batch içinde yazar. Böylece node tam arada çökerse disk üzerinde "commitment yazıldı ama height ilerlemedi" gibi yarım settlement durumu kalıcı hale gelmez.
+
+## 7. QC / Finality Temizleme Yardımcıları
 
 PQ enforcement ile birlikte storage katmanına küçük ama önemli iki yardımcı daha eklenmiştir:
 

@@ -348,6 +348,13 @@ async fn main() {
 
     tokio::select! {
         _ = node.run() => {},
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Shutdown signal received");
+            match chain.flush_storage().await {
+                Ok(bytes) => tracing::info!("Storage flushed: {} bytes", bytes),
+                Err(e) => tracing::error!("Storage flush failed during shutdown: {}", e),
+            }
+        },
         _ = async {
             let mut stdin = tokio::io::BufReader::new(tokio::io::stdin());
             let mut line = String::new();

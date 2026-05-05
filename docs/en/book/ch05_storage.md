@@ -4,9 +4,8 @@ A blockchain is not only about networking and consensus. It also depends on how 
 
 The data layer has three main components:
 
-1.  **Persistent Storage:** Where blocks and state are written to disk, using Sled DB.
+1.  **Persistent Storage:** Where blocks and state are written to disk through the `BlockchainStorage` trait; the current backend is Sled.
 2.  **Temporary Memory (Mempool):** The in-memory pool where transactions wait before confirmation.
 3.  **Data Pruning:** Removing old data to save disk space while keeping compact summaries through snapshots.
 
 The way these components work together directly affects node performance and disk usage.
-

@@ -26,6 +26,11 @@ pub enum ChainCommand {
     HandleFinalityCert(FinalityCert, oneshot::Sender<Result<(), String>>),
     ImportQcBlob(QcBlob, oneshot::Sender<Result<(), String>>),
     HandleQcFaultProof(QcFaultProof, oneshot::Sender<Result<(), String>>),
+    SubmitSlashingEvidence(
+        crate::consensus::pos::SlashingEvidence,
+        oneshot::Sender<Result<(), String>>,
+    ),
+    DrainSlashingEvidence(oneshot::Sender<Vec<crate::consensus::pos::SlashingEvidence>>),
     CleanupMempool(oneshot::Sender<usize>),
     TryReorg(Vec<Block>, oneshot::Sender<Result<bool, String>>),
     GetChainInfo(oneshot::Sender<String>),
@@ -71,7 +76,10 @@ pub enum ChainCommand {
         oneshot::Sender<Result<(), String>>,
     ),
     BuildGlobalHeader(oneshot::Sender<Result<crate::settlement::GlobalBlockHeader, String>>),
-    GetDomainHeight(crate::domain::DomainId, oneshot::Sender<Result<u64, String>>),
+    GetDomainHeight(
+        crate::domain::DomainId,
+        oneshot::Sender<Result<u64, String>>,
+    ),
     RegisterBridgeAsset {
         asset_id: crate::cross_domain::AssetId,
         domain: crate::domain::DomainId,
@@ -117,6 +125,7 @@ pub enum ChainCommand {
         response: oneshot::Sender<Result<(), String>>,
     },
     SealGlobalHeader(oneshot::Sender<Result<crate::settlement::GlobalBlockHeader, String>>),
+    FlushStorage(oneshot::Sender<Result<usize, String>>),
 }
 
 #[derive(Clone)]
@@ -270,6 +279,26 @@ impl ChainHandle {
             .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
+    pub async fn submit_slashing_evidence(
+        &self,
+        evidence: crate::consensus::pos::SlashingEvidence,
+    ) -> Result<(), String> {
+        let (res_tx, res_rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::SubmitSlashingEvidence(evidence, res_tx))
+            .await;
+        res_rx
+            .await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn drain_slashing_evidence(&self) -> Vec<crate::consensus::pos::SlashingEvidence> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::DrainSlashingEvidence(tx)).await;
+        rx.await.unwrap_or_default()
+    }
+
     pub async fn try_reorg(&self, fork: Vec<Block>) -> Result<bool, String> {
         let (res_tx, res_rx) = oneshot::channel();
         let _ = self.tx.send(ChainCommand::TryReorg(fork, res_tx)).await;
@@ -392,16 +421,27 @@ impl ChainHandle {
         rx.await.unwrap_or_default()
     }
 
-    pub async fn get_domain_height(&self, domain_id: crate::domain::DomainId) -> Result<u64, String> {
+    pub async fn get_domain_height(
+        &self,
+        domain_id: crate::domain::DomainId,
+    ) -> Result<u64, String> {
         let (tx, rx) = oneshot::channel();
-        let _ = self.tx.send(ChainCommand::GetDomainHeight(domain_id, tx)).await;
-        rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+        let _ = self
+            .tx
+            .send(ChainCommand::GetDomainHeight(domain_id, tx))
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
-    pub async fn build_global_header(&self, _dummy: Option<()>) -> Result<crate::settlement::GlobalBlockHeader, String> {
+    pub async fn build_global_header(
+        &self,
+        _dummy: Option<()>,
+    ) -> Result<crate::settlement::GlobalBlockHeader, String> {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(ChainCommand::BuildGlobalHeader(tx)).await;
-        rx.await.unwrap_or_else(|_| Err("Actor dropped".to_string()))
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
     pub async fn get_consensus_domains(&self) -> Vec<crate::domain::ConsensusDomain> {
@@ -586,6 +626,13 @@ impl ChainHandle {
         rx.await
             .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
+
+    pub async fn flush_storage(&self) -> Result<usize, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(ChainCommand::FlushStorage(tx)).await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
 }
 
 pub struct ChainActor {
@@ -688,6 +735,12 @@ impl ChainActor {
                             .handle_qc_fault_proof(proof)
                             .map_err(|e| e.to_string()),
                     );
+                }
+                ChainCommand::SubmitSlashingEvidence(evidence, res_tx) => {
+                    let _ = res_tx.send(self.blockchain.submit_slashing_evidence(evidence));
+                }
+                ChainCommand::DrainSlashingEvidence(tx) => {
+                    let _ = tx.send(self.blockchain.drain_local_slashing_evidence());
                 }
                 ChainCommand::CleanupMempool(tx) => {
                     let removed = self.blockchain.mempool.cleanup_expired();
@@ -809,7 +862,10 @@ impl ChainActor {
                     let _ = res_tx.send(Ok(header));
                 }
                 ChainCommand::GetDomainHeight(domain_id, res_tx) => {
-                    let res = self.blockchain.domain_registry.get(domain_id)
+                    let res = self
+                        .blockchain
+                        .domain_registry
+                        .get(domain_id)
                         .map(|d| d.last_committed_height)
                         .ok_or_else(|| format!("Domain {} not found", domain_id));
                     let _ = res_tx.send(res);
@@ -883,6 +939,15 @@ impl ChainActor {
                 }
                 ChainCommand::SealGlobalHeader(res_tx) => {
                     let _ = res_tx.send(self.blockchain.seal_global_header(None));
+                }
+                ChainCommand::FlushStorage(res_tx) => {
+                    let res = self
+                        .blockchain
+                        .storage
+                        .as_ref()
+                        .map(|storage| storage.flush_batch().map_err(|e| e.to_string()))
+                        .unwrap_or(Ok(0));
+                    let _ = res_tx.send(res);
                 }
             }
         }

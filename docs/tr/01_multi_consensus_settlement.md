@@ -11,12 +11,14 @@ Budlum'un hedefi, aşağıdaki özelliklere sahip bir **Evrensel Yerleşim Katma
 - Tek bir birleşik küresel hesap durumunu (unified global account state) zorunlu kılmak.
 - Yerleşim seviyesinde Bizans Hata Toleransı (BFT) sağlamak.
 - Tüm taahhütlerin doğrulamadan önce kaydedildiği "Registry-First" (Önce Kayıt) yaklaşımıyla sırasız veri gelişine karşı dayanıklılık sağlamak.
+- Taahhüt kabulü ile domain yükseklik/hash güncellemelerini atomik olarak kalıcılaştırmak; böylece yeniden başlatma sırasında yarım kalmış settlement geçişi görülmez.
 
 ## 3. Konsensüs Domain Modeli
 Bir **Konsensüs Domaini**, kendi kurallarına sahip bağımsız bir blokzinciri veya yürütme ortamıdır.
 - **Kimlik:** Her domainin benzersiz bir `DomainId`'si vardır.
 - **Tür:** Konsensüs türünü (PoW, PoS vb.) tanımlar.
-- **Registry:** Yerleşim Katmanı tüm aktif domainleri, mevcut yüksekliklerini ve `ValidatorSetHash` değerlerini takip eder.
+- **Operatör Kimliği:** Her kayıtlı domain bir operatör adresi ve minimum bond taşır. Operatör bond'u olmayan kayıtlar reddedilir.
+- **Registry:** Yerleşim Katmanı tüm aktif domainleri, mevcut yüksekliklerini, operatör bond'unu ve `ValidatorSetHash` değerlerini takip eder.
 - **Adapterlar:** Her domain, durum geçişlerini Yerleşim Katmanı'na kanıtlamak için özel bir `FinalityAdapter` kullanır.
 
 ## 4. DomainCommitment Yapısı
@@ -52,19 +54,26 @@ Taahhütler, bir **Gossip Mesh** (`libp2p-gossipsub`) aracılığıyla yayılır
 Bir domain kötü niyetli davranırsa (eşdeğerlik/equivocation):
 - **Kanıt:** Çakışan taahhütler kayıt defterinde kanıt olarak saklanır.
 - **Küresel Dondurma (Global Freeze):** Domainin durumu `Frozen` olarak değiştirilir. Bu domainden gelecek sonraki hiçbir taahhüt asla kabul edilmez.
-- **Slashing:** Dondurulmuş durum, küresel slashing (ceza) protokolleri için bir tetikleyici görevi görür.
+- **Slashing Tetikleyicisi:** Dondurulmuş domainler, operatör bond modeli üzerinden ekonomik ceza için bağlayıcı sinyal üretir.
+
+Validator seviyesindeki equivocation ayrı bir PoS slashing kanıtı akışıyla ele alınır:
+- Double-sign tespit eden node `SlashingEvidence` üretir.
+- Kanıt, üst seviye `NetworkMessage::SlashingEvidence` olarak gossip edilir.
+- Blok üreticileri bekleyen kanıtları sonraki bloklara dahil eder; execution katmanı stake slashing'i uygular.
 
 ## 10. Kalıcılık ve Çökme Kurtarma (Persistence and Crash Recovery)
-Katman, aşağıdaki verileri saklamak için kalıcı bir **Sled DB** kullanır:
+Katman, şu an `BlockchainStorage` trait'i arkasında çalışan kalıcı bir **Sled DB** kullanır. Değerler binary serialization ile yazılır; geçiş sürecinde eski JSON kayıtları okunmaya devam eder. Storage backend şu verileri saklar:
 - Tüm domain taahhütleri (doğrulanmış ve bekleyen).
 - Tüm domainlerin mevcut durumları.
 - Küresel durum ağacı.
+- Taahhüt insert + domain yükseklik/hash güncellemelerini kapsayan atomik settlement batch'leri.
 - Düğüm yeniden başlatma mantığı, `pending_buffer` ve `Frozen` durumlarının anında geri yüklenmesini sağlayarak "yeniden başlatma sonrası eşdeğerlik" saldırılarını önler.
 
 ## 11. Mevcut Sınırlamalar
-Fonksiyonel olmasına rağmen, mevcut prototip aşağıdaki sınırlamalara sahiptir:
-- **Üretime Hazır Değil:** Güvenlik denetimleri ve performans optimizasyonları devam etmektedir.
-- **Ekonomik Model:** Validator slashing ve ödül ekonomisi henüz kesinleşmemiştir.
+Mevcut repo kontrollü bir public devnet için uygundur; fakat audited mainnet dağıtımı değildir:
+- **Denetim Bekliyor:** Profesyonel güvenlik denetimleri ve performans sertleştirmeleri hâlâ gereklidir.
+- **Operasyonel Sertleştirme:** RPC rate limiting/auth, Docker/systemd paketleme, health check, fuzzing ve tam clippy temizliği hâlâ açıktır.
+- **Error Refactor:** Yapılandırılmış `BudlumError` vardır ve kritik execution path'leri bunu kullanır; ancak bazı public API'ler geriye dönük uyumluluk için hâlâ `Result<T, String>` wrapper'ları sunar.
 - **Formal Verification:** Matematiksel invaryantlar henüz TLA+ veya benzeri araçlarla resmi olarak doğrulanmamıştır.
 - **Erken Aşama Adapterlar:** PoS ve BFT adapterları şu anda simüle edilmiş imza sayılarını kullanmaktadır.
 

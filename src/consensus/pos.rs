@@ -67,6 +67,7 @@ pub struct Checkpoint {
 use crate::crypto::primitives::ValidatorKeys;
 
 use std::sync::RwLock;
+use tracing::{info, warn};
 
 pub struct PoSEngine {
     pub config: PoSConfig,
@@ -245,7 +246,7 @@ impl PoSEngine {
         db.insert("POS_STATE", data)
             .map_err(|e| format!("DB insert error: {}", e))?;
         db.flush().map_err(|e| format!("DB flush error: {}", e))?;
-        println!(
+        info!(
             "PoS state saved: {} new checkpoints",
             self.checkpoints
                 .read()
@@ -258,7 +259,7 @@ impl PoSEngine {
         let data = match db.get("POS_STATE") {
             Ok(Some(d)) => d,
             Ok(None) => {
-                println!("No saved PoS state found, starting fresh");
+                info!("No saved PoS state found, starting fresh");
                 return Ok(());
             }
             Err(e) => return Err(format!("DB read error: {}", e)),
@@ -287,7 +288,7 @@ impl PoSEngine {
             }
         }
 
-        println!(
+        info!(
             "PoS state loaded: {} checkpoints",
             self.checkpoints
                 .read()
@@ -488,12 +489,9 @@ impl ConsensusEngine for PoSEngine {
 
                     if let Some(producer) = &evidence.header1.producer {
                         if state.get_validator(producer).is_none() {
-                            println!(
-                                " Warning: Slashing evidence for unknown validator {}",
-                                producer
-                            );
+                            warn!("Slashing evidence for unknown validator {}", producer);
                         } else {
-                            println!(" Valid Slashing Evidence found for validator {}", producer);
+                            info!("Valid slashing evidence found for validator {}", producer);
                         }
                     } else {
                         return Err(ConsensusError("Evidence header missing producer".into()));
@@ -501,7 +499,7 @@ impl ConsensusEngine for PoSEngine {
                 }
             }
 
-            println!(
+            info!(
                 "PoS: Block {} validated (producer: {}, stake: {})",
                 block.index, producer, validator.stake
             );
@@ -576,7 +574,7 @@ impl ConsensusEngine for PoSEngine {
 
         if let Some(existing) = seen_blocks.get(&key) {
             if existing.0.hash != header.hash {
-                println!(
+                warn!(
                     "DOUBLE-SIGN: {} signed two blocks for slot {}!",
                     producer, header.index
                 );
@@ -616,6 +614,16 @@ impl ConsensusEngine for PoSEngine {
             }
         }
         Ok(())
+    }
+
+    fn drain_slashing_evidence(&self) -> Result<Vec<SlashingEvidence>, ConsensusError> {
+        let mut guard = self
+            .slashing_evidence
+            .write()
+            .map_err(|_| ConsensusError("Lock error on slashing_evidence".into()))?;
+        let evidence = guard.clone();
+        guard.clear();
+        Ok(evidence)
     }
 }
 #[cfg(test)]

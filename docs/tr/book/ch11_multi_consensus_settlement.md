@@ -20,6 +20,7 @@ Settlement layer, aşağıdaki kaos senaryolarının tamamında deterministik ka
 1.  **Gossip Convergence:** Farklı sıralarla gelen verilerin (gossip) sonunda tüm honest düğümlerde aynı `GlobalBlockHeader` hash'ine ulaşması.
 2.  **Persistence Recovery:** Düğüm çökse bile tamponlanmış (pending) blokların veya "Frozen" domain statülerinin diskten eksiksiz geri yüklenmesi.
 3.  **Adversarial Finality:** Yanlış PoS/PoW kanıtları veya yetersiz onay derinlikleri ile yapılan saldırıların reddedilmesi.
+4.  **Atomic Recovery:** Commitment insert ve domain height update işlemlerinin yeniden başlatma sonrası tek kalıcı settlement geçişi olarak görülmesi.
 
 ## Faz 3: Dağıtık Devnet Simülasyonu (Distributed Test Harness)
 
@@ -55,11 +56,11 @@ Bu formül, **"Sadece ileriye dönük ve daha büyük nonce"** kuralını işlet
 
 ## 3. Pratik Uygulama: Settlement Motorunu Kodlamak
 
-### Adım 1: Taahhüt Kabulü ve İki Yüzlülük (Equivocation) Kontrolü
+### Adım 1: Taahhüt Kabulü, Equivocation Kontrolü ve Atomik Kalıcılık
 
 ```rust
 pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Result<(), String> {
-    let domain = self.validate_domain_commitment_metadata(&commitment)?;
+    self.validate_domain_commitment_metadata(&commitment)?;
     
     if let Some(existing) = self.domain_commitment_registry.find_by_height(
         commitment.domain_id,
@@ -71,11 +72,17 @@ pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Resu
             d_mut.status = DomainStatus::Frozen;
             return Err("Equivocation detected! Domain frozen.".into());
         }
-        return Ok(()); // Idempotency
+        return Ok(());
     }
 
     self.domain_commitment_registry.insert(commitment.clone())?;
-    self.apply_pending_commitments(commitment.domain_id)?;
+    let updated_domains = self.apply_pending_commitments(commitment.domain_id)?;
+
+    if let Some(store) = &self.storage {
+        store.save_domain_commitment_batch(&commitment, &updated_domains)
+            .map_err(|e| format!("Failed to persist settlement batch: {}", e))?;
+    }
+
     Ok(())
 }
 ```
@@ -83,7 +90,9 @@ pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Resu
 ### Adım 2: Asenkron Tamponlama (Apply Loop)
 
 ```rust
-fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<(), String> {
+fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<Vec<ConsensusDomain>, String> {
+    let mut updated_domains = Vec::new();
+
     loop {
         let last_height = self.domain_registry.get(domain_id).unwrap().last_committed_height;
         let next_height = last_height + 1;
@@ -97,13 +106,21 @@ fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<(), Strin
                 }
             }
             // ... state uygulama mantığı ...
+            updated_domains.push(self.domain_registry.get(domain_id).unwrap().clone());
         } else {
             break; 
         }
     }
-    Ok(())
+
+    Ok(updated_domains)
 }
 ```
+
+Buradaki kritik production-hardening noktası, commitment kaydı ile domain yükseklik/hash güncellemesinin tek storage batch içinde yazılmasıdır. Node yeniden başlatıldığında "commitment var ama height ilerlememiş" gibi yarım kalıcı durum görülmemelidir.
+
+### Adım 3: Domain Operatörleri ve Slashing Evidence Gossip
+
+Domain registration artık operatör adresi ve minimum bond taşır; bu da frozen domain'ler için ekonomik ceza bağlantısını kurar. Validator seviyesinde double-sign ise ayrı akar: PoS motoru `SlashingEvidence` üretir, node bunu `NetworkMessage::SlashingEvidence` olarak gossip eder, blok üreticileri bekleyen kanıtları bloğa koyar ve execution katmanı stake slashing'i deterministik uygular.
 
 ## 4. Bizans Kaos Matrisi: Gerçeği İspatlamak
 
@@ -147,4 +164,4 @@ async fn test_order_independence() {
 
 ## 5. Sonuç
 
-Budlum'un Çoklu Konsensüs Yerleşim Katmanı, blokzinciri dünyasındaki "parçalanmış likidite" ve "konsensüs izolasyonu" problemlerini çözen devrimsel bir adımdır. Bu mimari, her türlü ağ karmaşasına ve Bizans saldırısına karşı **deterministik bir sığınaktır.**
+Budlum'un Çoklu Konsensüs Yerleşim Katmanı artık kontrollü public devnet adayıdır: Bizans settlement testlerinde deterministiktir, devnet seviyesinde slashing/reward ekonomisine bağlanmıştır ve mainnet öncesinde hâlâ audit, operasyonel sertleştirme ve formal verification beklemektedir.

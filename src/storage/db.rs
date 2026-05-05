@@ -6,9 +6,23 @@ use crate::cross_domain::message::CrossDomainMessage;
 use crate::cross_domain::BridgeState;
 use crate::domain::{ConsensusDomain, DomainCommitment};
 use crate::settlement::GlobalBlockHeader;
+use crate::storage::traits::{BlockchainStorage, SeenBlockMap};
+use serde::{de::DeserializeOwned, Serialize};
 use sled::Db;
 use std::str::from_utf8;
 use tracing::info;
+
+fn encode<T: Serialize>(value: &T) -> std::io::Result<Vec<u8>> {
+    bincode::serialize(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+}
+
+fn decode<T: DeserializeOwned>(value: &[u8]) -> std::io::Result<T> {
+    bincode::deserialize(value)
+        .or_else(|_| serde_json::from_slice(value))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+}
+
 #[derive(Clone, Debug)]
 pub struct Storage {
     db: Db,
@@ -50,13 +64,13 @@ impl Storage {
             let (key, value) = item?;
             snapshot.push((key.to_vec(), value.to_vec()));
         }
-        let bytes = serde_json::to_vec(&snapshot)?;
+        let bytes = encode(&snapshot)?;
         std::fs::write(path, bytes)?;
         Ok(())
     }
     pub fn insert_block(&self, block: &Block) -> std::io::Result<()> {
         let key = block.hash.clone();
-        let val = serde_json::to_vec(block)?;
+        let val = encode(block)?;
         let height_key = format!("HEIGHT:{}", block.index);
         let mut batch = sled::Batch::default();
         batch.insert(key.as_bytes(), val.as_slice());
@@ -69,7 +83,7 @@ impl Storage {
     pub fn commit_block(&self, block: &Block, state_root: &str) -> std::io::Result<()> {
         let mut batch = sled::Batch::default();
 
-        let block_bytes = serde_json::to_vec(block)?;
+        let block_bytes = encode(block)?;
         batch.insert(block.hash.as_bytes(), block_bytes.as_slice());
 
         let height_key = format!("HEIGHT:{}", block.index);
@@ -93,7 +107,7 @@ impl Storage {
     }
     pub fn get_block(&self, hash: &str) -> std::io::Result<Option<Block>> {
         if let Some(val) = self.db.get(hash)? {
-            let block: Block = serde_json::from_slice(&val)?;
+            let block: Block = decode(&val)?;
             Ok(Some(block))
         } else {
             Ok(None)
@@ -140,7 +154,7 @@ impl Storage {
         blob: &crate::consensus::qc::QcBlob,
     ) -> std::io::Result<()> {
         let key = format!("QC_BLOB:{}", height);
-        let val = serde_json::to_vec(blob)?;
+        let val = encode(blob)?;
         self.db.insert(key.as_bytes(), val)?;
         self.db.flush()?;
         Ok(())
@@ -151,7 +165,7 @@ impl Storage {
     ) -> std::io::Result<Option<crate::consensus::qc::QcBlob>> {
         let key = format!("QC_BLOB:{}", height);
         if let Some(val) = self.db.get(key.as_bytes())? {
-            let blob = serde_json::from_slice(&val)?;
+            let blob = decode(&val)?;
             Ok(Some(blob))
         } else {
             Ok(None)
@@ -169,7 +183,7 @@ impl Storage {
         cert: &crate::chain::finality::FinalityCert,
     ) -> std::io::Result<()> {
         let key = format!("FINALITY_CERT:{}", height);
-        let val = serde_json::to_vec(cert)?;
+        let val = encode(cert)?;
         self.db.insert(key.as_bytes(), val)?;
         self.db.flush()?;
         Ok(())
@@ -180,7 +194,7 @@ impl Storage {
     ) -> std::io::Result<Option<crate::chain::finality::FinalityCert>> {
         let key = format!("FINALITY_CERT:{}", height);
         if let Some(val) = self.db.get(key.as_bytes())? {
-            let cert = serde_json::from_slice(&val)?;
+            let cert = decode(&val)?;
             Ok(Some(cert))
         } else {
             Ok(None)
@@ -207,7 +221,7 @@ impl Storage {
 
     pub fn save_consensus_domain(&self, domain: &ConsensusDomain) -> std::io::Result<()> {
         let key = format!("DOMAIN:{}", domain.id);
-        let val = serde_json::to_vec(domain)?;
+        let val = encode(domain)?;
         self.db.insert(key.as_bytes(), val)?;
         self.db.flush()?;
         Ok(())
@@ -217,7 +231,7 @@ impl Storage {
         let mut domains: Vec<ConsensusDomain> = Vec::new();
         for item in self.db.scan_prefix(b"DOMAIN:") {
             let (_key, val) = item?;
-            domains.push(serde_json::from_slice(&val)?);
+            domains.push(decode(&val)?);
         }
         domains.sort_by_key(|domain| domain.id);
         Ok(domains)
@@ -228,8 +242,32 @@ impl Storage {
             "DOMAIN_COMMITMENT:{}:{}:{}",
             commitment.domain_id, commitment.domain_height, commitment.sequence
         );
-        let val = serde_json::to_vec(commitment)?;
+        let val = encode(commitment)?;
         self.db.insert(key.as_bytes(), val)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    pub fn save_domain_commitment_batch(
+        &self,
+        commitment: &DomainCommitment,
+        domains: &[ConsensusDomain],
+    ) -> std::io::Result<()> {
+        let commitment_key = format!(
+            "DOMAIN_COMMITMENT:{}:{}:{}",
+            commitment.domain_id, commitment.domain_height, commitment.sequence
+        );
+        let commitment_val = encode(commitment)?;
+        let mut batch = sled::Batch::default();
+        batch.insert(commitment_key.as_bytes(), commitment_val.as_slice());
+
+        for domain in domains {
+            let domain_key = format!("DOMAIN:{}", domain.id);
+            let domain_val = encode(domain)?;
+            batch.insert(domain_key.as_bytes(), domain_val.as_slice());
+        }
+
+        self.db.apply_batch(batch)?;
         self.db.flush()?;
         Ok(())
     }
@@ -238,7 +276,7 @@ impl Storage {
         let mut commitments: Vec<DomainCommitment> = Vec::new();
         for item in self.db.scan_prefix(b"DOMAIN_COMMITMENT:") {
             let (_key, val) = item?;
-            commitments.push(serde_json::from_slice(&val)?);
+            commitments.push(decode(&val)?);
         }
         commitments.sort_by_key(|commitment| {
             (
@@ -253,7 +291,7 @@ impl Storage {
     pub fn save_global_header(&self, header: &GlobalBlockHeader) -> std::io::Result<()> {
         let key = format!("GLOBAL_HEADER:{}", header.global_height);
         let hash_key = format!("GLOBAL_HEADER_HASH:{}", header.calculate_hash());
-        let val = serde_json::to_vec(header)?;
+        let val = encode(header)?;
 
         let mut batch = sled::Batch::default();
         batch.insert(key.as_bytes(), val.as_slice());
@@ -273,7 +311,7 @@ impl Storage {
     pub fn get_global_header(&self, height: u64) -> std::io::Result<Option<GlobalBlockHeader>> {
         let key = format!("GLOBAL_HEADER:{}", height);
         if let Some(val) = self.db.get(key.as_bytes())? {
-            Ok(Some(serde_json::from_slice(&val)?))
+            Ok(Some(decode(&val)?))
         } else {
             Ok(None)
         }
@@ -283,15 +321,14 @@ impl Storage {
         let mut headers: Vec<GlobalBlockHeader> = Vec::new();
         for item in self.db.scan_prefix(b"GLOBAL_HEADER:") {
             let (_key, val) = item?;
-            headers.push(serde_json::from_slice(&val)?);
+            headers.push(decode(&val)?);
         }
         headers.sort_by_key(|header| header.global_height);
         Ok(headers)
     }
 
     pub fn save_bridge_state(&self, bridge_state: &BridgeState) -> std::io::Result<()> {
-        let val = bincode::serialize(bridge_state)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        let val = encode(bridge_state)?;
         self.db.insert(b"BRIDGE_STATE", val)?;
         self.db.flush()?;
         Ok(())
@@ -299,9 +336,7 @@ impl Storage {
 
     pub fn load_bridge_state(&self) -> std::io::Result<Option<BridgeState>> {
         if let Some(val) = self.db.get(b"BRIDGE_STATE")? {
-            let decoded = bincode::deserialize(&val)
-                .or_else(|_| serde_json::from_slice(&val))
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            let decoded = decode(&val)?;
             Ok(Some(decoded))
         } else {
             Ok(None)
@@ -310,7 +345,7 @@ impl Storage {
 
     pub fn save_cross_domain_message(&self, message: &CrossDomainMessage) -> std::io::Result<()> {
         let key = format!("XDOMAIN_MSG:{}", hex::encode(message.message_id));
-        let val = serde_json::to_vec(message)?;
+        let val = encode(message)?;
         self.db.insert(key.as_bytes(), val)?;
         self.db.flush()?;
         Ok(())
@@ -320,7 +355,7 @@ impl Storage {
         let mut messages: Vec<CrossDomainMessage> = Vec::new();
         for item in self.db.scan_prefix(b"XDOMAIN_MSG:") {
             let (_key, val) = item?;
-            messages.push(serde_json::from_slice(&val)?);
+            messages.push(decode(&val)?);
         }
         Ok(messages)
     }
@@ -391,7 +426,7 @@ impl Storage {
     }
     pub fn save_account(&self, pubkey: &Address, account: &Account) -> std::io::Result<()> {
         let key = format!("ACCT:{}", pubkey);
-        let val = serde_json::to_vec(account)?;
+        let val = encode(account)?;
         self.db.insert(key.as_bytes(), val)?;
         Ok(())
     }
@@ -406,14 +441,14 @@ impl Storage {
             let pubkey_str = key_str.strip_prefix("ACCT:").unwrap_or(key_str);
             let pubkey = Address::from_hex(pubkey_str)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            let account: Account = serde_json::from_slice(&val)?;
+            let account: Account = decode(&val)?;
             accounts.insert(pubkey, account);
         }
         Ok(accounts)
     }
     pub fn save_mempool_tx(&self, tx: &Transaction) -> std::io::Result<()> {
         let key = format!("MEMPOOL:{}", tx.hash);
-        let val = serde_json::to_vec(tx)?;
+        let val = encode(tx)?;
         self.db.insert(key.as_bytes(), val)?;
         Ok(())
     }
@@ -426,7 +461,7 @@ impl Storage {
         let mut txs = Vec::new();
         for item in self.db.scan_prefix(b"MEMPOOL:") {
             let (_key, val) = item?;
-            let tx: Transaction = serde_json::from_slice(&val)?;
+            let tx: Transaction = decode(&val)?;
             txs.push(tx);
         }
         Ok(txs)
@@ -436,7 +471,7 @@ impl Storage {
         checkpoint: &crate::consensus::pos::Checkpoint,
     ) -> std::io::Result<()> {
         let key = format!("CP:{}", checkpoint.block_index);
-        let val = serde_json::to_vec(checkpoint)?;
+        let val = encode(checkpoint)?;
         self.db.insert(key.as_bytes(), val)?;
         Ok(())
     }
@@ -444,7 +479,7 @@ impl Storage {
         let mut cps = Vec::new();
         for item in self.db.scan_prefix(b"CP:") {
             let (_key, val) = item?;
-            let cp: crate::consensus::pos::Checkpoint = serde_json::from_slice(&val)?;
+            let cp: crate::consensus::pos::Checkpoint = decode(&val)?;
             cps.push(cp);
         }
         cps.sort_by_key(|c| c.block_index);
@@ -460,15 +495,11 @@ impl Storage {
             .map(|p| p.to_string())
             .unwrap_or_else(|| "unknown".to_string());
         let key = format!("SEEN:{}:{}", producer_str, header.index);
-        let val = serde_json::to_vec(&(header, sig))?;
+        let val = encode(&(header, sig))?;
         self.db.insert(key.as_bytes(), val)?;
         Ok(())
     }
-    pub fn load_all_seen_blocks(
-        &self,
-    ) -> std::io::Result<
-        std::collections::HashMap<(Address, u64), (crate::core::block::BlockHeader, Vec<u8>)>,
-    > {
+    pub fn load_all_seen_blocks(&self) -> std::io::Result<SeenBlockMap> {
         let mut seen = std::collections::HashMap::new();
         for item in self.db.scan_prefix(b"SEEN:") {
             let (key, val) = item?;
@@ -482,8 +513,7 @@ impl Storage {
                 let producer = Address::from_hex(parts[0])
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 let index = parts[1].parse().unwrap_or(0);
-                let data: (crate::core::block::BlockHeader, Vec<u8>) =
-                    serde_json::from_slice(&val)?;
+                let data: (crate::core::block::BlockHeader, Vec<u8>) = decode(&val)?;
                 seen.insert((producer, index), data);
             }
         }
@@ -545,8 +575,8 @@ impl Storage {
         let mut count = 0;
         loop {
             if let Ok(Some(data)) = self.db.get(format!("BLOCK:{}", current_hash)) {
-                let block: crate::core::block::Block = serde_json::from_slice(&data)
-                    .map_err(|e| format!("De-serial error during repair: {}", e))?;
+                let block: crate::core::block::Block =
+                    decode(&data).map_err(|e| format!("De-serial error during repair: {}", e))?;
 
                 let height_key = format!("BLOCK_HEIGHT:{}", block.index);
                 self.db
@@ -575,5 +605,201 @@ impl Storage {
         }
         tracing::info!("Repair complete. Re-indexed {} blocks", count);
         Ok(())
+    }
+}
+
+impl BlockchainStorage for Storage {
+    fn insert_block(&self, block: &Block) -> std::io::Result<()> {
+        Storage::insert_block(self, block)
+    }
+
+    fn commit_block(&self, block: &Block, state_root: &str) -> std::io::Result<()> {
+        Storage::commit_block(self, block, state_root)
+    }
+
+    fn get_block(&self, hash: &str) -> std::io::Result<Option<Block>> {
+        Storage::get_block(self, hash)
+    }
+
+    fn get_block_by_height(&self, height: u64) -> std::io::Result<Option<Block>> {
+        Storage::get_block_by_height(self, height)
+    }
+
+    fn get_canonical_height(&self) -> std::io::Result<u64> {
+        Storage::get_canonical_height(self)
+    }
+
+    fn save_canonical_height(&self, height: u64) -> std::io::Result<()> {
+        Storage::save_canonical_height(self, height)
+    }
+
+    fn save_state_root(&self, height: u64, state_root: &str) -> std::io::Result<()> {
+        Storage::save_state_root(self, height, state_root)
+    }
+
+    fn get_state_root(&self, height: u64) -> std::io::Result<Option<String>> {
+        Storage::get_state_root(self, height)
+    }
+
+    fn save_last_hash(&self, hash: &str) -> std::io::Result<()> {
+        Storage::save_last_hash(self, hash)
+    }
+
+    fn get_last_hash(&self) -> std::io::Result<Option<String>> {
+        Storage::get_last_hash(self)
+    }
+
+    fn load_chain(&self) -> std::io::Result<Vec<Block>> {
+        Storage::load_chain(self)
+    }
+
+    fn delete_block(&self, height: u64) -> std::io::Result<()> {
+        Storage::delete_block(self, height)
+    }
+
+    fn save_qc_blob(
+        &self,
+        height: u64,
+        blob: &crate::consensus::qc::QcBlob,
+    ) -> std::io::Result<()> {
+        Storage::save_qc_blob(self, height, blob)
+    }
+
+    fn get_qc_blob(&self, height: u64) -> std::io::Result<Option<crate::consensus::qc::QcBlob>> {
+        Storage::get_qc_blob(self, height)
+    }
+
+    fn delete_qc_blob(&self, height: u64) -> std::io::Result<()> {
+        Storage::delete_qc_blob(self, height)
+    }
+
+    fn save_finality_cert(
+        &self,
+        height: u64,
+        cert: &crate::chain::finality::FinalityCert,
+    ) -> std::io::Result<()> {
+        Storage::save_finality_cert(self, height, cert)
+    }
+
+    fn get_finality_cert(
+        &self,
+        height: u64,
+    ) -> std::io::Result<Option<crate::chain::finality::FinalityCert>> {
+        Storage::get_finality_cert(self, height)
+    }
+
+    fn delete_finality_cert(&self, height: u64) -> std::io::Result<()> {
+        Storage::delete_finality_cert(self, height)
+    }
+
+    fn save_consensus_domain(&self, domain: &ConsensusDomain) -> std::io::Result<()> {
+        Storage::save_consensus_domain(self, domain)
+    }
+
+    fn load_consensus_domains(&self) -> std::io::Result<Vec<ConsensusDomain>> {
+        Storage::load_consensus_domains(self)
+    }
+
+    fn save_domain_commitment(&self, commitment: &DomainCommitment) -> std::io::Result<()> {
+        Storage::save_domain_commitment(self, commitment)
+    }
+
+    fn save_domain_commitment_batch(
+        &self,
+        commitment: &DomainCommitment,
+        domains: &[ConsensusDomain],
+    ) -> std::io::Result<()> {
+        Storage::save_domain_commitment_batch(self, commitment, domains)
+    }
+
+    fn load_domain_commitments(&self) -> std::io::Result<Vec<DomainCommitment>> {
+        Storage::load_domain_commitments(self)
+    }
+
+    fn save_global_header(&self, header: &GlobalBlockHeader) -> std::io::Result<()> {
+        Storage::save_global_header(self, header)
+    }
+
+    fn get_global_header(&self, height: u64) -> std::io::Result<Option<GlobalBlockHeader>> {
+        Storage::get_global_header(self, height)
+    }
+
+    fn load_global_headers(&self) -> std::io::Result<Vec<GlobalBlockHeader>> {
+        Storage::load_global_headers(self)
+    }
+
+    fn save_bridge_state(&self, bridge_state: &BridgeState) -> std::io::Result<()> {
+        Storage::save_bridge_state(self, bridge_state)
+    }
+
+    fn load_bridge_state(&self) -> std::io::Result<Option<BridgeState>> {
+        Storage::load_bridge_state(self)
+    }
+
+    fn save_cross_domain_message(&self, message: &CrossDomainMessage) -> std::io::Result<()> {
+        Storage::save_cross_domain_message(self, message)
+    }
+
+    fn load_cross_domain_messages(&self) -> std::io::Result<Vec<CrossDomainMessage>> {
+        Storage::load_cross_domain_messages(self)
+    }
+
+    fn save_tx_index(&self, tx_hash: &str, block_height: u64) -> std::io::Result<()> {
+        Storage::save_tx_index(self, tx_hash, block_height)
+    }
+
+    fn get_tx_block_height(&self, tx_hash: &str) -> std::io::Result<Option<u64>> {
+        Storage::get_tx_block_height(self, tx_hash)
+    }
+
+    fn delete_tx_index(&self, tx_hash: &str) -> std::io::Result<()> {
+        Storage::delete_tx_index(self, tx_hash)
+    }
+
+    fn save_account(&self, pubkey: &Address, account: &Account) -> std::io::Result<()> {
+        Storage::save_account(self, pubkey, account)
+    }
+
+    fn load_all_accounts(&self) -> std::io::Result<std::collections::HashMap<Address, Account>> {
+        Storage::load_all_accounts(self)
+    }
+
+    fn save_mempool_tx(&self, tx: &Transaction) -> std::io::Result<()> {
+        Storage::save_mempool_tx(self, tx)
+    }
+
+    fn remove_mempool_tx(&self, tx_hash: &str) -> std::io::Result<()> {
+        Storage::remove_mempool_tx(self, tx_hash)
+    }
+
+    fn load_mempool_txs(&self) -> std::io::Result<Vec<Transaction>> {
+        Storage::load_mempool_txs(self)
+    }
+
+    fn save_checkpoint(
+        &self,
+        checkpoint: &crate::consensus::pos::Checkpoint,
+    ) -> std::io::Result<()> {
+        Storage::save_checkpoint(self, checkpoint)
+    }
+
+    fn load_checkpoints(&self) -> std::io::Result<Vec<crate::consensus::pos::Checkpoint>> {
+        Storage::load_checkpoints(self)
+    }
+
+    fn save_seen_block(
+        &self,
+        header: &crate::core::block::BlockHeader,
+        sig: &[u8],
+    ) -> std::io::Result<()> {
+        Storage::save_seen_block(self, header, sig)
+    }
+
+    fn load_all_seen_blocks(&self) -> std::io::Result<SeenBlockMap> {
+        Storage::load_all_seen_blocks(self)
+    }
+
+    fn flush_batch(&self) -> std::io::Result<usize> {
+        Storage::flush_batch(self)
     }
 }

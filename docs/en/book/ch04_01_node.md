@@ -33,6 +33,8 @@ The node's event loop waits on multiple sources at once:
 
 `tokio::select!` is the core tool here. It lets the node react to whichever event becomes ready first without blocking the rest of the system.
 
+The loop also drains locally detected slashing evidence and gossips it periodically. This keeps validator penalties from depending on the detecting node being the next block producer.
+
 ## 3. Fork Choice and Reorg
 
 When a block arrives, Budlum classifies it:
@@ -40,8 +42,11 @@ When a block arrives, Budlum classifies it:
 1.  **Sequential block:** the block extends the current tip and can be validated directly.
 2.  **Fork:** the block is behind the current height but has a different hash, indicating a network split or competing branch.
 3.  **Sync gap:** the block is far ahead, so the node requests missing headers or blocks.
+4.  **Handshake height gap:** a peer reports a higher `best_height` during handshake, so the node starts headers-first sync immediately instead of waiting for later block traffic.
 
 Finality protection prevents the node from reorganizing behind finalized checkpoints.
+
+`bud_syncing` reports the node's real `Syncing`, `Synced`, or stalled sync status rather than a hardcoded value.
 
 ### Function: `handle_network_event`
 

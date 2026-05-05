@@ -285,7 +285,7 @@ impl BudlumApiServer for RpcServer {
     }
 
     async fn syncing(&self) -> Result<bool, ErrorObjectOwned> {
-        Ok(false)
+        Ok(self.node.is_syncing())
     }
 
     async fn net_version(&self) -> Result<String, ErrorObjectOwned> {

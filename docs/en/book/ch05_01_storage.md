@@ -1,10 +1,10 @@
-# Chapter 5.1: Persistent Storage (Sled DB)
+# Chapter 5.1: Persistent Storage
 
-This chapter explains how data moves from memory to disk, how the `sled` database is organized, and why Budlum uses a key-value design.
+This chapter explains how data moves from memory to disk, how the current `sled` backend is organized, and why Budlum now hides storage behind a trait boundary.
 
 ## 1. Data Structures: What Is Sled?
 
-Budlum uses **Sled**, an embedded NoSQL key-value database, instead of a traditional SQL server.
+Budlum currently uses **Sled**, an embedded NoSQL key-value database, instead of a traditional SQL server. The production-hardening path is trait-first: business logic depends on `BlockchainStorage`, while `Storage` is one backend implementation.
 
 ### Why Sled?
 
@@ -15,6 +15,10 @@ Budlum uses **Sled**, an embedded NoSQL key-value database, instead of a traditi
 ### Struct: `Storage`
 
 `Storage` wraps the Sled database handle. Cloning it is cheap because it copies the handle, not the entire database.
+
+### Trait: `BlockchainStorage`
+
+`BlockchainStorage` defines the storage contract used by chain logic: block reads/writes, canonical commits, domain commitments, consensus state, mempool persistence, and settlement batches. This makes a future RocksDB backend possible without rewriting consensus or execution code.
 
 ## 2. Schema Design
 
@@ -34,11 +38,17 @@ Sled has keys and values, not tables. Budlum uses prefixes to keep data organize
 | Last Block | `LAST` | Point to the current tip. |
 | Schema Version | `SCHEMA_VERSION` | Track migration level. |
 
+Values are written with binary serialization for compactness and speed. Legacy JSON reads are still tolerated during migration so existing research databases can be opened.
+
 ## 3. Code Analysis
 
 ### Function: `commit_block`
 
 Block commits are atomic. The block, height index, state root, transaction indexes, and finality metadata are written in one batch so crashes do not leave half-written canonical data.
+
+### Function: `save_domain_commitment_batch`
+
+Settlement commits use a dedicated atomic batch: the domain commitment and every updated domain height/hash are persisted together. This closes the crash window where a node could restart with a commitment on disk but an old `last_committed_height`.
 
 ### Per-Account Persistence
 
@@ -54,5 +64,4 @@ Reorgs update not only block bodies but also canonical metadata: height indexes,
 
 ## 6. Migrations and Snapshot Export
 
-`Storage::new` runs migrations on startup and writes `SCHEMA_VERSION = 1`. Snapshot export can dump Sled key-value pairs as JSON for backup and recovery workflows.
-
+`Storage::new` runs migrations on startup and writes `SCHEMA_VERSION = 1`. Snapshot export can dump Sled key-value pairs as JSON for backup and recovery workflows, while runtime storage paths prefer binary values.

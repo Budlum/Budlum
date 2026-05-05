@@ -3,6 +3,8 @@ use crate::domain::types::{ConsensusDomain, DomainId, DomainStatus, Hash32};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const MIN_DOMAIN_OPERATOR_BOND: u64 = 10_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConsensusDomainRegistry {
     domains: BTreeMap<DomainId, ConsensusDomain>,
@@ -18,6 +20,12 @@ impl ConsensusDomainRegistry {
     pub fn register(&mut self, domain: ConsensusDomain) -> Result<(), String> {
         if self.domains.contains_key(&domain.id) {
             return Err(format!("Domain {} is already registered", domain.id));
+        }
+        if !domain.has_operator_bond(MIN_DOMAIN_OPERATOR_BOND) {
+            return Err(format!(
+                "Domain {} requires operator identity and minimum bond {}",
+                domain.id, MIN_DOMAIN_OPERATOR_BOND
+            ));
         }
         self.domains.insert(domain.id, domain);
         Ok(())
@@ -73,6 +81,11 @@ pub fn domain_leaf_hash(domain: &ConsensusDomain) -> Hash32 {
         &kind,
         status,
         &domain.domain_chain_id.to_le_bytes(),
+        &domain
+            .operator
+            .map(|address| address.as_bytes().to_vec())
+            .unwrap_or_default(),
+        &domain.operator_bond.to_le_bytes(),
         &domain.config_hash,
         &domain.validator_set_hash,
         domain.finality_adapter.as_bytes(),

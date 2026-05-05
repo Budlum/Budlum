@@ -30,10 +30,10 @@ mod distributed_settlement_tests {
             let temp_dir = TempDir::new().unwrap();
             let path = data_path.unwrap_or_else(|| temp_dir.path().to_path_buf());
             let storage = Arc::new(Storage::new(path.to_str().unwrap()).unwrap());
-            
+
             let consensus = Arc::new(PoWEngine::new(0));
             let mut blockchain = Blockchain::new(consensus, Some((*storage).clone()), 1337, None);
-            
+
             let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
             let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
             let _ = blockchain.register_consensus_domain(pow);
@@ -94,8 +94,12 @@ mod distributed_settlement_tests {
             b.hash = format!("hash_{}", i).repeat(16)[0..64].to_string();
             let mut com = DomainCommitment::from_block(
                 &default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0),
-                &b, [0u8; 32], [0u8; 32], i as u64
-            ).unwrap();
+                &b,
+                [0u8; 32],
+                [0u8; 32],
+                i as u64,
+            )
+            .unwrap();
             com.state_updates.insert(alice, i as u64);
             commitments.push(com);
         }
@@ -103,7 +107,7 @@ mod distributed_settlement_tests {
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let clients = vec![&n1, &n2, &n3, &n4, &n5];
-        
+
         for com in commitments {
             let idx = rng.gen_range(0..clients.len());
             let sender = clients[idx];
@@ -123,9 +127,16 @@ mod distributed_settlement_tests {
         assert_eq!(h2.domain_commitment_root, h3.domain_commitment_root);
         assert_eq!(h3.domain_commitment_root, h4.domain_commitment_root);
         assert_eq!(h4.domain_commitment_root, h5.domain_commitment_root);
-        assert_ne!(h1.domain_commitment_root, [0u8; 32], "Root should not be empty");
-        
-        n1.stop().await; n2.stop().await; n3.stop().await; n4.stop().await; n5.stop().await;
+        assert_ne!(
+            h1.domain_commitment_root, [0u8; 32],
+            "Root should not be empty"
+        );
+
+        n1.stop().await;
+        n2.stop().await;
+        n3.stop().await;
+        n4.stop().await;
+        n5.stop().await;
     }
 
     #[tokio::test]
@@ -138,12 +149,23 @@ mod distributed_settlement_tests {
         b2.hash = "hash_2".repeat(8);
         let com2 = DomainCommitment::from_block(
             &default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0),
-            &b2, [0u8; 32], [0u8; 32], 1
-        ).unwrap();
-        
-        n1.chain_handle.submit_domain_commitment(com2).await.unwrap();
-        assert_eq!(n1.chain_handle.get_domain_height(1).await.unwrap(), 0, "Height 2 should be pending");
-        
+            &b2,
+            [0u8; 32],
+            [0u8; 32],
+            1,
+        )
+        .unwrap();
+
+        n1.chain_handle
+            .submit_domain_commitment(com2)
+            .await
+            .unwrap();
+        assert_eq!(
+            n1.chain_handle.get_domain_height(1).await.unwrap(),
+            0,
+            "Height 2 should be pending"
+        );
+
         n1.stop().await;
 
         let n2 = NodeHarness::new(6101, vec![], Some(path.clone())).await;
@@ -151,14 +173,25 @@ mod distributed_settlement_tests {
         b1.hash = "hash_1".repeat(8);
         let com1 = DomainCommitment::from_block(
             &default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0),
-            &b1, [0u8; 32], [0u8; 32], 1
-        ).unwrap();
-        
-        n2.chain_handle.submit_domain_commitment(com1).await.unwrap();
-        
+            &b1,
+            [0u8; 32],
+            [0u8; 32],
+            1,
+        )
+        .unwrap();
+
+        n2.chain_handle
+            .submit_domain_commitment(com1)
+            .await
+            .unwrap();
+
         sleep(Duration::from_millis(500)).await;
-        assert_eq!(n2.chain_handle.get_domain_height(1).await.unwrap(), 2, "Height 2 should be applied after restart and H1");
-        
+        assert_eq!(
+            n2.chain_handle.get_domain_height(1).await.unwrap(),
+            2,
+            "Height 2 should be applied after restart and H1"
+        );
+
         n2.stop().await;
     }
 
@@ -170,24 +203,48 @@ mod distributed_settlement_tests {
         let n1 = NodeHarness::new(7101, vec![], Some(path.clone())).await;
         let b1 = Block::new(1, "h1".into(), vec![]);
         let b1_alt = Block::new(1, "h1_alt".into(), vec![]);
-        let com1 = DomainCommitment::from_block(&default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0), &b1, [0u8; 32], [0u8; 32], 1).unwrap();
-        let mut com1_alt = DomainCommitment::from_block(&default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0), &b1_alt, [0u8; 32], [0u8; 32], 2).unwrap();
+        let com1 = DomainCommitment::from_block(
+            &default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0),
+            &b1,
+            [0u8; 32],
+            [0u8; 32],
+            1,
+        )
+        .unwrap();
+        let mut com1_alt = DomainCommitment::from_block(
+            &default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0),
+            &b1_alt,
+            [0u8; 32],
+            [0u8; 32],
+            2,
+        )
+        .unwrap();
         com1_alt.domain_height = 1;
 
-        n1.chain_handle.submit_domain_commitment(com1).await.unwrap();
+        n1.chain_handle
+            .submit_domain_commitment(com1)
+            .await
+            .unwrap();
         let res = n1.chain_handle.submit_domain_commitment(com1_alt).await;
         assert!(res.is_err(), "Equivocation must be rejected");
-        
+
         n1.stop().await;
 
         let n2 = NodeHarness::new(7101, vec![], Some(path.clone())).await;
         let b2 = Block::new(2, "h2".into(), vec![]);
-        let com2 = DomainCommitment::from_block(&default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0), &b2, [0u8; 32], [0u8; 32], 3).unwrap();
-        
+        let com2 = DomainCommitment::from_block(
+            &default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0),
+            &b2,
+            [0u8; 32],
+            [0u8; 32],
+            3,
+        )
+        .unwrap();
+
         let res2 = n2.chain_handle.submit_domain_commitment(com2).await;
         assert!(res2.is_err());
         assert!(res2.unwrap_err().contains("frozen"));
-        
+
         n2.stop().await;
     }
 
@@ -198,24 +255,46 @@ mod distributed_settlement_tests {
         let alice = Address::from([1u8; 32]);
 
         let n1 = NodeHarness::new(8101, vec![], Some(path.clone())).await;
-        let mut b1 = Block::new(1, "h1".into(), vec![]); b1.hash = "h1".repeat(32);
-        let mut com_pow = DomainCommitment::from_block(&default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0), &b1, [0u8; 32], [0u8; 32], 1).unwrap();
+        let mut b1 = Block::new(1, "h1".into(), vec![]);
+        b1.hash = "h1".repeat(32);
+        let mut com_pow = DomainCommitment::from_block(
+            &default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0),
+            &b1,
+            [0u8; 32],
+            [0u8; 32],
+            1,
+        )
+        .unwrap();
         com_pow.state_updates.insert(alice, 1);
-        
-        n1.chain_handle.submit_domain_commitment(com_pow.clone()).await.unwrap();
-        
-        let mut b2 = Block::new(1, "h2".into(), vec![]); b2.hash = "h2".repeat(32);
-        let mut com_pos = DomainCommitment::from_block(&default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0), &b2, [0u8; 32], [0u8; 32], 1).unwrap();
+
+        n1.chain_handle
+            .submit_domain_commitment(com_pow.clone())
+            .await
+            .unwrap();
+
+        let mut b2 = Block::new(1, "h2".into(), vec![]);
+        b2.hash = "h2".repeat(32);
+        let mut com_pos = DomainCommitment::from_block(
+            &default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0),
+            &b2,
+            [0u8; 32],
+            [0u8; 32],
+            1,
+        )
+        .unwrap();
         com_pos.state_updates.insert(alice, 1);
-        
-        n1.chain_handle.submit_domain_commitment(com_pos.clone()).await.unwrap();
-        
+
+        n1.chain_handle
+            .submit_domain_commitment(com_pos.clone())
+            .await
+            .unwrap();
+
         n1.stop().await;
 
         let n2 = NodeHarness::new(8101, vec![], Some(path.clone())).await;
         let header = n2.chain_handle.build_global_header(None).await.unwrap();
         assert_ne!(header.domain_commitment_root, [0u8; 32]);
-        
+
         n2.stop().await;
     }
 
@@ -223,34 +302,53 @@ mod distributed_settlement_tests {
     async fn test_adversarial_finality_proofs() {
         let n = NodeHarness::new(9101, vec![], None).await;
         let alice = Address::from([1u8; 32]);
-        let mut b = Block::new(1, "h".into(), vec![]); b.hash = "h".repeat(32);
+        let mut b = Block::new(1, "h".into(), vec![]);
+        b.hash = "h".repeat(32);
         let pow_domain = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
-        
-        use crate::domain::finality_adapter::{FinalityProof, hash_finality_proof};
-        
-        let mut com = DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 1).unwrap();
+
+        use crate::domain::finality_adapter::{hash_finality_proof, FinalityProof};
+
+        let mut com =
+            DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 1).unwrap();
         com.state_updates.insert(alice, 1);
-        let proof = FinalityProof::PoW { confirmations: 100, total_work_hint: 5000 };
+        let proof = FinalityProof::PoW {
+            confirmations: 100,
+            total_work_hint: 5000,
+        };
         com.finality_proof_hash = [0xFFu8; 32];
-        
-        let res = n.chain_handle.submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
-            commitment: com,
-            proof,
-        }).await;
+
+        let res = n
+            .chain_handle
+            .submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
+                commitment: com,
+                proof,
+            })
+            .await;
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("mismatch"));
 
-        let mut com2 = DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 2).unwrap();
-        let proof2 = FinalityProof::PoW { confirmations: 1, total_work_hint: 5000 };
+        let mut com2 =
+            DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 2).unwrap();
+        let proof2 = FinalityProof::PoW {
+            confirmations: 1,
+            total_work_hint: 5000,
+        };
         com2.finality_proof_hash = hash_finality_proof(&proof2);
-        
-        let res2 = n.chain_handle.submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
-            commitment: com2,
-            proof: proof2,
-        }).await;
+
+        let res2 = n
+            .chain_handle
+            .submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
+                commitment: com2,
+                proof: proof2,
+            })
+            .await;
         assert!(res2.is_err());
         assert!(res2.unwrap_err().contains("not finalized"));
-        assert_eq!(n.chain_handle.get_domain_height(1).await.unwrap(), 0, "Should NOT be applied");
+        assert_eq!(
+            n.chain_handle.get_domain_height(1).await.unwrap(),
+            0,
+            "Should NOT be applied"
+        );
 
         n.stop().await;
     }

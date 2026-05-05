@@ -2,6 +2,7 @@ use super::{ConsensusEngine, ConsensusError};
 use crate::core::account::AccountState;
 use crate::core::block::Block;
 use std::sync::RwLock;
+use tracing::info;
 #[derive(Debug, Clone)]
 pub struct PoWConfig {
     pub difficulty: usize,
@@ -55,8 +56,8 @@ impl PoWEngine {
     fn mine(&self, block: &mut Block) {
         let target = self.target();
         let mut iterations: u64 = 0;
-        println!(
-            " Mining started (difficulty: {}, target: {}...)",
+        info!(
+            "Mining started (difficulty: {}, target: {}...)",
             self.get_difficulty(),
             target
         );
@@ -65,11 +66,14 @@ impl PoWEngine {
             block.hash = block.calculate_hash();
             iterations += 1;
             if iterations % 100_000 == 0 {
-                println!("... {} iterations, nonce: {}", iterations, block.nonce);
+                info!(
+                    "Mining progress: {} iterations, nonce: {}",
+                    iterations, block.nonce
+                );
             }
         }
-        println!(
-            " Mining complete! {} iterations, nonce: {}",
+        info!(
+            "Mining complete: {} iterations, nonce: {}",
             iterations, block.nonce
         );
     }

@@ -234,6 +234,8 @@ pub fn default_domain(
         kind,
         status: DomainStatus::Active,
         domain_chain_id,
+        operator: Some(crate::core::address::Address::zero()),
+        operator_bond: crate::domain::registry::MIN_DOMAIN_OPERATOR_BOND,
         config_hash,
         validator_set_hash: [0u8; 32],
         finality_adapter: finality_adapter.into(),

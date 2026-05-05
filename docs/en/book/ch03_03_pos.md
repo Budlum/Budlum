@@ -32,6 +32,8 @@ Producing two different blocks for the same slot is slashable. Evidence proves t
 
 `record_block` persists observed proposals and acts as a detective: if a validator signs conflicting blocks, the system can detect it later.
 
+Detected evidence is not trapped inside the detecting node. The PoS engine exposes pending evidence to the chain actor, the node gossips it as `NetworkMessage::SlashingEvidence`, and producers include pending evidence in blocks so every honest node can apply the same slash.
+
 ### Why RANDAO / XOR-Mix?
 
 RANDAO-style mixing reduces the ability of any single validator to control randomness. The network combines contributions rather than trusting one source.
@@ -42,5 +44,4 @@ RANDAO-style mixing reduces the ability of any single validator to control rando
 
 ## Summary
 
-PoS gives Budlum energy efficiency, deterministic scheduling, and economic security through slashing.
-
+PoS gives Budlum energy efficiency, deterministic scheduling, devnet-grade reward distribution, and economic security through executable slashing.

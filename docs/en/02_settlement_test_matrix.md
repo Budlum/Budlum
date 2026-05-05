@@ -29,7 +29,7 @@ graph TD
         Buffer[Pending Buffer]
         Verifier[Finality Verifier]
         State[Global Account State]
-        Storage[(Sled DB Persistence)]
+        Storage[(Storage Trait + Atomic Batch)]
     end
 
     D1 -- "Commitment + Proof" --> P2P[GossipSub Mesh]
@@ -44,6 +44,7 @@ graph TD
 
     Verifier -- "Equivocation Detected" --> Freeze[Global Freeze Domain]
     Freeze --> Registry
+    Registry --> Bond[Operator Bond]
 ```
 
 ## 3. Current Risks & Limitations
@@ -51,19 +52,22 @@ graph TD
 ### Risks
 - **Early-Stage Adapters:** Finality proof adapters (PoS/BFT) are currently using high-level signature threshold logic rather than full cryptographic BLS/Ed25519 verification.
 - **Networking Scale:** While tested with 5 nodes in a controlled harness, the behavior under 100+ nodes with high latency is not yet benchmarked.
-- **Economic Safety:** The lack of a finalized economic slashing model means there is currently no financial deterrent for Byzantine behavior, only protocol-level isolation.
+- **Economic Safety:** Validator slashing and rewards are implemented for devnet-grade PoS flows, and domain registration now requires operator identity and bond. Mainnet-grade governance, bond sizing, and audit review are still required.
 
 ### Limitations
-- **Not Production-Ready:** Codebase requires professional security audits.
+- **Controlled Public Devnet Ready:** The current code can support a public devnet with clear experimental disclaimers.
+- **Not Mainnet-Ready:** The codebase still requires professional security audits, operational hardening, fuzzing, and full API/error cleanup before mainnet.
 - **Formal Verification:** No TLA+ or formal proofs for the consensus convergence.
-- **Public Testnet:** Currently limited to local devnet simulation harnesses.
-- **Validator Economics:** Reward distribution and validator selection for the global layer are not yet implemented.
+- **Public Testnet Scope:** Public devnet is appropriate; audited production/mainnet deployment is not.
+- **Structured Errors:** `BudlumError` exists and critical execution paths use it, but legacy `Result<T, String>` compatibility remains in several APIs.
 
-## 4. Budlum Core v0.1 — Multi-Consensus Settlement Prototype
-The current state of the repository represents the **v0.1-settlement-prototype**. 
+## 4. Budlum Core v0.1 — Controlled Public Devnet Candidate
+The current state of the repository represents a **controlled public devnet candidate**, not an audited mainnet implementation.
 
 **Key Achievements:**
 - [x] Deterministic global state for heterogeneous domains.
 - [x] Byzantine equivocation immunity (Model B).
-- [x] Persistent out-of-order execution buffering.
+- [x] Atomic settlement persistence for commitment + domain height/hash updates.
 - [x] Distributed node convergence verified.
+- [x] Slashing evidence gossip and block inclusion path.
+- [x] PoS slashing/reward execution for devnet-grade validator economics.

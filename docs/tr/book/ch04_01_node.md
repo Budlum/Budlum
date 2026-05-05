@@ -119,6 +119,7 @@ Bu makro, Go dilindeki `select` gibidir. Budlum'da artık daha zengin bir olay d
 -   **Finality:** Periyodik olarak checkpoint oylaması (Prevote) yapar.
 -   **Metrics:** Prometheus üzerinden düğüm sağlığını dışarı sunar.
 -   **QC Recovery:** Bir `FinalityCert` gelir ama ilgili `QC_BLOB` yerelde yoksa, node sertifikayı pending kuyruğuna alır ve otomatik olarak `GetQcBlob` isteği başlatır. Blob import edildiğinde pending sertifika tekrar işlenir.
+-   **Slashing Evidence Gossip:** Node, yerelde tespit edilen slashing kanıtlarını periyodik olarak drain eder ve `NetworkMessage::SlashingEvidence` şeklinde ağa yayar.
 
 ---
 
@@ -131,6 +132,9 @@ Budlum **Hardening** ile birlikte artık daha akıllı bir blok işleme mantığ
     - `try_reorg` fonksiyonu tetiklenir.
     - Eğer gelen çatalın toplam zorluğu (veya uzunluğu) bizimkinden fazlaysa, eski state geri sarılır (Revert) ve yeni çatala geçilir.
 3. **Senkronizasyon (Sync Request):** Eğer gelen blok çok ilerideyse (bizde aradaki bloklar yoksa), otomatik olarak `GetHeaders` isteği atılarak senkronizasyon başlatılır.
+4. **Handshake Height Gap:** Peer handshake sırasında bizden yüksek `best_height` bildirirse, node blok trafiğini beklemeden headers-first sync başlatır.
+
+`bud_syncing` artık hardcoded `false` dönmez; node'un gerçek sync durumunu raporlar.
 
 ---
 
@@ -149,7 +153,7 @@ async fn handle_network_event(&mut self, event: SwarmEvent<BudlumBehaviourEvent>
                 
                 match network_msg {
                     NetworkMessage::Block(block) => {
-                        println!("📦 Yeni blok geldi: #{}", block.index);
+                        tracing::info!(height = block.index, "new block received");
                         self.process_incoming_block(block).await;
                     }
                     NetworkMessage::Transaction(tx) => {
@@ -172,7 +176,7 @@ async fn handle_network_event(&mut self, event: SwarmEvent<BudlumBehaviourEvent>
         
         // Yeni biri bağlandığında (Connection Established)
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-            println!("🤝 Yeni arkadaş: {}", peer_id);
+            tracing::info!(%peer_id, "peer connected");
             // Onu tanımak için Kademlia'ya ekle
             self.swarm.behaviour_mut().kad.add_address(&peer_id, ...);
         }

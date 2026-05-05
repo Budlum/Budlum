@@ -17,7 +17,8 @@ Budlum nodes use a custom `NetworkMessage` protocol for peer-to-peer communicati
 5.  **FinalityCert:** threshold-signed proof that a checkpoint was finalized.
 6.  **GetQcBlob / QcBlobResponse:** shares Dilithium-signed blob packages for optimistic QC verification.
 7.  **QcFaultProof:** broadcasts proof bytes for invalid PQ attestations.
-8.  **NewTip and sync messages:** used for chain synchronization, including requests such as `GetBlocksByHeight`.
+8.  **SlashingEvidence:** gossips validator double-sign evidence so producers other than the detecting node can include it.
+9.  **NewTip and sync messages:** used for chain synchronization, including requests such as `GetBlocksByHeight`.
 
 The full list should be checked in `src/network/protocol.rs`.
 
@@ -32,6 +33,7 @@ Production hardening moves large transfers, such as downloading old blocks, to o
 -   **Protocol ID:** `/budlum/sync/1.0.0`
 -   **SyncCodec:** length-prefixed serialization over streams.
 -   **Actor integration:** `Node` forwards incoming requests to `ChainActor`, serving blocks and headers without global locking.
+-   **Handshake-triggered sync:** if a peer's handshake reports a higher best height, the node automatically requests headers and reports the real sync state through `bud_syncing`.
 
 This reduces network traffic because sync asks a specific peer for a specific range instead of shouting to the whole network.
 
@@ -41,13 +43,17 @@ This reduces network traffic because sync asks a specific peer for a specific ra
 -   `QcBlobResponse { epoch, checkpoint_height, checkpoint_hash, blob_data, found }`: carries the serialized blob. The receiver parses it, checks metadata, verifies the Merkle root and Dilithium signatures, persists it as `QC_BLOB:{height}`, and retries pending finality certificates for that checkpoint.
 -   `QcFaultProof { proof_data }`: carries a serialized `QcFaultProof`. The receiver verifies it against the stored blob and validator snapshot before applying the verdict.
 
+## Slashing Evidence Gossip
+
+`NetworkMessage::SlashingEvidence` carries verified PoS equivocation evidence across the mesh. Receiving nodes submit the evidence to `ChainActor`, rebroadcast valid evidence, and producers drain pending evidence into later blocks for deterministic slashing execution.
+
 ## Serialization
 
 Budlum uses a hybrid serialization model:
 
 -   **Protobuf:** high-performance network messages and core structures.
 -   **Serde JSON:** readable high-level configuration and diagnostic data.
--   **Bincode:** deterministic byte-for-byte encoding for slashing evidence and similar structures.
+-   **Bincode:** deterministic byte-for-byte encoding for embedded slashing evidence and similar structures.
 
 ### Why Protobuf?
 

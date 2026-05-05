@@ -94,6 +94,7 @@ Bir liderin aynı slot içinde iki farklı blok üretip imzalamasıdır. Bu, zin
 - **Tespit:** `seen_blocks` tablosunda aynı `slot` ve `producer` için farklı `block_hash` yakalandığında tetiklenir.
 - **Kanıt:** İki farklı bloğun başlığı ve imzaları `SlashingEvidence::double_proposal` olarak paketlenir.
 - **Ceza:** Suçlu validatörün hissesinin belirli bir kısmı (örn. %10) silinir ve validatör sistemden atılır.
+- **Gossip:** Kanıt sadece tespit eden node'da kalmaz. Node bunu `NetworkMessage::SlashingEvidence` olarak ağa yayar; diğer producer'lar da kanıtı bloklarına dahil edebilir.
 
 ---
 
@@ -140,7 +141,7 @@ fn prepare_block(&self, block: &mut Block, state: &AccountState) {
 ```
 
 **Tasarım Notu:**
-Ceza kanıtlarını (`slashing_evidence`) bloğun içine koyuyoruz. Çünkü tüm ağın, o validatörün neden cezalandırıldığını (neden bakiyesinin silindiğini) görmesi ve doğrulaması gerekir. Blok zinciri şeffaf bir mahkemedir.
+Ceza kanıtlarını (`slashing_evidence`) önce gossip ile ağda dolaştırıyoruz, sonra blokların içine koyuyoruz. Böylece cezayı uygulamak yalnızca suçu ilk gören node'un blok üretmesine bağlı kalmaz; herhangi bir producer geçerli kanıtı zincire taşıyabilir.
 
 ---
 
@@ -149,4 +150,4 @@ Ceza kanıtlarını (`slashing_evidence`) bloğun içine koyuyoruz. Çünkü tü
 `src/consensus/pos.rs`, bir yazılım kodundan ziyade bir "Anayasa" gibidir.
 -   **Seçim Kanunu:** `select_validator` ve `epoch_seed` ile RANDAO rastgeleliğinde kimin yöneteceğini belirler.
 -   **Ceza Kanunu:** `record_block` ve `SlashingEvidence` ile kurallara uymayanlar cezalandırılır.
--   **Yürütme:** `prepare_block` ile kararlar uygulanır (blok üretilir).
+-   **Yürütme:** `prepare_block`, pending evidence ve blok ödülü akışıyla kararları zincire taşır.

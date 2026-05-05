@@ -1,6 +1,7 @@
 use crate::chain::finality::{FinalityCert, ValidatorEntry, ValidatorSetSnapshot};
 use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
 use crate::chain::snapshot::PruningManager;
+use crate::consensus::pos::SlashingEvidence;
 use crate::consensus::qc::{QcBlob, QcFaultProof, QcProofAction, QcProofVerdict};
 use crate::consensus::ConsensusEngine;
 use crate::core::account::AccountState;
@@ -13,9 +14,9 @@ use crate::cross_domain::{
 };
 use crate::domain::{
     hash_finality_proof, BftFinalityAdapter, ConsensusDomain, ConsensusDomainRegistry,
-    ConsensusKind, DomainCommitment, DomainCommitmentRegistry, DomainFinalityAdapter,
-    DomainId, DomainPluginRegistry, DomainStatus, FinalityProof, FinalityStatus,
-    PoAFinalityAdapter, PoSFinalityAdapter, PoWFinalityAdapter, ZkFinalityAdapter,
+    ConsensusKind, DomainCommitment, DomainCommitmentRegistry, DomainFinalityAdapter, DomainId,
+    DomainPluginRegistry, DomainStatus, FinalityProof, FinalityStatus, PoAFinalityAdapter,
+    PoSFinalityAdapter, PoWFinalityAdapter, ZkFinalityAdapter,
 };
 use crate::execution::executor::Executor;
 use crate::mempool::pool::{Mempool, MempoolConfig};
@@ -27,7 +28,7 @@ use crate::storage::db::Storage;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::info;
+use tracing::{error, info, warn};
 
 pub const MAX_REORG_DEPTH: usize = 100;
 pub const FINALITY_DEPTH: usize = 50;
@@ -54,6 +55,7 @@ pub struct Blockchain {
     pub plugin_registry: DomainPluginRegistry,
     pub message_registry: CrossDomainMessageRegistry,
     pub settlement_finality_hashes: Vec<crate::domain::Hash32>,
+    pub pending_slashing_evidence: Vec<SlashingEvidence>,
 }
 impl Blockchain {
     pub fn new(
@@ -62,7 +64,7 @@ impl Blockchain {
         chain_id: u64,
         pruning_manager: Option<PruningManager>,
     ) -> Self {
-        println!("Consensus: {}", consensus.info());
+        info!("Consensus: {}", consensus.info());
         let mut chain_vec = Vec::new();
         let mut state = AccountState::new();
 
@@ -72,7 +74,7 @@ impl Blockchain {
                 if !c.is_empty() {
                     chain_vec = c;
                     loaded_chain = true;
-                    println!("Loaded chain from DB: {} blocks", chain_vec.len());
+                    info!("Loaded chain from DB: {} blocks", chain_vec.len());
                 }
             }
         }
@@ -103,13 +105,13 @@ impl Blockchain {
                     snapshot_height = snapshot.height;
                     restored_finalized_height = snapshot.finalized_height;
                     restored_finalized_hash = snapshot.finalized_hash.clone();
-                    println!(
+                    info!(
                         "Restored state from snapshot at height {} (finalized={})",
                         snapshot_height, restored_finalized_height
                     );
                 } else {
-                    println!(
-                        " Snapshot chain_id mismatch (expected {}, got {}). Ignoring.",
+                    warn!(
+                        "Snapshot chain_id mismatch (expected {}, got {}). Ignoring.",
                         chain_id, snapshot.chain_id
                     );
                 }
@@ -121,14 +123,14 @@ impl Blockchain {
             (snapshot_height + 1) as usize
         } else {
             if snapshot_height >= chain_len as u64 {
-                println!(" Chain shorter than snapshot height! Replaying from Genesis.");
+                warn!("Chain shorter than snapshot height, replaying from genesis");
                 0
             } else {
                 0
             }
         };
 
-        println!(
+        info!(
             "Replaying blocks from index {} to {}...",
             start_index,
             chain_len - 1
@@ -144,7 +146,10 @@ impl Blockchain {
             state = match Self::apply_block_effects(&state, block) {
                 Ok(next_state) => next_state,
                 Err(e) => {
-                    println!("CRITICAL: Failed to apply block {} during init: {}. Corrupted database, exiting.", block.index, e);
+                    error!(
+                        "Failed to apply block {} during init: {}. Corrupted database, exiting.",
+                        block.index, e
+                    );
                     std::process::exit(1);
                 }
             };
@@ -165,7 +170,7 @@ impl Blockchain {
                     let _ = mempool.add_transaction(tx);
                 }
                 if count > 0 {
-                    println!("Restored {} transactions from mempool persistence", count);
+                    info!("Restored {} transactions from mempool persistence", count);
                 }
             }
         }
@@ -180,11 +185,11 @@ impl Blockchain {
             if let Ok(domains) = store.load_consensus_domains() {
                 for domain in domains {
                     if let Err(e) = Self::validate_consensus_domain_registration(&domain) {
-                        println!("Skipping invalid stored consensus domain: {}", e);
+                        warn!("Skipping invalid stored consensus domain: {}", e);
                         continue;
                     }
                     if let Err(e) = domain_registry.register(domain) {
-                        println!("Skipping duplicate stored consensus domain: {}", e);
+                        warn!("Skipping duplicate stored consensus domain: {}", e);
                     }
                 }
             }
@@ -195,11 +200,11 @@ impl Blockchain {
                         &domain_registry,
                         &commitment,
                     ) {
-                        println!("Skipping invalid stored domain commitment: {}", e);
+                        warn!("Skipping invalid stored domain commitment: {}", e);
                         continue;
                     }
                     if let Err(e) = domain_commitment_registry.insert(commitment.clone()) {
-                        println!("Skipping duplicate stored domain commitment: {}", e);
+                        warn!("Skipping duplicate stored domain commitment: {}", e);
                     } else {
                         for (addr, new_nonce) in &commitment.state_updates {
                             let account = state.get_or_create(addr);
@@ -222,7 +227,7 @@ impl Blockchain {
                 let mut registry = CrossDomainMessageRegistry::new();
                 for msg in messages {
                     if let Err(e) = registry.insert(msg) {
-                        println!("Skipping duplicate cross domain message: {}", e);
+                        warn!("Skipping duplicate cross domain message: {}", e);
                     }
                 }
                 message_registry = registry;
@@ -250,6 +255,7 @@ impl Blockchain {
             plugin_registry: DomainPluginRegistry::new(),
             message_registry,
             settlement_finality_hashes: Vec::new(),
+            pending_slashing_evidence: Vec::new(),
         };
 
         if let Some(first) = bc.chain.first() {
@@ -257,8 +263,8 @@ impl Blockchain {
         } else {
             bc.genesis_time = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default();
         }
 
         bc
@@ -285,7 +291,7 @@ impl Blockchain {
         }
         blocks.reverse();
         self.chain = blocks;
-        println!("Loaded {} blocks from disk", self.chain.len());
+        info!("Loaded {} blocks from disk", self.chain.len());
         if let Some(store) = &self.storage {
             let _ = self.consensus.load_state(store);
         }
@@ -313,6 +319,54 @@ impl Blockchain {
                 .map_err(|e| format!("Failed to persist consensus domain: {}", e))?;
         }
         Ok(())
+    }
+
+    pub fn submit_slashing_evidence(&mut self, evidence: SlashingEvidence) -> Result<(), String> {
+        if !Self::verify_slashing_evidence(&evidence) {
+            return Err("Invalid slashing evidence".into());
+        }
+        if self.pending_slashing_evidence.iter().any(|existing| {
+            existing.header1.hash == evidence.header1.hash
+                && existing.header2.hash == evidence.header2.hash
+                && existing.signature1 == evidence.signature1
+                && existing.signature2 == evidence.signature2
+        }) {
+            return Ok(());
+        }
+        self.pending_slashing_evidence.push(evidence);
+        Ok(())
+    }
+
+    pub fn drain_local_slashing_evidence(&mut self) -> Vec<SlashingEvidence> {
+        let mut evidence = self
+            .consensus
+            .drain_slashing_evidence()
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to drain consensus slashing evidence: {}", e);
+                Vec::new()
+            });
+        for item in &evidence {
+            let _ = self.submit_slashing_evidence(item.clone());
+        }
+        evidence.extend(self.pending_slashing_evidence.clone());
+        evidence
+    }
+
+    fn verify_slashing_evidence(evidence: &SlashingEvidence) -> bool {
+        if evidence.header1.index != evidence.header2.index {
+            return false;
+        }
+        if evidence.header1.producer != evidence.header2.producer {
+            return false;
+        }
+        if evidence.header1.producer.is_none() {
+            return false;
+        }
+        if evidence.header1.hash == evidence.header2.hash {
+            return false;
+        }
+        evidence.header1.verify_signature(&evidence.signature1)
+            && evidence.header2.verify_signature(&evidence.signature2)
     }
 
     fn validate_consensus_domain_registration(domain: &ConsensusDomain) -> Result<(), String> {
@@ -383,21 +437,21 @@ impl Blockchain {
 
         for header in headers {
             if header.chain_id != chain_id {
-                println!(
+                warn!(
                     "Skipping stored global header with wrong chain id: height={}, chain_id={}",
                     header.global_height, header.chain_id
                 );
                 break;
             }
             if header.global_height != expected_height {
-                println!(
+                warn!(
                     "Skipping stored global header with non-contiguous height: expected={}, got={}",
                     expected_height, header.global_height
                 );
                 break;
             }
             if header.previous_global_hash != expected_prev_hash {
-                println!(
+                warn!(
                     "Skipping stored global header with broken hash chain: height={}",
                     header.global_height
                 );
@@ -414,45 +468,69 @@ impl Blockchain {
 
     pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Result<(), String> {
         let domain = self.validate_domain_commitment_metadata(&commitment)?;
-        
+
         if domain.status == DomainStatus::Frozen {
             return Err(format!("Domain {} is frozen", commitment.domain_id));
         }
 
-        if let Some(existing) = self.domain_commitment_registry.find_by_height(
-            commitment.domain_id,
-            commitment.domain_height,
-        ) {
-            if existing.domain_block_hash == commitment.domain_block_hash && existing.sequence == commitment.sequence {
+        if let Some(existing) = self
+            .domain_commitment_registry
+            .find_by_height(commitment.domain_id, commitment.domain_height)
+        {
+            if existing.domain_block_hash == commitment.domain_block_hash
+                && existing.sequence == commitment.sequence
+            {
                 return Ok(());
             } else {
-                let d_mut = self.domain_registry.get_mut(commitment.domain_id).unwrap();
+                let d_mut = self
+                    .domain_registry
+                    .get_mut(commitment.domain_id)
+                    .ok_or_else(|| format!("Domain {} not found", commitment.domain_id))?;
                 d_mut.status = DomainStatus::Frozen;
                 if let Some(store) = &self.storage {
                     let _ = store.save_consensus_domain(d_mut);
                 }
-                return Err(format!("Equivocation or invalid sequence detected for domain {} height {}", commitment.domain_id, commitment.domain_height));
+                return Err(format!(
+                    "Equivocation or invalid sequence detected for domain {} height {}",
+                    commitment.domain_id, commitment.domain_height
+                ));
             }
         }
 
         self.domain_commitment_registry.insert(commitment.clone())?;
+        let updated_domains = self.apply_pending_commitments(commitment.domain_id)?;
+
         if let Some(store) = &self.storage {
             store
-                .save_domain_commitment(&commitment)
-                .map_err(|e| format!("Failed to persist domain commitment: {}", e))?;
+                .save_domain_commitment_batch(&commitment, &updated_domains)
+                .map_err(|e| {
+                    format!(
+                        "Failed to atomically persist domain commitment batch: {}",
+                        e
+                    )
+                })?;
         }
-
-        self.apply_pending_commitments(commitment.domain_id)?;
 
         Ok(())
     }
 
-    fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<(), String> {
+    fn apply_pending_commitments(
+        &mut self,
+        domain_id: DomainId,
+    ) -> Result<Vec<ConsensusDomain>, String> {
+        let mut updated_domains = Vec::new();
         loop {
-            let last_height = self.domain_registry.get(domain_id).unwrap().last_committed_height;
+            let last_height = self
+                .domain_registry
+                .get(domain_id)
+                .ok_or_else(|| format!("Domain {} not found", domain_id))?
+                .last_committed_height;
             let next_height = last_height + 1;
-            
-            if let Some(com) = self.domain_commitment_registry.find_by_height(domain_id, next_height) {
+
+            if let Some(com) = self
+                .domain_commitment_registry
+                .find_by_height(domain_id, next_height)
+            {
                 let mut can_apply = true;
                 for (addr, new_nonce) in &com.state_updates {
                     if *new_nonce <= self.state.get_nonce(addr) {
@@ -460,28 +538,27 @@ impl Blockchain {
                         break;
                     }
                 }
-                
+
                 if can_apply {
                     for (addr, new_nonce) in &com.state_updates {
                         let account = self.state.get_or_create(addr);
                         account.nonce = *new_nonce;
                     }
                 }
-                
-                let d_mut = self.domain_registry.get_mut(domain_id).unwrap();
+
+                let d_mut = self
+                    .domain_registry
+                    .get_mut(domain_id)
+                    .ok_or_else(|| format!("Domain {} not found", domain_id))?;
                 d_mut.last_committed_height = next_height;
                 d_mut.last_committed_hash = com.domain_block_hash;
-                
-                if let Some(store) = &self.storage {
-                    store
-                        .save_consensus_domain(d_mut)
-                        .map_err(|e| format!("Failed to persist domain update: {}", e))?;
-                }
+
+                updated_domains.push(d_mut.clone());
             } else {
                 break;
             }
         }
-        Ok(())
+        Ok(updated_domains)
     }
 
     pub fn submit_verified_domain_commitment(
@@ -624,8 +701,8 @@ impl Blockchain {
             chain_id: self.chain_id,
             timestamp_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default(),
             domain_registry_root: self.domain_registry.root(),
             domain_commitment_root: self.domain_commitment_registry.root(),
             message_root: self.message_registry.root(),
@@ -1308,7 +1385,7 @@ impl Blockchain {
                 if temp_state.validate_transaction(tx).is_err() {
                     continue;
                 }
-                if Executor::apply_transaction(&mut temp_state, tx).is_ok() {
+                if Executor::apply_transaction_checked(&mut temp_state, tx).is_ok() {
                     valid_txs.push(tx.clone());
                     included.insert(tx.hash.clone());
                     progress = true;
@@ -1318,7 +1395,7 @@ impl Blockchain {
 
         for tx in &pending_txs {
             if !included.contains(&tx.hash) && self.state.validate_transaction(tx).is_err() {
-                println!("Discarding invalid transaction: {}", tx.hash);
+                warn!("Discarding invalid transaction: {}", tx.hash);
             }
         }
 
@@ -1360,7 +1437,7 @@ impl Blockchain {
         block: &Block,
     ) -> Result<AccountState, String> {
         let mut next_state = base_state.clone();
-        Executor::apply_block(
+        Executor::apply_block_checked(
             &mut next_state,
             &block.transactions,
             block.producer.as_ref(),
@@ -1372,9 +1449,16 @@ impl Blockchain {
 
     pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
         let index = self.chain.len() as u64;
-        let previous_hash = self.chain.last().unwrap().hash.clone();
+        let previous_hash = self
+            .chain
+            .last()
+            .map(|block| block.hash.clone())
+            .unwrap_or_else(|| "0".repeat(64));
         let valid_txs = self.collect_block_transactions();
         let mut block = Block::new(index, previous_hash, valid_txs);
+        if !self.pending_slashing_evidence.is_empty() {
+            block.slashing_evidence = Some(self.pending_slashing_evidence.clone());
+        }
         block.producer = Some(producer_address);
         block.timestamp =
             self.genesis_time + (index as u128 * crate::core::chain_config::SLOT_MS as u128);
@@ -1406,13 +1490,16 @@ impl Blockchain {
         }
 
         self.chain.push(block.clone());
+        if block.slashing_evidence.is_some() {
+            self.pending_slashing_evidence.clear();
+        }
 
         if let Some(last_block) = self.chain.last() {
             if let Err(e) = self
                 .consensus
                 .record_block(last_block, self.storage.as_ref())
             {
-                println!("Engine record block error: {}", e);
+                warn!("Engine record block error: {}", e);
             }
         }
 
@@ -1515,7 +1602,7 @@ impl Blockchain {
                     return Err(format!("Invalid transaction at index {}: {}", i, e));
                 }
             }
-            if let Err(e) = Executor::apply_transaction(&mut temp_state, tx) {
+            if let Err(e) = Executor::apply_transaction_checked(&mut temp_state, tx) {
                 return Err(format!("Failed to apply transaction at index {}: {}", i, e));
             }
         }
@@ -1547,7 +1634,7 @@ impl Blockchain {
                 .consensus
                 .record_block(last_block, self.storage.as_ref())
             {
-                println!("Engine record block error: {}", e);
+                warn!("Engine record block error: {}", e);
             }
         }
 
@@ -1574,9 +1661,9 @@ impl Blockchain {
                     self.finalized_hash.clone(),
                 );
                 if let Err(e) = pruning_manager.save_snapshot(&snapshot) {
-                    println!("Failed to save snapshot at height {}: {}", height, e);
+                    warn!("Failed to save snapshot at height {}: {}", height, e);
                 } else {
-                    println!("Saved state snapshot at height {}", height);
+                    info!("Saved state snapshot at height {}", height);
 
                     let prunable = pruning_manager.get_prunable_blocks(
                         self.chain.len() as u64,
@@ -1588,7 +1675,7 @@ impl Blockchain {
                             for block_index in &prunable {
                                 let _ = store.delete_block(*block_index);
                             }
-                            println!("Pruned {} old blocks from disk", prunable.len());
+                            info!("Pruned {} old blocks from disk", prunable.len());
                         }
                     }
                 }
@@ -1607,7 +1694,7 @@ impl Blockchain {
                 .consensus
                 .validate_block(block, previous_chain, &dummy_state)
             {
-                println!("Block {} validation failed: {}", i, e);
+                warn!("Block {} validation failed: {}", i, e);
                 return false;
             }
         }
@@ -1675,7 +1762,7 @@ impl Blockchain {
             return Err("Cannot reorg past finality depth".to_string());
         }
 
-        println!(
+        info!(
             "Reorg: replacing {} blocks from height {}",
             reorg_depth, fork_point
         );
@@ -1747,15 +1834,12 @@ impl Blockchain {
         Ok(state)
     }
     pub fn print_info(&self) {
-        println!("================================");
-        println!("Blockchain Info");
-        println!("================================");
-        println!("Consensus: {}", self.consensus.info());
-        println!("Length: {}", self.chain.len());
-        println!("Pending Tx: {}", self.mempool.len());
-        println!("================================");
+        info!("Blockchain Info");
+        info!("Consensus: {}", self.consensus.info());
+        info!("Length: {}", self.chain.len());
+        info!("Pending Tx: {}", self.mempool.len());
         for block in &self.chain {
-            println!(" Block #{}: {}", block.index, &block.hash[..16]);
+            info!("Block #{}: {}", block.index, &block.hash[..16]);
         }
     }
     pub fn get_state_snapshot(&self, height: u64) -> Option<crate::chain::snapshot::StateSnapshot> {
@@ -1922,6 +2006,7 @@ impl Clone for Blockchain {
             plugin_registry: DomainPluginRegistry::new(),
             message_registry: self.message_registry.clone(),
             settlement_finality_hashes: self.settlement_finality_hashes.clone(),
+            pending_slashing_evidence: self.pending_slashing_evidence.clone(),
         }
     }
 }

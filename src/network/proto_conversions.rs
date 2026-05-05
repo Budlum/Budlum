@@ -445,6 +445,11 @@ impl From<&NetworkMessage> for pb::ProtoNetworkMessage {
                     },
                 )
             }
+            NetworkMessage::SlashingEvidence(evidence) => {
+                pb::proto_network_message::Payload::SlashingEvidence(
+                    pb::ProtoSlashingEvidence::from(evidence),
+                )
+            }
             NetworkMessage::GlobalHeader(header) => {
                 pb::proto_network_message::Payload::GlobalHeader(pb::ProtoGlobalHeader {
                     data: serde_json::to_vec(header).unwrap_or_default(),
@@ -607,6 +612,9 @@ impl TryFrom<pb::ProtoNetworkMessage> for NetworkMessage {
                     .map_err(|e| format!("Invalid verified domain commitment payload: {}", e))?;
                 Ok(NetworkMessage::VerifiedDomainCommitment(payload))
             }
+            pb::proto_network_message::Payload::SlashingEvidence(e) => Ok(
+                NetworkMessage::SlashingEvidence(SlashingEvidence::try_from(e)?),
+            ),
             pb::proto_network_message::Payload::GlobalHeader(h) => {
                 let header = serde_json::from_slice(&h.data)
                     .map_err(|e| format!("Invalid global header payload: {}", e))?;

@@ -1,13 +1,13 @@
 #[cfg(test)]
 mod byzantine_settlement_tests {
     use crate::chain::blockchain::Blockchain;
+    use crate::chain::finality::{FinalityCert, ValidatorSetSnapshot};
     use crate::consensus::pow::PoWEngine;
     use crate::core::address::Address;
     use crate::core::block::Block;
+    use crate::domain::finality_adapter::{hash_finality_proof, FinalityProof};
     use crate::domain::plugin::default_domain;
     use crate::domain::{ConsensusKind, DomainCommitment, DomainStatus};
-    use crate::domain::finality_adapter::{hash_finality_proof, FinalityProof};
-    use crate::chain::finality::{FinalityCert, ValidatorSetSnapshot};
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -16,11 +16,11 @@ mod byzantine_settlement_tests {
         let make_node = || {
             let consensus = Arc::new(PoWEngine::new(0));
             let mut node = Blockchain::new(consensus, None, 1337, None);
-            
+
             let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
             let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
             let poa = default_domain(3, ConsensusKind::PoA, 1339, "poa-authority-quorum", 0);
-            
+
             node.register_consensus_domain(pow).unwrap();
             node.register_consensus_domain(pos).unwrap();
             node.register_consensus_domain(poa).unwrap();
@@ -43,8 +43,13 @@ mod byzantine_settlement_tests {
             b_pow.state_root = format!("pow_state_{}", i).repeat(32)[0..64].to_string();
             b_pow.tx_root = b_pow.calculate_tx_root();
             b_pow.hash = b_pow.calculate_hash();
-            let mut com_pow = DomainCommitment::from_block(&pow_domain, &b_pow, [i as u8; 32], [0u8; 32], i).unwrap();
-            let proof_pow = FinalityProof::PoW { confirmations: 10, total_work_hint: 1000 + i as u128 };
+            let mut com_pow =
+                DomainCommitment::from_block(&pow_domain, &b_pow, [i as u8; 32], [0u8; 32], i)
+                    .unwrap();
+            let proof_pow = FinalityProof::PoW {
+                confirmations: 10,
+                total_work_hint: 1000 + i as u128,
+            };
             com_pow.finality_proof_hash = hash_finality_proof(&proof_pow);
             pow_commitments.push((com_pow, proof_pow));
 
@@ -52,14 +57,23 @@ mod byzantine_settlement_tests {
             b_pos.state_root = format!("pos_state_{}", i).repeat(32)[0..64].to_string();
             b_pos.tx_root = b_pos.calculate_tx_root();
             b_pos.hash = b_pos.calculate_hash();
-            let mut com_pos = DomainCommitment::from_block(&pos_domain, &b_pos, [i as u8; 32], [0u8; 32], i).unwrap();
+            let mut com_pos =
+                DomainCommitment::from_block(&pos_domain, &b_pos, [i as u8; 32], [0u8; 32], i)
+                    .unwrap();
             let proof_pos = FinalityProof::PoS {
                 cert: FinalityCert {
-                    epoch: 1, checkpoint_height: i, checkpoint_hash: b_pos.hash.clone(),
-                    agg_sig_bls: vec![0u8; 48], bitmap: vec![1], set_hash: "set".to_string(),
+                    epoch: 1,
+                    checkpoint_height: i,
+                    checkpoint_hash: b_pos.hash.clone(),
+                    agg_sig_bls: vec![0u8; 48],
+                    bitmap: vec![1],
+                    set_hash: "set".to_string(),
                 },
                 validator_snapshot: ValidatorSetSnapshot {
-                    epoch: 1, validators: vec![], set_hash: "set".to_string(), total_stake: 100,
+                    epoch: 1,
+                    validators: vec![],
+                    set_hash: "set".to_string(),
+                    total_stake: 100,
                 },
             };
             com_pos.finality_proof_hash = hash_finality_proof(&proof_pos);
@@ -69,8 +83,13 @@ mod byzantine_settlement_tests {
             b_poa.state_root = format!("poa_state_{}", i).repeat(32)[0..64].to_string();
             b_poa.tx_root = b_poa.calculate_tx_root();
             b_poa.hash = b_poa.calculate_hash();
-            let mut com_poa = DomainCommitment::from_block(&poa_domain, &b_poa, [i as u8; 32], [0u8; 32], i).unwrap();
-            let proof_poa = FinalityProof::PoA { signer_count: 5, validator_count: 5 };
+            let mut com_poa =
+                DomainCommitment::from_block(&poa_domain, &b_poa, [i as u8; 32], [0u8; 32], i)
+                    .unwrap();
+            let proof_poa = FinalityProof::PoA {
+                signer_count: 5,
+                validator_count: 5,
+            };
             com_poa.finality_proof_hash = hash_finality_proof(&proof_poa);
             poa_commitments.push((com_poa, proof_poa));
         }
@@ -86,7 +105,7 @@ mod byzantine_settlement_tests {
         let root_a = node_a.build_global_header(None).domain_commitment_root;
 
         let mut all_commitments_shuffled = all_commitments.clone();
-        all_commitments_shuffled.reverse(); 
+        all_commitments_shuffled.reverse();
         for (com, _proof) in all_commitments_shuffled.iter() {
             node_b.submit_domain_commitment(com.clone()).unwrap();
         }
@@ -96,32 +115,55 @@ mod byzantine_settlement_tests {
 
         let (mut fake_com, proof) = pow_commitments[0].clone();
         fake_com.state_root = [0xFFu8; 32];
-        fake_com.sequence = 9999; 
-        assert!(node_a.submit_verified_domain_commitment(fake_com, proof).is_err(), "Invalid state root in proof must be rejected");
+        fake_com.sequence = 9999;
+        assert!(
+            node_a
+                .submit_verified_domain_commitment(fake_com, proof)
+                .is_err(),
+            "Invalid state root in proof must be rejected"
+        );
 
         let header = node_a.seal_global_header(None).unwrap();
         let (mut rollback_com, _proof) = pow_commitments[0].clone();
-        rollback_com.sequence = 0; 
-        assert!(node_a.submit_domain_commitment(rollback_com).is_err(), "Cannot rollback or duplicate finalized height");
-        
+        rollback_com.sequence = 0;
+        assert!(
+            node_a.submit_domain_commitment(rollback_com).is_err(),
+            "Cannot rollback or duplicate finalized height"
+        );
+
         let header_after = node_a.seal_global_header(None).unwrap();
-        assert_eq!(header.calculate_hash_bytes(), header_after.previous_global_hash, "Global hash chain must be stable");
+        assert_eq!(
+            header.calculate_hash_bytes(),
+            header_after.previous_global_hash,
+            "Global hash chain must be stable"
+        );
 
         let poa_domain_id = poa_domain.id;
-        node_a.domain_registry.set_status(poa_domain_id, DomainStatus::Frozen).unwrap(); 
+        node_a
+            .domain_registry
+            .set_status(poa_domain_id, DomainStatus::Frozen)
+            .unwrap();
         let mut com_poa_new = poa_commitments[0].0.clone();
         com_poa_new.domain_height = 999;
         com_poa_new.sequence = 999;
-        assert!(node_a.submit_domain_commitment(com_poa_new).is_err(), "Frozen domain should not accept commitments");
-        
-        assert!(node_a.submit_domain_commitment(pow_commitments[0].0.clone()).is_err(), "Already committed PoW still exists and protected");
+        assert!(
+            node_a.submit_domain_commitment(com_poa_new).is_err(),
+            "Frozen domain should not accept commitments"
+        );
+
+        assert!(
+            node_a
+                .submit_domain_commitment(pow_commitments[0].0.clone())
+                .is_err(),
+            "Already committed PoW still exists and protected"
+        );
     }
 
     #[tokio::test]
     async fn test_cross_domain_double_spend_protection() {
         let consensus = Arc::new(PoWEngine::new(0));
         let mut node = Blockchain::new(consensus, None, 1337, None);
-        
+
         let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
         let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
         node.register_consensus_domain(pow.clone()).unwrap();
@@ -135,27 +177,41 @@ mod byzantine_settlement_tests {
         b_pow.state_root = "pow_state".repeat(32)[0..64].to_string();
         b_pow.tx_root = b_pow.calculate_tx_root();
         b_pow.hash = b_pow.calculate_hash();
-        
-        let mut com_pow = DomainCommitment::from_block(&pow, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
+
+        let mut com_pow =
+            DomainCommitment::from_block(&pow, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pow.state_updates.insert(alice, 1); // Claims consuming nonce 0 -> 1
 
         let mut b_pos = Block::new(1, "pos".repeat(32), vec![]);
         b_pos.state_root = "pos_state".repeat(32)[0..64].to_string();
         b_pos.tx_root = b_pos.calculate_tx_root();
         b_pos.hash = b_pos.calculate_hash();
-        
-        let mut com_pos = DomainCommitment::from_block(&pos, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
+
+        let mut com_pos =
+            DomainCommitment::from_block(&pos, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pos.state_updates.insert(alice, 1); // Also claims consuming nonce 0 -> 1
 
         let pow_res = node.submit_domain_commitment(com_pow);
-        assert!(pow_res.is_ok(), "First commitment should be accepted: {:?}", pow_res.err());
+        assert!(
+            pow_res.is_ok(),
+            "First commitment should be accepted: {:?}",
+            pow_res.err()
+        );
         assert_eq!(node.state.get_nonce(&alice), 1);
 
         let res2 = node.submit_domain_commitment(com_pos);
         assert!(res2.is_ok(), "Second commitment for same nonce should be accepted into registry but ignore state update");
-        assert_eq!(node.state.get_nonce(&alice), 1, "Nonce must not be double-spent");
+        assert_eq!(
+            node.state.get_nonce(&alice),
+            1,
+            "Nonce must not be double-spent"
+        );
 
-        assert_eq!(node.state.get_nonce(&alice), 1, "Nonce should remain at 1 after rejected double-spend");
+        assert_eq!(
+            node.state.get_nonce(&alice),
+            1,
+            "Nonce should remain at 1 after rejected double-spend"
+        );
     }
 
     #[tokio::test]
@@ -179,14 +235,16 @@ mod byzantine_settlement_tests {
         b_pow.state_root = "pow_state".repeat(32)[0..64].to_string();
         b_pow.tx_root = b_pow.calculate_tx_root();
         b_pow.hash = b_pow.calculate_hash();
-        let mut com_pow = DomainCommitment::from_block(&pow_a, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
+        let mut com_pow =
+            DomainCommitment::from_block(&pow_a, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pow.state_updates.insert(alice_a, 1);
 
         let mut b_pos = Block::new(1, "pos".repeat(32), vec![]);
         b_pos.state_root = "pos_state".repeat(32)[0..64].to_string();
         b_pos.tx_root = b_pos.calculate_tx_root();
         b_pos.hash = b_pos.calculate_hash();
-        let mut com_pos = DomainCommitment::from_block(&pos_a, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
+        let mut com_pos =
+            DomainCommitment::from_block(&pos_a, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pos.state_updates.insert(alice_a, 1);
 
         let com_pow_b = com_pow.clone();
@@ -194,15 +252,24 @@ mod byzantine_settlement_tests {
 
         assert!(node_a.submit_domain_commitment(com_pow).is_ok());
         let res_a = node_a.submit_domain_commitment(com_pos);
-        assert!(res_a.is_ok(), "Idempotent/Buffered registry should return Ok");
+        assert!(
+            res_a.is_ok(),
+            "Idempotent/Buffered registry should return Ok"
+        );
         assert_eq!(node_a.state.get_nonce(&alice_a), 1);
 
         assert!(node_b.submit_domain_commitment(com_pos_b).is_ok());
         let res_b = node_b.submit_domain_commitment(com_pow_b);
-        assert!(res_b.is_ok(), "Idempotent/Buffered registry should return Ok");
+        assert!(
+            res_b.is_ok(),
+            "Idempotent/Buffered registry should return Ok"
+        );
         assert_eq!(node_b.state.get_nonce(&alice_b), 1);
 
-        assert_eq!(node_a.state.get_nonce(&alice_a), node_b.state.get_nonce(&alice_b));
+        assert_eq!(
+            node_a.state.get_nonce(&alice_a),
+            node_b.state.get_nonce(&alice_b)
+        );
     }
 
     #[tokio::test]
@@ -223,14 +290,16 @@ mod byzantine_settlement_tests {
         b_pow.state_root = "pow_state".repeat(32)[0..64].to_string();
         b_pow.tx_root = b_pow.calculate_tx_root();
         b_pow.hash = b_pow.calculate_hash();
-        let mut com_pow = DomainCommitment::from_block(&pow, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
+        let mut com_pow =
+            DomainCommitment::from_block(&pow, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pow.state_updates.insert(alice, 1);
 
         let mut b_pos = Block::new(1, "pos".repeat(32), vec![]);
         b_pos.state_root = "pos_state".repeat(32)[0..64].to_string();
         b_pos.tx_root = b_pos.calculate_tx_root();
         b_pos.hash = b_pos.calculate_hash();
-        let mut com_pos = DomainCommitment::from_block(&pos, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
+        let mut com_pos =
+            DomainCommitment::from_block(&pos, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pos.state_updates.insert(bob, 1);
 
         assert!(node.submit_domain_commitment(com_pow).is_ok());
@@ -242,14 +311,20 @@ mod byzantine_settlement_tests {
 
     #[tokio::test]
     async fn test_parallel_cross_domain_stress_determinism() {
-        use rand::seq::SliceRandom;
         use rand::rng;
+        use rand::seq::SliceRandom;
 
         let make_node = || {
             let consensus = std::sync::Arc::new(crate::consensus::pow::PoWEngine::new(0));
             let mut node = Blockchain::new(consensus, None, 1337, None);
             for i in 1..=5 {
-                let pow = default_domain(i, ConsensusKind::PoW, 1337 + i as u64, "pow-confirmation-depth", 0);
+                let pow = default_domain(
+                    i,
+                    ConsensusKind::PoW,
+                    1337 + i as u64,
+                    "pow-confirmation-depth",
+                    0,
+                );
                 node.register_consensus_domain(pow).unwrap();
             }
             node
@@ -260,26 +335,29 @@ mod byzantine_settlement_tests {
 
         let mut commitments = Vec::new();
         let accounts: Vec<Address> = (0..100).map(|i| Address::from([i as u8; 32])).collect();
-        
+
         for i in 0..1000 {
             let domain_id = (i % 5) + 1;
             let addr_idx = i % 100;
             let nonce = (i / 100) + 1;
-            
+
             let mut block = Block::new(i as u64, format!("hash_{}", i), vec![]);
             block.state_root = format!("state_{}", i);
             block.tx_root = block.calculate_tx_root();
             block.hash = block.calculate_hash();
-            
+
             let domain = node_a.domain_registry.get(domain_id).unwrap();
-            let mut com = DomainCommitment::from_block(&domain, &block, [0u8; 32], [0u8; 32], i as u64).unwrap();
-            com.state_updates.insert(accounts[addr_idx as usize], nonce as u64);
+            let mut com =
+                DomainCommitment::from_block(&domain, &block, [0u8; 32], [0u8; 32], i as u64)
+                    .unwrap();
+            com.state_updates
+                .insert(accounts[addr_idx as usize], nonce as u64);
             commitments.push(com);
         }
 
         let mut commitments_a = commitments.clone();
         let mut commitments_b = commitments.clone();
-        
+
         let mut rng = rng();
         commitments_a.shuffle(&mut rng);
         commitments_b.shuffle(&mut rng);
@@ -295,7 +373,8 @@ mod byzantine_settlement_tests {
             assert_eq!(
                 node_a.state.get_nonce(addr),
                 node_b.state.get_nonce(addr),
-                "Determinism failed for account {:?}", addr
+                "Determinism failed for account {:?}",
+                addr
             );
         }
     }
@@ -309,7 +388,7 @@ mod byzantine_settlement_tests {
         node.register_consensus_domain(pow.clone()).unwrap();
         let alice = Address::from([0xA1u8; 32]);
         node.state.add_balance(&alice, 1000);
-        
+
         let node_shared = Arc::new(RwLock::new(node));
         let mut handles = Vec::new();
 
@@ -320,9 +399,11 @@ mod byzantine_settlement_tests {
             let h = tokio::spawn(async move {
                 let mut block = Block::new(i as u64, format!("h_{}", i), vec![]);
                 block.hash = block.calculate_hash();
-                let mut com = DomainCommitment::from_block(&p_arc, &block, [0u8; 32], [0u8; 32], i as u64).unwrap();
+                let mut com =
+                    DomainCommitment::from_block(&p_arc, &block, [0u8; 32], [0u8; 32], i as u64)
+                        .unwrap();
                 com.state_updates.insert(a_arc, 1);
-                
+
                 let mut node_write = n_arc.write().await;
                 node_write.submit_domain_commitment(com)
             });
@@ -336,9 +417,16 @@ mod byzantine_settlement_tests {
             }
         }
 
-        assert_eq!(success_count, 100, "All unique heights should be accepted into registry");
+        assert_eq!(
+            success_count, 100,
+            "All unique heights should be accepted into registry"
+        );
         let node_final = node_shared.read().await;
-        assert_eq!(node_final.state.get_nonce(&alice), 1, "Nonce should only be updated by the first valid height");
+        assert_eq!(
+            node_final.state.get_nonce(&alice),
+            1,
+            "Nonce should only be updated by the first valid height"
+        );
     }
 
     #[tokio::test]
@@ -356,13 +444,14 @@ mod byzantine_settlement_tests {
             let mut node = Blockchain::new(consensus, Some(storage), 1337, None);
             node.register_consensus_domain(pow.clone()).unwrap();
             node.state.add_balance(&alice, 1000);
-            
+
             let mut block = Block::new(1, "h1".to_string(), vec![]);
             block.hash = block.calculate_hash();
-            let mut com = DomainCommitment::from_block(&pow, &block, [0u8; 32], [0u8; 32], 1).unwrap();
+            let mut com =
+                DomainCommitment::from_block(&pow, &block, [0u8; 32], [0u8; 32], 1).unwrap();
             com.state_updates.insert(alice, 1);
             node.submit_domain_commitment(com).unwrap();
-            
+
             assert_eq!(node.state.get_nonce(&alice), 1);
         }
 
@@ -370,7 +459,7 @@ mod byzantine_settlement_tests {
             let storage = crate::storage::db::Storage::new(path_str).unwrap();
             let consensus = Arc::new(crate::consensus::pow::PoWEngine::new(0));
             let node = Blockchain::new(consensus, Some(storage), 1337, None);
-            
+
             assert_eq!(node.state.get_nonce(&alice), 1);
             assert!(node.domain_registry.get(1).is_some());
             assert_eq!(node.domain_commitment_registry.len(), 1);
@@ -392,7 +481,8 @@ mod byzantine_settlement_tests {
 
         let mut block = Block::new(1, "h1".to_string(), vec![]);
         block.hash = block.calculate_hash();
-        let mut com = DomainCommitment::from_block(&pow_a, &block, [0u8; 32], [0u8; 32], 1).unwrap();
+        let mut com =
+            DomainCommitment::from_block(&pow_a, &block, [0u8; 32], [0u8; 32], 1).unwrap();
         com.state_updates.insert(Address::from([1u8; 32]), 1);
 
         node_a.submit_domain_commitment(com.clone()).unwrap();
@@ -438,7 +528,10 @@ mod byzantine_settlement_tests {
         node_a.submit_domain_commitment(com1.clone()).unwrap();
         node_b.submit_domain_commitment(com2.clone()).unwrap();
 
-        assert_ne!(node_a.state.get_nonce(&alice), node_b.state.get_nonce(&alice));
+        assert_ne!(
+            node_a.state.get_nonce(&alice),
+            node_b.state.get_nonce(&alice)
+        );
 
         node_a.submit_domain_commitment(com2).unwrap();
         node_b.submit_domain_commitment(com1).unwrap();
@@ -474,10 +567,16 @@ mod byzantine_settlement_tests {
 
         node.submit_domain_commitment(com1).unwrap();
         let res = node.submit_domain_commitment(com2);
-        
-        assert!(res.is_err(), "Equivocation (same height, different hash) must be rejected");
+
+        assert!(
+            res.is_err(),
+            "Equivocation (same height, different hash) must be rejected"
+        );
         assert_eq!(node.state.get_nonce(&alice), 1);
-        assert_eq!(node.domain_registry.get(1).unwrap().status, DomainStatus::Frozen);
+        assert_eq!(
+            node.domain_registry.get(1).unwrap().status,
+            DomainStatus::Frozen
+        );
     }
 
     #[tokio::test]
@@ -597,7 +696,7 @@ mod byzantine_settlement_tests {
                 let _ = node.submit_domain_commitment(com);
             }
         }
-        
+
         let mut expected_header = nodes[0].build_global_header(None);
         expected_header.timestamp_ms = 0;
         let expected_hash = expected_header.calculate_hash();
@@ -647,9 +746,9 @@ mod byzantine_settlement_tests {
 
     #[tokio::test]
     async fn test_async_gossip_random_delay_duplicate_drop_convergence() {
-        use rand::{Rng, SeedableRng};
         use rand::rngs::StdRng;
         use rand::seq::SliceRandom;
+        use rand::{Rng, SeedableRng};
         let mut rng = StdRng::seed_from_u64(42);
         let node_count = 5;
         let mut nodes: Vec<Blockchain> = (0..node_count).map(|_| make_node()).collect();
@@ -763,13 +862,7 @@ mod byzantine_settlement_tests {
                 _ => (ConsensusKind::PoW, "pow-confirmation-depth"),
             };
 
-            let domain = default_domain(
-                i as u32,
-                kind,
-                1337 + i as u64,
-                adapter,
-                0,
-            );
+            let domain = default_domain(i as u32, kind, 1337 + i as u64, adapter, 0);
 
             node.register_consensus_domain(domain).unwrap();
         }
@@ -786,27 +879,15 @@ mod byzantine_settlement_tests {
     ) -> DomainCommitment {
         let domain = node.domain_registry.get(domain_id).unwrap();
 
-        let mut block = Block::new(
-            sequence,
-            format!("parent_{}", sequence),
-            vec![],
-        );
+        let mut block = Block::new(sequence, format!("parent_{}", sequence), vec![]);
 
-        block.state_root = format!("state_{}_{}", domain_id, sequence)
-            .repeat(8)[0..64]
-            .to_string();
+        block.state_root = format!("state_{}_{}", domain_id, sequence).repeat(8)[0..64].to_string();
 
         block.tx_root = block.calculate_tx_root();
         block.hash = block.calculate_hash();
 
-        let mut com = DomainCommitment::from_block(
-            domain,
-            &block,
-            [0u8; 32],
-            [0u8; 32],
-            sequence,
-        )
-        .unwrap();
+        let mut com =
+            DomainCommitment::from_block(domain, &block, [0u8; 32], [0u8; 32], sequence).unwrap();
 
         com.state_updates.insert(account, nonce);
         com
@@ -824,8 +905,9 @@ mod byzantine_settlement_tests {
             let account = accounts[i % accounts.len()];
             let height = (i / 5) as u64 + 1;
             let nonce = height; // Simplified: 1 commitment = 1 nonce increment
-            
-            let mut com = make_commitment_for_account(node, domain_id, account, height, i as u64 + 1);
+
+            let mut com =
+                make_commitment_for_account(node, domain_id, account, height, i as u64 + 1);
             com.state_updates.insert(account, nonce);
             commitments.push(com);
         }
@@ -842,23 +924,12 @@ mod byzantine_settlement_tests {
     ) -> DomainCommitment {
         let domain = node.domain_registry.get(domain_id).unwrap();
 
-        let mut block = Block::new(
-            height,
-            format!("parent_{}", height),
-            vec![],
-        );
+        let mut block = Block::new(height, format!("parent_{}", height), vec![]);
 
         block.state_root = format!("{:0<64}", state_root.repeat(32))[0..64].to_string();
         block.tx_root = block.calculate_tx_root();
         block.hash = block.calculate_hash();
 
-        DomainCommitment::from_block(
-            domain,
-            &block,
-            [0u8; 32],
-            [0u8; 32],
-            sequence,
-        )
-        .unwrap()
+        DomainCommitment::from_block(domain, &block, [0u8; 32], [0u8; 32], sequence).unwrap()
     }
 }
