@@ -156,6 +156,21 @@ Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before participating. For security-sen
 
 ---
 
+## 👥 Team & Advisors
+
+Budlum Core is an open research-oriented Layer-1 blockchain project.  
+For protocol discussions, ecosystem opportunities, advisory inquiries, product collaboration, or investment-related communication, you can reach the relevant team members below.
+
+| Role | Contact | Social Links |
+|---|---|---|
+| Author & Lead Protocol Engineer | Radeonares32 | [GitHub](https://github.com/Radeonares32) |
+| Advisor | Avalanche Alpha | [X / Twitter](https://x.com/AvalancheAlpha) · [Telegram](https://t.me/BCGamingExpert) |
+| Product Manager | Demhat Kara | [LinkedIn](https://www.linkedin.com/in/demhat-kara-11b20925a/) · [X / Twitter](https://x.com/DemhatKara3) · [Telegram](https://t.me/DemhatKara) |
+
+For general technical contributions, please open an issue, discussion, or pull request directly on GitHub.
+
+---
+
 ## 📄 License
 
 MIT License. Copyright (c) 2026 The Budlum Developers.
