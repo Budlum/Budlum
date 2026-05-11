@@ -13,6 +13,9 @@ This document tracks the verification status of the Multi-Consensus Settlement L
 | `test_adversarial_finality_proofs` | Finality proof validation | ✅ Passed |
 | `test_restart_pending_buffer_persistence` | Crash recovery | ✅ Passed |
 | `test_distributed_gossip_convergence` | Real-node convergence | ✅ Passed |
+| `verified_pow_commitment_requires_finalized_depth_and_matching_proof_hash` | Raw-proof mismatch and PoW finality rejection | ✅ Passed |
+| `full_bridge_lifecycle_lock_mint_burn_unlock_with_proof_verification` | Verified bridge lock/mint/burn/unlock lifecycle | ✅ Passed |
+| `bridge_unlock_requires_verified_burn_event_from_target_domain` | Raw unlock rejection and target-domain burn proof requirement | ✅ Passed |
 
 ## 2. Architecture Diagram
 
@@ -51,6 +54,7 @@ graph TD
 
 ### Risks
 - **Early-Stage Adapters:** Finality proof adapters (PoS/BFT) are currently using high-level signature threshold logic rather than full cryptographic BLS/Ed25519 verification.
+- **Adapter Boundaries:** PoW now requires a non-zero work hint, and PoS binds certificate, snapshot, commitment, and domain validator-set hashes. PoA/BFT remain high-level quorum adapters until deeper cryptographic integration work is completed.
 - **Networking Scale:** While tested with 5 nodes in a controlled harness, the behavior under 100+ nodes with high latency is not yet benchmarked.
 - **Economic Safety:** Validator slashing and rewards are implemented for devnet-grade PoS flows, and domain registration now requires operator identity and bond. Mainnet-grade governance, bond sizing, and audit review are still required.
 
@@ -68,6 +72,10 @@ The current state of the repository represents a **controlled public devnet cand
 - [x] Deterministic global state for heterogeneous domains.
 - [x] Byzantine equivocation immunity (Model B).
 - [x] Atomic settlement persistence for commitment + domain height/hash updates.
+- [x] Verified-only domain commitment submission on public RPC/production chain paths.
+- [x] Production parent-domain-block linkage check.
+- [x] Strict nonce invariant rejection before durable insertion for immediately applicable commitments.
+- [x] Verified bridge return path through committed `BridgeBurned` event proofs.
 - [x] Distributed node convergence verified.
 - [x] Slashing evidence gossip and block inclusion path.
 - [x] PoS slashing/reward execution for devnet-grade validator economics.

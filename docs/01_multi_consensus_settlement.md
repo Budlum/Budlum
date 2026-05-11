@@ -10,14 +10,14 @@ The goal of Budlum is to create a **Universal Settlement Layer** that:
 - Supports parallel execution of multiple consensus domains (PoW, PoS, BFT, ZK).
 - Enforces a single, unified global account state.
 - Ensures Byzantine fault tolerance at the settlement level.
-- Provides a "Registry-First" approach where all commitments are recorded before verification, ensuring out-of-order data resilience.
+- Accepts only commitments that pass metadata, finality, parent-link, validator-set, and nonce-invariant checks before they become durable settlement state.
 - Persists commitment acceptance and domain height updates atomically so restart recovery cannot observe a half-committed settlement transition.
 
 ## 3. Consensus Domain Model
 A **Consensus Domain** is an independent blockchain or execution environment with its own rules.
 - **Identity:** Each domain has a unique `DomainId`.
 - **Kind:** Defines the consensus type (PoW, PoS, etc.).
-- **Operator Identity:** Each registered domain carries an operator address and minimum bond. Registrations without an operator bond are rejected.
+- **Operator Identity:** Each registered domain carries a non-zero operator address and minimum bond. Registrations without an operator bond, or with the reserved zero operator, are rejected.
 - **Registry:** The Settlement Layer tracks all active domains, their current heights, their operator bond, and their `ValidatorSetHash`.
 - **Adapters:** Each domain uses a specific `FinalityAdapter` to prove its state transitions to the Settlement Layer.
 
@@ -28,29 +28,50 @@ A `DomainCommitment` is the cryptographic proof submitted by a domain to the set
 - `state_root`: The resulting state of the domain.
 - `state_updates`: A map of account nonces/balances modified in this commitment.
 - `finality_proof_hash`: Reference to the consensus-specific proof (e.g., PoW nonce or PoS signatures).
+- `parent_domain_block_hash`: The hash of the previously committed domain block. Production settlement rejects parent-link mismatches.
+- `validator_set_hash`: The validator-set anchor used to bind the commitment to the registered domain and finality proof.
 
 ## 5. Settlement Layer
 The Settlement Layer acts as the "Supreme Court" of the Budlum ecosystem. It does not execute transactions; it verifies **commitments**.
 - It maintains a `GlobalBlockHeader` which is a Merkle aggregate of all verified domain commitments.
 - It manages the **Global Registry** of domains and their statuses (Active, Frozen, Retired).
+- `GlobalBlockHeader` timestamps are deterministic in the settlement header builder, so repeated builds over the same state produce stable hashes.
+
+Raw commitment submission is disabled on public RPC and production chain paths. Operators must submit a `VerifiedDomainCommitment`, whose proof hash must match the embedded commitment and whose adapter must finalize under the registered domain configuration.
+
+Adapter hardening currently includes:
+- PoW requires both confirmation depth and non-zero `total_work_hint`.
+- PoS verifies the finality certificate against the validator snapshot, and binds snapshot/cert/commitment hashes to the registered domain `validator_set_hash` when one is configured.
+- PoA/BFT/ZK adapters still use their current quorum/proof-hash models, with BFT/ZK mismatch checks enforced by the adapter.
 
 ## 6. Global Shared-State Safety
 To prevent cross-domain double-spending, Budlum enforces the **Nonce Invariant**:
 $$Account_{nonce}^{Global} < Commitment_{nonce}^{Domain}$$
 A commitment is only valid if its nonce is strictly greater than the current global nonce for that account. This ensures that even if two domains try to update the same account, only one can succeed at a given "Global Height."
 
+Invalid nonce claims are rejected before insertion into the commitment registry when the commitment is immediately applicable. On restart, replay only advances stored account nonces and never rewinds them.
+
 ## 7. Deterministic Conflict Resolution
 If two domains submit conflicting updates for the same account nonce:
 - The first commitment to reach the global settlement registry (via P2P arrival or block inclusion) is accepted.
-- Any subsequent commitment for the same nonce is rejected as a **Fraudulent Equivocation**.
+- Any subsequent commitment for the same nonce is rejected before it can affect settlement state.
 
-## 8. Gossip and Network Convergence
+If the same domain submits two different block hashes for the same height, the domain is frozen. Exact duplicate commitments are idempotent and return success without changing state.
+
+## 8. Bridge Safety
+Cross-domain bridge operations are tied to registered, active, bridge-enabled domains:
+- Asset registration requires a registered bridge-enabled source domain.
+- Locking requires distinct registered bridge-enabled source and target domains, a non-zero amount, and an expiry height after the source event height.
+- Raw burn and raw unlock paths are disabled. Returning funds requires a target-domain `BridgeBurned` event committed into settlement and verified through its event Merkle proof.
+- RPC callers should use `bud_burnBridgeTransferWithEvent` and `bud_unlockBridgeTransferVerified` for the verified return leg.
+
+## 9. Gossip and Network Convergence
 Commitments are spread via a **Gossip Mesh** (`libp2p-gossipsub`).
 - **Convergence:** Honest nodes eventually receive the same set of commitments.
 - **Idempotency:** Re-submitting the same commitment has no effect on the state.
 - **Buffering:** Out-of-order commitments (e.g., receiving height 10 before height 9) are stored in a `pending_buffer` and applied once the gap is filled.
 
-## 9. Byzantine Domain Handling
+## 10. Byzantine Domain Handling
 If a domain behaves maliciously (equivocation):
 - **Evidence:** The conflicting commitments are stored in the registry as proof.
 - **Global Freeze:** The domain's status is changed to `Frozen`. No further commitments from this domain will ever be accepted.
@@ -61,7 +82,7 @@ Validator-level equivocation is handled separately by PoS slashing evidence:
 - Evidence is gossiped as a top-level `NetworkMessage::SlashingEvidence`.
 - Producers include pending evidence in later blocks, where state execution applies stake slashing.
 
-## 10. Persistence and Crash Recovery
+## 11. Persistence and Crash Recovery
 The layer currently uses a persistent **Sled DB** behind a `BlockchainStorage` trait. Values are written with binary serialization and legacy JSON reads are still tolerated during migration. The storage backend stores:
 - All domain commitments (verified and pending).
 - The current status of all domains.
@@ -69,15 +90,15 @@ The layer currently uses a persistent **Sled DB** behind a `BlockchainStorage` t
 - Atomic settlement batches covering commitment insert + domain height/hash updates.
 - Node restart logic ensures that pending commitments and `Frozen` statuses are restored immediately, preventing "equivocation-on-restart" attacks.
 
-## 11. Current Limitations
+## 12. Current Limitations
 The current repository is suitable for a controlled public devnet, but not for audited mainnet deployment:
 - **Audit Pending:** Security audits and performance hardening are still required.
 - **Operational Hardening:** RPC rate limiting/auth, Docker/systemd packaging, health checks, fuzzing, and full clippy cleanup are still open.
 - **Error Refactor:** Structured `BudlumError` exists and critical execution paths use it, but some public APIs still expose legacy `Result<T, String>` wrappers.
 - **Formal Verification:** The mathematical invariants have not yet been formally verified using TLA+ or similar tools.
-- **Early Adapters:** PoS and BFT adapters currently use simulated signature counts.
+- **Early Adapters:** PoA/BFT adapters still use high-level quorum counters; PoS now verifies a certificate against a validator snapshot and validator-set hash anchors, but still needs audit-grade integration review.
 
-## 12. Test Coverage
+## 13. Test Coverage
 The layer is verified through a **Byzantine Chaos Matrix**, covering:
 - Network partitions and reconciliation.
 - Double-spend protection across domains.

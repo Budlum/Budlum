@@ -24,6 +24,32 @@ Common methods include:
 -   `bud_getTransaction`
 -   `bud_getBlockByNumber`
 -   `bud_txPrecheck`
+-   `bud_submitVerifiedDomainCommitment`
+-   `bud_registerBridgeAsset`
+-   `bud_lockBridgeTransfer`
+-   `bud_mintBridgeTransfer`
+-   `bud_burnBridgeTransferWithEvent`
+-   `bud_unlockBridgeTransferVerified`
+
+Settlement and bridge methods:
+
+| Method | Purpose |
+| --- | --- |
+| `bud_getSettlementInfo` | Returns pending global settlement roots and domain commitment count. |
+| `bud_getGlobalHeader` | Returns a sealed global header by height. |
+| `bud_getDomainCommitments` | Lists domain commitments currently known to settlement. |
+| `bud_getConsensusDomains` | Lists registered consensus domains. |
+| `bud_registerConsensusDomain` | Registers a domain with operator, bond, adapter, and validator-set metadata. |
+| `bud_submitDomainCommitment` | Disabled. Raw commitment submission is rejected; use verified submission. |
+| `bud_submitVerifiedDomainCommitment` | Submits a commitment plus finality proof. The proof hash, adapter, validator-set anchor, and finality status are checked before acceptance. |
+| `bud_registerBridgeAsset` | Registers an asset for a bridge-enabled source domain. |
+| `bud_lockBridgeTransfer` | Creates a source-domain bridge lock. Source and target domains must both be registered, active, bridge-enabled, and distinct. |
+| `bud_mintBridgeTransfer` | Mints from a verified source-domain `BridgeLocked` event proof. |
+| `bud_burnBridgeTransfer` | Disabled raw burn path. Use `bud_burnBridgeTransferWithEvent`. |
+| `bud_burnBridgeTransferWithEvent` | Burns on the target side and returns a `BridgeBurned` event that must be committed by the target domain. |
+| `bud_unlockBridgeTransfer` | Disabled raw unlock path. Use `bud_unlockBridgeTransferVerified`. |
+| `bud_unlockBridgeTransferVerified` | Unlocks source funds only after verifying a committed target-domain `BridgeBurned` event Merkle proof. |
+| `bud_sealGlobalHeader` | Seals the current deterministic settlement roots into a global header. |
 
 ## 4. Example Usage
 
@@ -47,8 +73,8 @@ Call `bud_getBalance` with an account public key or address.
 4.  **Panic prevention:** critical server paths use `Result` rather than crashing on malformed input.
 5.  **Config-based auth readiness:** TOML fields standardize `auth_required`, `api_key_env`, `allowed_ips`, `cors_origins`, and `rate_limit_per_minute`.
 6.  **ContractCall shape checks:** precheck and mempool validation reject empty or misaligned BudZKVM bytecode.
+7.  **Verified settlement only:** raw domain commitments, bridge burns, and bridge unlocks are rejected by RPC. Settlement-changing bridge return paths require committed domain events and Merkle proofs.
 
 ## 6. How Realistic Is `bud_txPrecheck`?
 
 `bud_txPrecheck` is a fast early warning system. It does not replace full block execution, but it helps wallets and operators catch malformed transactions before broadcasting them.
-

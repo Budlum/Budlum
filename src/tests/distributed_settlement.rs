@@ -282,7 +282,7 @@ mod distributed_settlement_tests {
             1,
         )
         .unwrap();
-        com_pos.state_updates.insert(alice, 1);
+        com_pos.state_updates.insert(alice, 2);
 
         n1.chain_handle
             .submit_domain_commitment(com_pos.clone())

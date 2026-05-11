@@ -19,8 +19,9 @@ Settlement layer, aşağıdaki kaos senaryolarının tamamında deterministik ka
 
 1.  **Gossip Convergence:** Farklı sıralarla gelen verilerin (gossip) sonunda tüm honest düğümlerde aynı `GlobalBlockHeader` hash'ine ulaşması.
 2.  **Persistence Recovery:** Düğüm çökse bile tamponlanmış (pending) blokların veya "Frozen" domain statülerinin diskten eksiksiz geri yüklenmesi.
-3.  **Adversarial Finality:** Yanlış PoS/PoW kanıtları veya yetersiz onay derinlikleri ile yapılan saldırıların reddedilmesi.
+3.  **Adversarial Finality:** Yanlış PoS/PoW kanıtları, sıfır PoW work hint'i, validator-set hash uyuşmazlıkları veya yetersiz onay derinlikleri ile yapılan saldırıların reddedilmesi.
 4.  **Atomic Recovery:** Commitment insert ve domain height update işlemlerinin yeniden başlatma sonrası tek kalıcı settlement geçişi olarak görülmesi.
+5.  **Verified Bridge Lifecycle:** Lock, mint, burn ve unlock akışlarının commit edilmiş domain event'leri ve Merkle proof'lar üzerinden çalışması.
 
 ## Faz 3: Dağıtık Devnet Simülasyonu (Distributed Test Harness)
 
@@ -49,18 +50,24 @@ Sistemin gerçek ağ koşullarındaki başarısı, `src/tests/distributed_settle
 $$Account_{nonce}(G') = 
 \begin{cases} 
 C_{nonce}, & \text{eğer } C_{nonce} > Account_{nonce}(G) \\
-Account_{nonce}(G), & \text{aksi halde}
+\bot, & \text{aksi halde: settlement insert öncesi reddet}
 \end{cases}$$
 
-Bu formül, **"Sadece ileriye dönük ve daha büyük nonce"** kuralını işletir. Bu, **Double Spend**'i matematiksel olarak imkansız kılar.
+Bu formül, **"Sadece ileriye dönük ve daha büyük nonce"** kuralını işletir. Eski veya eşit nonce sessizce yok sayılmaz; commitment hemen uygulanabilir durumdaysa kalıcı settlement state'e alınmadan reddedilir.
 
 ## 3. Pratik Uygulama: Settlement Motorunu Kodlamak
 
 ### Adım 1: Taahhüt Kabulü, Equivocation Kontrolü ve Atomik Kalıcılık
 
 ```rust
-pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Result<(), String> {
+pub fn submit_verified_domain_commitment(
+    &mut self,
+    commitment: DomainCommitment,
+    proof: FinalityProof,
+) -> Result<(), String> {
     self.validate_domain_commitment_metadata(&commitment)?;
+    self.verify_domain_commitment_finality(&commitment, &proof)?;
+    self.validate_validator_set_hash(&commitment)?;
     
     if let Some(existing) = self.domain_commitment_registry.find_by_height(
         commitment.domain_id,
@@ -73,6 +80,10 @@ pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Resu
             return Err("Equivocation detected! Domain frozen.".into());
         }
         return Ok(());
+    }
+
+    if commitment.domain_height == domain.last_committed_height + 1 {
+        self.validate_commitment_state_updates(&commitment)?;
     }
 
     self.domain_commitment_registry.insert(commitment.clone())?;
@@ -98,12 +109,13 @@ fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<Vec<Conse
         let next_height = last_height + 1;
         
         if let Some(com) = self.domain_commitment_registry.find_by_height(domain_id, next_height) {
-            let mut can_apply = true;
             for (addr, new_nonce) in &com.state_updates {
                 if *new_nonce <= self.state.get_nonce(addr) {
-                    can_apply = false; 
-                    break;
+                    return Err("Commitment nonce invariant violation".into());
                 }
+            }
+            if last_hash != [0u8; 32] && com.parent_domain_block_hash != last_hash {
+                return Err("Domain parent hash mismatch".into());
             }
             // ... state uygulama mantığı ...
             updated_domains.push(self.domain_registry.get(domain_id).unwrap().clone());
@@ -116,9 +128,26 @@ fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<Vec<Conse
 }
 ```
 
-Buradaki kritik production-hardening noktası, commitment kaydı ile domain yükseklik/hash güncellemesinin tek storage batch içinde yazılmasıdır. Node yeniden başlatıldığında "commitment var ama height ilerlememiş" gibi yarım kalıcı durum görülmemelidir.
+Buradaki kritik production-hardening noktaları şunlardır:
+- raw domain commitment gönderimi public RPC ve production chain path'lerinde kapalıdır;
+- verified commitment kayıtlı finality adapter'dan geçmelidir;
+- parent block hash, son commit edilmiş domain hash'ine bağlanmalıdır;
+- commitment kaydı ile domain yükseklik/hash güncellemesi tek storage batch içinde yazılır.
 
-### Adım 3: Domain Operatörleri ve Slashing Evidence Gossip
+Node yeniden başlatıldığında "commitment var ama height ilerlememiş" gibi yarım kalıcı durum görülmemelidir.
+
+### Adım 3: Doğrulanmış Cross-Domain Bridge Dönüş Yolu
+
+Bridge artık raw burn/unlock geçişlerini settlement otoritesi olarak kabul etmez. Dönüş transferi hedef domain üzerinde commit edilmiş event ile kanıtlanmalıdır:
+
+1. Source domain fonları kilitler ve `BridgeLocked` üretir.
+2. Settlement source event proof'u doğrular, ardından target tarafta mint eder.
+3. Target domain burn yapar ve `BridgeBurned` üretir.
+4. Settlement target event proof'u doğrular ve ancak bundan sonra source fonları unlock eder.
+
+RPC istemcileri burn event üretmek için `bud_burnBridgeTransferWithEvent`, doğrulanmış `BridgeBurned` event proof üzerinden unlock etmek için `bud_unlockBridgeTransferVerified` kullanır.
+
+### Adım 4: Domain Operatörleri ve Slashing Evidence Gossip
 
 Domain registration artık operatör adresi ve minimum bond taşır; bu da frozen domain'ler için ekonomik ceza bağlantısını kurar. Validator seviyesinde double-sign ise ayrı akar: PoS motoru `SlashingEvidence` üretir, node bunu `NetworkMessage::SlashingEvidence` olarak gossip eder, blok üreticileri bekleyen kanıtları bloğa koyar ve execution katmanı stake slashing'i deterministik uygular.
 

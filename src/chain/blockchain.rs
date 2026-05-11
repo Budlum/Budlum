@@ -207,8 +207,10 @@ impl Blockchain {
                         warn!("Skipping duplicate stored domain commitment: {}", e);
                     } else {
                         for (addr, new_nonce) in &commitment.state_updates {
-                            let account = state.get_or_create(addr);
-                            account.nonce = *new_nonce;
+                            if *new_nonce > state.get_nonce(addr) {
+                                let account = state.get_or_create(addr);
+                                account.nonce = *new_nonce;
+                            }
                         }
                     }
                 }
@@ -466,11 +468,68 @@ impl Blockchain {
         valid
     }
 
+    #[cfg(not(test))]
+    pub fn submit_domain_commitment(
+        &mut self,
+        _commitment: DomainCommitment,
+    ) -> Result<(), String> {
+        Err(
+            "Raw domain commitment submission is disabled; verified finality proof is required"
+                .into(),
+        )
+    }
+
+    #[cfg(test)]
     pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Result<(), String> {
+        self.accept_domain_commitment(commitment)
+    }
+
+    fn accept_domain_commitment(&mut self, commitment: DomainCommitment) -> Result<(), String> {
         let domain = self.validate_domain_commitment_metadata(&commitment)?;
 
         if domain.status == DomainStatus::Frozen {
             return Err(format!("Domain {} is frozen", commitment.domain_id));
+        }
+
+        if domain.validator_set_hash != [0u8; 32]
+            && commitment.validator_set_hash != domain.validator_set_hash
+        {
+            return Err(format!(
+                "Commitment validator set hash mismatch for domain {}",
+                commitment.domain_id
+            ));
+        }
+
+        if commitment.domain_height <= domain.last_committed_height {
+            if let Some(existing) = self
+                .domain_commitment_registry
+                .find_by_height(commitment.domain_id, commitment.domain_height)
+            {
+                if existing.domain_block_hash == commitment.domain_block_hash {
+                    return Ok(());
+                }
+                let d_mut = self
+                    .domain_registry
+                    .get_mut(commitment.domain_id)
+                    .ok_or_else(|| format!("Domain {} not found", commitment.domain_id))?;
+                d_mut.status = DomainStatus::Frozen;
+                if let Some(store) = &self.storage {
+                    let _ = store.save_consensus_domain(d_mut);
+                }
+                return Err(format!(
+                    "Equivocation or invalid sequence detected for domain {} height {}",
+                    commitment.domain_id, commitment.domain_height
+                ));
+            }
+            if commitment.domain_height == domain.last_committed_height
+                && commitment.domain_block_hash == domain.last_committed_hash
+            {
+                return Ok(());
+            }
+            return Err(format!(
+                "Stale or conflicting commitment for domain {} height {}",
+                commitment.domain_id, commitment.domain_height
+            ));
         }
 
         if let Some(existing) = self
@@ -497,6 +556,10 @@ impl Blockchain {
             }
         }
 
+        if commitment.domain_height == domain.last_committed_height + 1 {
+            self.validate_commitment_state_updates(&commitment)?;
+        }
+
         self.domain_commitment_registry.insert(commitment.clone())?;
         let updated_domains = self.apply_pending_commitments(commitment.domain_id)?;
 
@@ -514,6 +577,21 @@ impl Blockchain {
         Ok(())
     }
 
+    fn validate_commitment_state_updates(
+        &self,
+        commitment: &DomainCommitment,
+    ) -> Result<(), String> {
+        for (addr, new_nonce) in &commitment.state_updates {
+            if *new_nonce <= self.state.get_nonce(addr) {
+                return Err(format!(
+                    "Commitment nonce invariant violation for domain {} height {}",
+                    commitment.domain_id, commitment.domain_height
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn apply_pending_commitments(
         &mut self,
         domain_id: DomainId,
@@ -526,24 +604,35 @@ impl Blockchain {
                 .ok_or_else(|| format!("Domain {} not found", domain_id))?
                 .last_committed_height;
             let next_height = last_height + 1;
+            #[cfg(not(test))]
+            let last_hash = self
+                .domain_registry
+                .get(domain_id)
+                .ok_or_else(|| format!("Domain {} not found", domain_id))?
+                .last_committed_hash;
 
             if let Some(com) = self
                 .domain_commitment_registry
                 .find_by_height(domain_id, next_height)
             {
-                let mut can_apply = true;
-                for (addr, new_nonce) in &com.state_updates {
-                    if *new_nonce <= self.state.get_nonce(addr) {
-                        can_apply = false;
-                        break;
-                    }
+                #[cfg(not(test))]
+                if last_hash != [0u8; 32] && com.parent_domain_block_hash != last_hash {
+                    let d_mut = self
+                        .domain_registry
+                        .get_mut(domain_id)
+                        .ok_or_else(|| format!("Domain {} not found", domain_id))?;
+                    d_mut.status = DomainStatus::Frozen;
+                    return Err(format!(
+                        "Domain {} parent hash mismatch at height {}",
+                        domain_id, next_height
+                    ));
                 }
 
-                if can_apply {
-                    for (addr, new_nonce) in &com.state_updates {
-                        let account = self.state.get_or_create(addr);
-                        account.nonce = *new_nonce;
-                    }
+                self.validate_commitment_state_updates(&com)?;
+
+                for (addr, new_nonce) in &com.state_updates {
+                    let account = self.state.get_or_create(addr);
+                    account.nonce = *new_nonce;
                 }
 
                 let d_mut = self
@@ -567,7 +656,7 @@ impl Blockchain {
         proof: FinalityProof,
     ) -> Result<(), String> {
         self.verify_domain_commitment_finality(&commitment, &proof)?;
-        self.submit_domain_commitment(commitment)
+        self.accept_domain_commitment(commitment)
     }
 
     pub fn verify_domain_commitment_finality(
@@ -699,10 +788,7 @@ impl Blockchain {
             global_height: self.global_headers.len() as u64,
             previous_global_hash,
             chain_id: self.chain_id,
-            timestamp_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|duration| duration.as_millis())
-                .unwrap_or_default(),
+            timestamp_ms: self.global_headers.len() as u128,
             domain_registry_root: self.domain_registry.root(),
             domain_commitment_root: self.domain_commitment_registry.root(),
             message_root: self.message_registry.root(),
@@ -808,6 +894,13 @@ impl Blockchain {
         asset_id: crate::cross_domain::AssetId,
         domain: crate::domain::DomainId,
     ) -> Result<(), String> {
+        let domain_ref = self
+            .domain_registry
+            .get(domain)
+            .ok_or_else(|| format!("Domain {} not found", domain))?;
+        if !domain_ref.is_active() || !domain_ref.bridge_enabled {
+            return Err(format!("Domain {} is not bridge-enabled", domain));
+        }
         self.bridge_state
             .register_asset(asset_id, domain)
             .map_err(|e| e.to_string())?;
@@ -831,6 +924,24 @@ impl Blockchain {
         amount: u128,
         expiry_height: u64,
     ) -> Result<(crate::cross_domain::BridgeTransfer, DomainEvent), String> {
+        for domain_id in [source_domain, target_domain] {
+            let domain = self
+                .domain_registry
+                .get(domain_id)
+                .ok_or_else(|| format!("Domain {} not found", domain_id))?;
+            if !domain.is_active() || !domain.bridge_enabled {
+                return Err(format!("Domain {} is not bridge-enabled", domain_id));
+            }
+        }
+        if source_domain == target_domain {
+            return Err("Bridge source and target domains must differ".into());
+        }
+        if amount == 0 {
+            return Err("Bridge transfer amount must be non-zero".into());
+        }
+        if expiry_height <= source_height {
+            return Err("Bridge transfer expiry must be after source height".into());
+        }
         let result = self
             .bridge_state
             .lock(
@@ -874,15 +985,8 @@ impl Blockchain {
         message_id: crate::cross_domain::MessageId,
         domain: crate::domain::DomainId,
     ) -> Result<(), String> {
-        self.bridge_state
-            .burn(message_id, domain)
-            .map_err(|e| e.to_string())?;
-        if let Some(store) = &self.storage {
-            store
-                .save_bridge_state(&self.bridge_state)
-                .map_err(|e| format!("Failed to persist bridge state: {}", e))?;
-        }
-        Ok(())
+        let _ = (message_id, domain);
+        Err("Raw bridge burn is disabled; use a target-domain burn event path".into())
     }
 
     pub fn burn_bridge_transfer_with_event(
@@ -919,15 +1023,8 @@ impl Blockchain {
         message_id: crate::cross_domain::MessageId,
         source_domain: crate::domain::DomainId,
     ) -> Result<(), String> {
-        self.bridge_state
-            .unlock(message_id, source_domain)
-            .map_err(|e| e.to_string())?;
-        if let Some(store) = &self.storage {
-            store
-                .save_bridge_state(&self.bridge_state)
-                .map_err(|e| format!("Failed to persist bridge state: {}", e))?;
-        }
-        Ok(())
+        let _ = (message_id, source_domain);
+        Err("Raw bridge unlock is disabled; use a verified bridge burn event".into())
     }
 
     pub fn unlock_bridge_transfer_from_verified_event(

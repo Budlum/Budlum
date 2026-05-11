@@ -20,18 +20,24 @@ The core mathematical rule ensuring security is the **Nonce Invariant**. Given a
 $$Account_{nonce}(G') = 
 \begin{cases} 
 C_{nonce}, & \text{if } C_{nonce} > Account_{nonce}(G) \\
-Account_{nonce}(G), & \text{otherwise}
+\bot, & \text{otherwise: reject before settlement insertion}
 \end{cases}$$
 
-This formula enforces the **"Forward-only and Greater-than"** nonce rule, making **Double Spend** attacks mathematically impossible.
+This formula enforces the **"Forward-only and Greater-than"** nonce rule. A stale or equal nonce is not silently ignored; if the commitment is immediately applicable, it is rejected before it is inserted into durable settlement state.
 
 ## 3. Practical Implementation: Coding the Settlement Engine
 
 ### Step 1: Commitment Acceptance, Equivocation Detection, and Atomic Persistence
 
 ```rust
-pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Result<(), String> {
+pub fn submit_verified_domain_commitment(
+    &mut self,
+    commitment: DomainCommitment,
+    proof: FinalityProof,
+) -> Result<(), String> {
     self.validate_domain_commitment_metadata(&commitment)?;
+    self.verify_domain_commitment_finality(&commitment, &proof)?;
+    self.validate_validator_set_hash(&commitment)?;
     
     if let Some(existing) = self.domain_commitment_registry.find_by_height(
         commitment.domain_id,
@@ -44,6 +50,10 @@ pub fn submit_domain_commitment(&mut self, commitment: DomainCommitment) -> Resu
             return Err("Equivocation detected! Domain frozen.".into());
         }
         return Ok(());
+    }
+
+    if commitment.domain_height == domain.last_committed_height + 1 {
+        self.validate_commitment_state_updates(&commitment)?;
     }
 
     self.domain_commitment_registry.insert(commitment.clone())?;
@@ -69,12 +79,13 @@ fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<Vec<Conse
         let next_height = last_height + 1;
         
         if let Some(com) = self.domain_commitment_registry.find_by_height(domain_id, next_height) {
-            let mut can_apply = true;
             for (addr, new_nonce) in &com.state_updates {
                 if *new_nonce <= self.state.get_nonce(addr) {
-                    can_apply = false; 
-                    break;
+                    return Err("Commitment nonce invariant violation".into());
                 }
+            }
+            if last_hash != [0u8; 32] && com.parent_domain_block_hash != last_hash {
+                return Err("Domain parent hash mismatch".into());
             }
             // ... state application logic ...
             updated_domains.push(self.domain_registry.get(domain_id).unwrap().clone());
@@ -87,9 +98,26 @@ fn apply_pending_commitments(&mut self, domain_id: DomainId) -> Result<Vec<Conse
 }
 ```
 
-The important production-hardening detail is that commitment persistence and domain height/hash persistence are written through one storage batch. A restart should not observe "commitment exists, height did not move" as a durable state.
+The important production-hardening details are:
+- raw domain commitment submission is disabled on public RPC and production chain paths;
+- verified commitments must pass the registered finality adapter;
+- parent block hashes must link to the last committed domain hash;
+- commitment persistence and domain height/hash persistence are written through one storage batch.
 
-### Step 3: Domain Operators and Slashing Evidence Gossip
+A restart should not observe "commitment exists, height did not move" as a durable state.
+
+### Step 3: Verified Cross-Domain Bridge Return Path
+
+The bridge no longer accepts raw burn/unlock transitions as settlement authority. A return transfer has to pass through the target domain as a committed event:
+
+1. Source domain locks funds and emits `BridgeLocked`.
+2. Settlement verifies the source event proof, then mints on the target side.
+3. Target domain burns and emits `BridgeBurned`.
+4. Settlement verifies the target event proof and only then unlocks the source funds.
+
+RPC clients use `bud_burnBridgeTransferWithEvent` to create the burn event and `bud_unlockBridgeTransferVerified` to unlock from the verified `BridgeBurned` event proof.
+
+### Step 4: Domain Operators and Slashing Evidence Gossip
 
 Domain registration now carries an operator address and minimum bond, creating a concrete economic hook for frozen domains. Validator-level equivocation is handled separately: PoS engines generate `SlashingEvidence`, nodes gossip it as `NetworkMessage::SlashingEvidence`, and block producers include pending evidence so execution can slash stake deterministically.
 
@@ -104,8 +132,9 @@ The settlement layer remains deterministic across all of the following chaos sce
 
 1.  **Gossip Convergence:** Data arriving in different orders (gossip) eventually reaches the same `GlobalBlockHeader` hash (excluding timestamp) on all honest nodes.
 2.  **Persistence Recovery:** Buffered (pending) blocks or "Frozen" domain statuses are fully restored from disk even after a node crash.
-3.  **Adversarial Finality:** Rejection of attacks made with incorrect PoS/PoW proofs or insufficient confirmation depths.
+3.  **Adversarial Finality:** Rejection of attacks made with incorrect PoS/PoW proofs, zero PoW work hints, mismatched validator-set hashes, or insufficient confirmation depths.
 4.  **Atomic Recovery:** Commitment insertions and domain height updates survive restart as one durable settlement transition.
+5.  **Verified Bridge Lifecycle:** Lock, mint, burn, and unlock are exercised through committed domain events and Merkle proofs.
 
 ## Phase 3: Distributed Devnet Simulation (Distributed Test Harness)
 

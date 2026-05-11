@@ -119,9 +119,26 @@ pub enum ChainCommand {
         domain: crate::domain::DomainId,
         response: oneshot::Sender<Result<(), String>>,
     },
+    BurnBridgeTransferWithEvent {
+        message_id: crate::cross_domain::MessageId,
+        domain: crate::domain::DomainId,
+        domain_height: u64,
+        event_index: u32,
+        expiry_height: u64,
+        response: oneshot::Sender<Result<crate::cross_domain::DomainEvent, String>>,
+    },
     UnlockBridgeTransfer {
         message_id: crate::cross_domain::MessageId,
         source_domain: crate::domain::DomainId,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    UnlockBridgeTransferFromVerifiedEvent {
+        target_domain: crate::domain::DomainId,
+        target_height: u64,
+        sequence: u64,
+        expected_block_hash: Option<crate::domain::Hash32>,
+        event: crate::cross_domain::DomainEvent,
+        proof: crate::cross_domain::MerkleProof,
         response: oneshot::Sender<Result<(), String>>,
     },
     SealGlobalHeader(oneshot::Sender<Result<crate::settlement::GlobalBlockHeader, String>>),
@@ -602,6 +619,30 @@ impl ChainHandle {
             .unwrap_or_else(|_| Err("Actor dropped".to_string()))
     }
 
+    pub async fn burn_bridge_transfer_with_event(
+        &self,
+        message_id: crate::cross_domain::MessageId,
+        domain: crate::domain::DomainId,
+        domain_height: u64,
+        event_index: u32,
+        expiry_height: u64,
+    ) -> Result<crate::cross_domain::DomainEvent, String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::BurnBridgeTransferWithEvent {
+                message_id,
+                domain,
+                domain_height,
+                event_index,
+                expiry_height,
+                response: tx,
+            })
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
     pub async fn unlock_bridge_transfer(
         &self,
         message_id: crate::cross_domain::MessageId,
@@ -613,6 +654,32 @@ impl ChainHandle {
             .send(ChainCommand::UnlockBridgeTransfer {
                 message_id,
                 source_domain,
+                response: tx,
+            })
+            .await;
+        rx.await
+            .unwrap_or_else(|_| Err("Actor dropped".to_string()))
+    }
+
+    pub async fn unlock_bridge_transfer_from_verified_event(
+        &self,
+        target_domain: crate::domain::DomainId,
+        target_height: u64,
+        sequence: u64,
+        expected_block_hash: Option<crate::domain::Hash32>,
+        event: crate::cross_domain::DomainEvent,
+        proof: crate::cross_domain::MerkleProof,
+    ) -> Result<(), String> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(ChainCommand::UnlockBridgeTransferFromVerifiedEvent {
+                target_domain,
+                target_height,
+                sequence,
+                expected_block_hash,
+                event,
+                proof,
                 response: tx,
             })
             .await;
@@ -927,6 +994,22 @@ impl ChainActor {
                 } => {
                     let _ = response.send(self.blockchain.burn_bridge_transfer(message_id, domain));
                 }
+                ChainCommand::BurnBridgeTransferWithEvent {
+                    message_id,
+                    domain,
+                    domain_height,
+                    event_index,
+                    expiry_height,
+                    response,
+                } => {
+                    let _ = response.send(self.blockchain.burn_bridge_transfer_with_event(
+                        message_id,
+                        domain,
+                        domain_height,
+                        event_index,
+                        expiry_height,
+                    ));
+                }
                 ChainCommand::UnlockBridgeTransfer {
                     message_id,
                     source_domain,
@@ -936,6 +1019,25 @@ impl ChainActor {
                         self.blockchain
                             .unlock_bridge_transfer(message_id, source_domain),
                     );
+                }
+                ChainCommand::UnlockBridgeTransferFromVerifiedEvent {
+                    target_domain,
+                    target_height,
+                    sequence,
+                    expected_block_hash,
+                    event,
+                    proof,
+                    response,
+                } => {
+                    let _ =
+                        response.send(self.blockchain.unlock_bridge_transfer_from_verified_event(
+                            target_domain,
+                            target_height,
+                            sequence,
+                            expected_block_hash,
+                            event,
+                            &proof,
+                        ));
                 }
                 ChainCommand::SealGlobalHeader(res_tx) => {
                     let _ = res_tx.send(self.blockchain.seal_global_header(None));

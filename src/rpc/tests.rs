@@ -261,6 +261,8 @@ mod tests {
 
         let mut block2 = block.clone();
         block2.index = 2;
+        block2.previous_hash = block.hash.clone();
+        block2.hash = block2.calculate_hash();
         let raw_commitment =
             crate::domain::DomainCommitment::from_block(&domain, &block2, [4u8; 32], [5u8; 32], 1)
                 .unwrap();
@@ -301,6 +303,8 @@ mod tests {
 
         let mut block3 = block.clone();
         block3.index = 3;
+        block3.previous_hash = block2.hash.clone();
+        block3.hash = block3.calculate_hash();
         let proof = crate::domain::FinalityProof::PoW {
             confirmations: 64,
             total_work_hint: 5000,
@@ -414,10 +418,73 @@ mod tests {
             .unwrap();
         assert_eq!(mint_result["status"], "minted");
 
-        let burn_result = server.burn_bridge_transfer(message_id, 2).await.unwrap();
-        assert_eq!(burn_result["status"], "burned");
+        let raw_burn_err = server
+            .burn_bridge_transfer(message_id, 2)
+            .await
+            .unwrap_err();
+        assert!(raw_burn_err
+            .message()
+            .contains("Raw bridge burn is disabled"));
 
-        let unlock_result = server.unlock_bridge_transfer(message_id, 1).await.unwrap();
+        let burn_result = server
+            .burn_bridge_transfer_with_event(message_id, 2, 21, 0, 1000)
+            .await
+            .unwrap();
+        assert_eq!(burn_result["status"], "burned");
+        let burn_event: crate::cross_domain::DomainEvent =
+            serde_json::from_value(burn_result["event"].clone()).unwrap();
+
+        let mut burn_event_tree = crate::cross_domain::DomainEventTree::new();
+        burn_event_tree.push(burn_event.clone());
+        let mut burn_block = block.clone();
+        burn_block.index = 21;
+        let burn_proof = crate::domain::FinalityProof::PoA {
+            signer_count: 2,
+            validator_count: 3,
+        };
+        let target_domain = crate::domain::plugin::default_domain(
+            2,
+            crate::domain::ConsensusKind::PoA,
+            1338,
+            "poa-authority-quorum",
+            0,
+        );
+        let mut burn_commitment = crate::domain::DomainCommitment::from_block(
+            &target_domain,
+            &burn_block,
+            burn_event_tree.root(),
+            [0u8; 32],
+            5,
+        )
+        .unwrap();
+        burn_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&burn_proof);
+        server
+            .submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
+                commitment: burn_commitment,
+                proof: burn_proof,
+            })
+            .await
+            .unwrap();
+
+        let raw_unlock_err = server
+            .unlock_bridge_transfer(message_id, 1)
+            .await
+            .unwrap_err();
+        assert!(raw_unlock_err
+            .message()
+            .contains("Raw bridge unlock is disabled"));
+
+        let unlock_result = server
+            .unlock_bridge_transfer_verified(
+                2,
+                21,
+                5,
+                None,
+                burn_event,
+                burn_event_tree.proof(0).unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(unlock_result["status"], "unlocked");
 
         let rpc_sealed = server.seal_global_header().await.unwrap();

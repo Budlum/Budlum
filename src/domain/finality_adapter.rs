@@ -89,7 +89,10 @@ impl DomainFinalityAdapter for PoWFinalityAdapter {
     ) -> Result<FinalityStatus, FinalityError> {
         let min_depth = domain.min_confirmations.max(self.default_min_confirmations);
         match proof {
-            FinalityProof::PoW { confirmations, .. } if *confirmations >= min_depth => {
+            FinalityProof::PoW {
+                confirmations,
+                total_work_hint,
+            } if *confirmations >= min_depth && *total_work_hint > 0 => {
                 Ok(FinalityStatus::Finalized)
             }
             FinalityProof::PoW { confirmations, .. } => Ok(FinalityStatus::Pending {
@@ -111,7 +114,7 @@ impl DomainFinalityAdapter for PoSFinalityAdapter {
 
     fn verify_finality(
         &self,
-        _domain: &ConsensusDomain,
+        domain: &ConsensusDomain,
         commitment: &DomainCommitment,
         proof: &FinalityProof,
     ) -> Result<FinalityStatus, FinalityError> {
@@ -134,6 +137,33 @@ impl DomainFinalityAdapter for PoSFinalityAdapter {
             return Ok(FinalityStatus::Rejected(
                 "PoS cert hash does not match commitment".into(),
             ));
+        }
+
+        if validator_snapshot.set_hash != cert.set_hash {
+            return Ok(FinalityStatus::Rejected(
+                "PoS cert set hash does not match validator snapshot".into(),
+            ));
+        }
+
+        if let Ok(decoded_set_hash) = hex::decode(&validator_snapshot.set_hash) {
+            if decoded_set_hash.len() == 32 {
+                let mut snapshot_set_hash = [0u8; 32];
+                snapshot_set_hash.copy_from_slice(&decoded_set_hash);
+                if domain.validator_set_hash != [0u8; 32]
+                    && snapshot_set_hash != domain.validator_set_hash
+                {
+                    return Ok(FinalityStatus::Rejected(
+                        "PoS validator snapshot does not match registered domain set".into(),
+                    ));
+                }
+                if commitment.validator_set_hash != [0u8; 32]
+                    && commitment.validator_set_hash != snapshot_set_hash
+                {
+                    return Ok(FinalityStatus::Rejected(
+                        "PoS commitment validator set does not match finality proof".into(),
+                    ));
+                }
+            }
         }
 
         cert.verify(validator_snapshot)

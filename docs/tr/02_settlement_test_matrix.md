@@ -13,6 +13,9 @@ Bu döküman, Çoklu Konsensüs Yerleşim Katmanı'nın doğrulama durumunu taki
 | `test_adversarial_finality_proofs` | Kesinlik kanıtı doğrulaması | ✅ Geçti |
 | `test_restart_pending_buffer_persistence` | Çökme sonrası kurtarma | ✅ Geçti |
 | `test_distributed_gossip_convergence` | Gerçek düğüm yakınsaması | ✅ Geçti |
+| `verified_pow_commitment_requires_finalized_depth_and_matching_proof_hash` | Proof hash uyuşmazlığı ve PoW finality reddi | ✅ Geçti |
+| `full_bridge_lifecycle_lock_mint_burn_unlock_with_proof_verification` | Doğrulanmış bridge lock/mint/burn/unlock lifecycle | ✅ Geçti |
+| `bridge_unlock_requires_verified_burn_event_from_target_domain` | Raw unlock reddi ve target-domain burn proof zorunluluğu | ✅ Geçti |
 
 ## 2. Mimari Diyagram
 
@@ -50,7 +53,7 @@ graph TD
 ## 3. Mevcut Riskler ve Sınırlamalar
 
 ### Riskler
-- **Erken Aşama Adapterlar:** Kesinlik kanıtı adapterları (PoS/BFT), tam kriptografik BLS/Ed25519 doğrulaması yerine şimdilik üst düzey imza eşiği mantığını kullanmaktadır.
+- **Adapter Sınırları:** PoW artık sıfır olmayan work hint ister; PoS certificate, snapshot, commitment ve domain validator-set hash'lerini birbirine bağlar. PoA/BFT daha derin kriptografik entegrasyon tamamlanana kadar üst düzey quorum adapterlarıdır.
 - **Ağ Ölçeği:** Kontrollü bir harness içinde 5 düğümle test edilmiş olsa da, yüksek gecikmeli 100+ düğüm altındaki davranış henüz benchmark edilmemiştir.
 - **Ekonomik Güvenlik:** Validator slashing ve ödüller devnet seviyesindeki PoS akışları için uygulanmıştır; domain registration artık operatör kimliği ve bond gerektirir. Mainnet seviyesinde yönetişim, bond boyutlandırması ve audit incelemesi hâlâ gereklidir.
 
@@ -68,6 +71,10 @@ Deponun mevcut durumu **kontrollü public devnet adayıdır**; audited mainnet i
 - [x] Heterojen domainler için deterministik küresel durum.
 - [x] Bizans eşdeğerlik bağışıklığı (Model B).
 - [x] Taahhüt + domain yükseklik/hash güncellemeleri için atomik settlement kalıcılığı.
+- [x] Public RPC/production chain path'lerinde verified-only domain commitment gönderimi.
+- [x] Production parent-domain-block linkage kontrolü.
+- [x] Hemen uygulanabilir commitment'larda kalıcı insert öncesi katı nonce invariant reddi.
+- [x] Commit edilmiş `BridgeBurned` event proof'ları üzerinden verified bridge dönüş yolu.
 - [x] Dağıtık düğüm yakınsaması doğrulandı.
 - [x] Slashing evidence gossip ve blok dahil etme akışı.
 - [x] Devnet seviyesinde PoS slashing/reward execution.

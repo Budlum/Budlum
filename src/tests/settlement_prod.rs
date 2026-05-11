@@ -35,11 +35,21 @@ mod settlement_prod_tests {
         sequence: u64,
         seed: u8,
     ) -> DomainCommitment {
-        let mut block = Block::new(height, "aa".repeat(32), vec![]);
-        block.timestamp = 0;
-        block.state_root = format!("{:02x}", seed).repeat(32);
-        block.tx_root = block.calculate_tx_root();
-        block.hash = block.calculate_hash();
+        fn block_for(height: u64, seed: u8) -> Block {
+            let previous_hash = if height <= 1 {
+                "aa".repeat(32)
+            } else {
+                block_for(height - 1, seed.saturating_sub(1)).hash
+            };
+            let mut block = Block::new(height, previous_hash, vec![]);
+            block.timestamp = 0;
+            block.state_root = format!("{:02x}", seed).repeat(32);
+            block.tx_root = block.calculate_tx_root();
+            block.hash = block.calculate_hash();
+            block
+        }
+
+        let block = block_for(height, seed);
         DomainCommitment::from_block(
             domain,
             &block,
@@ -97,7 +107,9 @@ mod settlement_prod_tests {
     fn settlement_rejects_cross_consensus_kind_confusion() {
         let mut blockchain = test_chain();
         let pow = domain(1, ConsensusKind::PoW);
+        let pos = domain(2, ConsensusKind::PoS);
         blockchain.register_consensus_domain(pow.clone()).unwrap();
+        blockchain.register_consensus_domain(pos).unwrap();
 
         let mut commitment = commitment_for(&pow, 10, 0, 1);
         commitment.consensus_kind = ConsensusKind::PoS;
@@ -128,7 +140,9 @@ mod settlement_prod_tests {
     fn sealed_global_headers_form_a_hash_chain() {
         let mut blockchain = test_chain();
         let pow = domain(1, ConsensusKind::PoW);
+        let pos = domain(2, ConsensusKind::PoS);
         blockchain.register_consensus_domain(pow.clone()).unwrap();
+        blockchain.register_consensus_domain(pos.clone()).unwrap();
         blockchain
             .submit_domain_commitment(commitment_for(&pow, 1, 0, 1))
             .unwrap();
@@ -378,7 +392,9 @@ mod settlement_prod_tests {
     fn settlement_verifies_domain_event_proofs_from_committed_event_root() {
         let mut blockchain = test_chain();
         let pow = domain(1, ConsensusKind::PoW);
+        let pos = domain(2, ConsensusKind::PoS);
         blockchain.register_consensus_domain(pow.clone()).unwrap();
+        blockchain.register_consensus_domain(pos.clone()).unwrap();
 
         let mut event_tree = DomainEventTree::new();
         for index in 0..3u32 {
@@ -455,7 +471,9 @@ mod settlement_prod_tests {
     fn bridge_mint_is_only_called_after_settlement_event_proof_verifies() {
         let mut blockchain = test_chain();
         let pow = domain(1, ConsensusKind::PoW);
+        let pos = domain(2, ConsensusKind::PoS);
         blockchain.register_consensus_domain(pow.clone()).unwrap();
+        blockchain.register_consensus_domain(pos.clone()).unwrap();
 
         let asset_id = hash_fields_bytes(&[b"canonical-asset"]);
         let owner = Address::from([11u8; 32]);
@@ -494,9 +512,30 @@ mod settlement_prod_tests {
                 .is_err(),
             "verified messages still replay-protect at bridge state"
         );
-        blockchain.burn_bridge_transfer(message_id, 2).unwrap();
-        blockchain
+        assert!(blockchain.burn_bridge_transfer(message_id, pos.id).is_err());
+        assert!(blockchain
             .unlock_bridge_transfer(message_id, pow.id)
+            .is_err());
+
+        let burn_event = blockchain
+            .burn_bridge_transfer_with_event(message_id, pos.id, 56, 0, 2_000)
+            .unwrap();
+        let mut burn_tree = DomainEventTree::new();
+        burn_tree.push(burn_event.clone());
+        let mut burn_commitment = commitment_for(&pos, 56, 0, 5);
+        burn_commitment.event_root = burn_tree.root();
+        blockchain
+            .submit_domain_commitment(burn_commitment)
+            .unwrap();
+        blockchain
+            .unlock_bridge_transfer_from_verified_event(
+                pos.id,
+                56,
+                0,
+                None,
+                burn_event,
+                &burn_tree.proof(0).unwrap(),
+            )
             .unwrap();
     }
 
@@ -546,7 +585,9 @@ mod settlement_prod_tests {
     fn bridge_mint_rejects_verified_event_that_differs_from_original_lock_event() {
         let mut blockchain = test_chain();
         let pow = domain(1, ConsensusKind::PoW);
+        let pos = domain(2, ConsensusKind::PoS);
         blockchain.register_consensus_domain(pow.clone()).unwrap();
+        blockchain.register_consensus_domain(pos).unwrap();
 
         let asset_id = hash_fields_bytes(&[b"mutated-lock-event"]);
         let owner = Address::from([0x31; 32]);
@@ -619,7 +660,9 @@ mod settlement_prod_tests {
             let mut blockchain =
                 Blockchain::new(Arc::new(PoWEngine::new(0)), Some(storage), 1337, None);
             let pow = domain(1, ConsensusKind::PoW);
+            let pos = domain(2, ConsensusKind::PoS);
             blockchain.register_consensus_domain(pow.clone()).unwrap();
+            blockchain.register_consensus_domain(pos).unwrap();
 
             let asset_id = hash_fields_bytes(&[b"stored-bridge-asset"]);
             blockchain.register_bridge_asset(asset_id, pow.id).unwrap();
@@ -661,7 +704,9 @@ mod settlement_prod_tests {
             let mut blockchain =
                 Blockchain::new(Arc::new(PoWEngine::new(0)), Some(storage), 1337, None);
             let pow = domain(1, ConsensusKind::PoW);
+            let pos = domain(2, ConsensusKind::PoS);
             blockchain.register_consensus_domain(pow.clone()).unwrap();
+            blockchain.register_consensus_domain(pos).unwrap();
 
             let baseline = blockchain.build_global_header(None);
             let asset_id = hash_fields_bytes(&[b"bridge-lock-message-root"]);

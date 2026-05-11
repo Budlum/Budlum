@@ -134,11 +134,32 @@ pub trait BudlumApi {
         domain: crate::domain::DomainId,
     ) -> Result<serde_json::Value, ErrorObjectOwned>;
 
+    #[method(name = "bud_burnBridgeTransferWithEvent")]
+    async fn burn_bridge_transfer_with_event(
+        &self,
+        message_id: crate::cross_domain::MessageId,
+        domain: crate::domain::DomainId,
+        domain_height: u64,
+        event_index: u32,
+        expiry_height: u64,
+    ) -> Result<serde_json::Value, ErrorObjectOwned>;
+
     #[method(name = "bud_unlockBridgeTransfer")]
     async fn unlock_bridge_transfer(
         &self,
         message_id: crate::cross_domain::MessageId,
         source_domain: crate::domain::DomainId,
+    ) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    #[method(name = "bud_unlockBridgeTransferVerified")]
+    async fn unlock_bridge_transfer_verified(
+        &self,
+        target_domain: crate::domain::DomainId,
+        target_height: u64,
+        sequence: u64,
+        expected_block_hash: Option<crate::domain::Hash32>,
+        event: crate::cross_domain::DomainEvent,
+        proof: crate::cross_domain::MerkleProof,
     ) -> Result<serde_json::Value, ErrorObjectOwned>;
 
     #[method(name = "bud_sealGlobalHeader")]

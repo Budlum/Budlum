@@ -526,6 +526,36 @@ impl BudlumApiServer for RpcServer {
         Ok(self.bridge_roots_json("burned").await)
     }
 
+    async fn burn_bridge_transfer_with_event(
+        &self,
+        message_id: crate::cross_domain::MessageId,
+        domain: crate::domain::DomainId,
+        domain_height: u64,
+        event_index: u32,
+        expiry_height: u64,
+    ) -> Result<serde_json::Value, ErrorObjectOwned> {
+        let event = self
+            .chain
+            .burn_bridge_transfer_with_event(
+                message_id,
+                domain,
+                domain_height,
+                event_index,
+                expiry_height,
+            )
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    -32602,
+                    format!("Invalid bridge burn transfer: {}", e),
+                    None::<()>,
+                )
+            })?;
+        let mut roots = self.bridge_roots_json("burned").await;
+        roots["event"] = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+        Ok(roots)
+    }
+
     async fn unlock_bridge_transfer(
         &self,
         message_id: crate::cross_domain::MessageId,
@@ -533,6 +563,35 @@ impl BudlumApiServer for RpcServer {
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
         self.chain
             .unlock_bridge_transfer(message_id, source_domain)
+            .await
+            .map_err(|e| {
+                ErrorObjectOwned::owned(
+                    -32602,
+                    format!("Invalid bridge unlock transfer: {}", e),
+                    None::<()>,
+                )
+            })?;
+        Ok(self.bridge_roots_json("unlocked").await)
+    }
+
+    async fn unlock_bridge_transfer_verified(
+        &self,
+        target_domain: crate::domain::DomainId,
+        target_height: u64,
+        sequence: u64,
+        expected_block_hash: Option<crate::domain::Hash32>,
+        event: crate::cross_domain::DomainEvent,
+        proof: crate::cross_domain::MerkleProof,
+    ) -> Result<serde_json::Value, ErrorObjectOwned> {
+        self.chain
+            .unlock_bridge_transfer_from_verified_event(
+                target_domain,
+                target_height,
+                sequence,
+                expected_block_hash,
+                event,
+                proof,
+            )
             .await
             .map_err(|e| {
                 ErrorObjectOwned::owned(

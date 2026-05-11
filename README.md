@@ -29,7 +29,7 @@ Most blockchain frameworks are optimized for a single consensus worldview. Budlu
 
 ### Why Budlum?
 - 🔁 **Heterogeneous Settlement**: Infrastructure for running parallel consensus domains (PoW, PoS, BFT) on a unified settlement layer.
-- 🌉 **Trustless Interop**: Experimental cryptographic bridge for asset movement between isolated domains.
+- 🌉 **Verified Trustless Interop**: Experimental bridge flow where lock, mint, burn, and unlock are tied to committed domain events and Merkle proofs.
 - 🧠 **Deterministic Execution**: Research into replay-safe state transitions and consistent global headers.
 - 🧩 **Modular Core**: Decoupled consensus, networking, and execution layers for rapid prototyping.
 - 🌐 **P2P Native**: Built on `libp2p` with GossipSub and headers-first synchronization.
@@ -78,12 +78,21 @@ graph TD
 
 ### 🌍 Multi-Consensus Settlement (Model B)
 An implementation of a **Byzantine-Hardened Settlement Layer** designed for network chaos:
-- **Registry-First Approach**: Validly structured domain commitments are archived for deterministic replay and auditability, while canonical state application is gated by verification, ordering, and conflict checks.
+- **Verified-Only Commitments**: Production and public RPC paths reject raw domain commitments; settlement updates must arrive as `VerifiedDomainCommitment` with a matching finality proof hash.
+- **Adapter Hardening**: PoW requires confirmation depth plus non-zero work hint; PoS binds finality certificate, validator snapshot, commitment, and registered validator-set hash.
+- **Parent-Linked Domain History**: Production settlement rejects domain commitments whose `parent_domain_block_hash` does not link to the last committed domain block.
+- **Strict Nonce Invariant**: Immediately applicable commitments with stale or equal nonce updates are rejected before durable insertion.
 - **Byzantine Resilience**: Global state convergence verified via an 18-test "Chaos Matrix" under simulated partitions and delays.
-- **Equivocation Immunity**: Protocol-level detection and global freezing of domains that produce conflicting commitments.
+- **Equivocation Immunity**: Protocol-level detection and global freezing of domains that produce conflicting block hashes at the same height; exact duplicate commitments remain idempotent.
 - **Atomic Settlement Persistence**: Commitment insertions and domain height/hash updates are persisted in one storage batch.
-- **Domain Operator Bonds**: Domain registration requires operator identity and a minimum bond, creating an economic hook for frozen domains.
+- **Domain Operator Bonds**: Domain registration requires a non-zero operator identity and a minimum bond, creating an economic hook for frozen domains.
 - **Idempotent Processing**: Identical commitments produce the same state root regardless of arrival order.
+
+### 🌉 Verified Cross-Domain Bridge
+- **Bridge-Enabled Domains Only**: Asset registration and lock operations require active, registered, bridge-enabled domains.
+- **Safe Lock Constraints**: Source and target domains must differ, transfer amount must be non-zero, and expiry must be after the source event height.
+- **Raw Burn/Unlock Disabled**: Direct bridge burn and unlock calls are rejected as settlement authority.
+- **Proof-Based Return Path**: Funds return only after a target-domain `BridgeBurned` event is committed and verified through its event Merkle proof.
 
 ### 🛡️ Post-Quantum Readiness (Experimental)
 - Research into Dilithium-based checkpoint attestations.
@@ -119,6 +128,7 @@ Budlum Core is built with a "Test-First" engineering mindset. The architecture i
 - **Distributed Devnet Simulation**: Verified gossip convergence across a 5-node `libp2p` mesh with isolated storage.
 - **Persistence Recovery**: State and pending buffers are recovered after simulated node crashes during pending commitment cycles.
 - **Shared-State Safety**: Deterministic double-spend protection across heterogeneous consensus domains.
+- **Verified Bridge Lifecycle**: Lock, mint, burn, and unlock are tested through committed events and Merkle proofs.
 
 To run the full suite:
 ```bash
@@ -155,6 +165,11 @@ Use the following flags to test different consensus adapters:
 
 Interact with the node using standard JSON-RPC 2.0. Every core action is exposed via the `bud_` namespace.
 
+Settlement-changing RPC calls are intentionally proof-gated:
+- `bud_submitDomainCommitment` is disabled; use `bud_submitVerifiedDomainCommitment`.
+- `bud_burnBridgeTransfer` and `bud_unlockBridgeTransfer` are disabled raw paths.
+- Use `bud_burnBridgeTransferWithEvent` and `bud_unlockBridgeTransferVerified` for the verified bridge return flow.
+
 ```bash
 # Get current block height
 curl -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"bud_blockNumber","params":[],"id":1}' http://localhost:8545
@@ -171,6 +186,8 @@ See the full [**Protocol Specification**](SPECIFICATION.md) for a detailed API r
 
 - [x] **Devnet Economic Hardening**: Validator reward distribution and slashing execution.
 - [x] **Settlement Atomicity**: Atomic commitment + domain height/hash persistence.
+- [x] **Verified Settlement Hardening**: Proof-gated domain commitments, parent-link checks, strict nonce rejection, and validator-set anchoring.
+- [x] **Verified Bridge Return Path**: Bridge unlock requires a committed target-domain burn event proof.
 - [x] **Sync Hardening**: Handshake-triggered headers-first sync and real sync status reporting.
 - [ ] **ZKVM Optimizations**: Improving STARK proof generation performance.
 - [ ] **Formal Verification**: Researching TLA+ models for settlement convergence.

@@ -27,6 +27,9 @@ impl ConsensusDomainRegistry {
                 domain.id, MIN_DOMAIN_OPERATOR_BOND
             ));
         }
+        if domain.operator == Some(crate::core::address::Address::zero()) {
+            return Err(format!("Domain {} has invalid zero operator", domain.id));
+        }
         self.domains.insert(domain.id, domain);
         Ok(())
     }

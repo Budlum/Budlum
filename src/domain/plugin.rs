@@ -229,18 +229,24 @@ pub fn default_domain(
         &kind_bytes,
     ]);
 
+    let mut operator = [0u8; 32];
+    operator[0..4].copy_from_slice(&id.to_le_bytes());
+    if operator == [0u8; 32] {
+        operator[0] = 1;
+    }
+
     ConsensusDomain {
         id,
         kind,
         status: DomainStatus::Active,
         domain_chain_id,
-        operator: Some(crate::core::address::Address::zero()),
+        operator: Some(crate::core::address::Address::from(operator)),
         operator_bond: crate::domain::registry::MIN_DOMAIN_OPERATOR_BOND,
         config_hash,
         validator_set_hash: [0u8; 32],
         finality_adapter: finality_adapter.into(),
         min_confirmations,
-        bridge_enabled: false,
+        bridge_enabled: true,
         block_hash_scheme: RootScheme::BudlumBlockV2,
         state_root_scheme: RootScheme::BudlumBlockV2,
         tx_root_scheme: RootScheme::BudlumBlockV2,
