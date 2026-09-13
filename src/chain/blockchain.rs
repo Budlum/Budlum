@@ -1,4 +1,6 @@
-use crate::chain::finality::{FinalityAggregator, FinalityCert, Precommit, Prevote, ValidatorEntry, ValidatorSetSnapshot};
+use crate::chain::finality::{
+    FinalityAggregator, FinalityCert, Precommit, Prevote, ValidatorEntry, ValidatorSetSnapshot,
+};
 use crate::chain::genesis::{GenesisConfig, GENESIS_TIMESTAMP};
 use crate::chain::snapshot::PruningManager;
 use crate::consensus::pos::SlashingEvidence;
@@ -71,7 +73,8 @@ impl Blockchain {
             m.chain_height.set(height);
             m.finalized_height.set(self.finalized_height as i64);
             m.blocks_produced.inc();
-            m.finality_lag.set((height as u64).saturating_sub(self.finalized_height) as i64);
+            m.finality_lag
+                .set((height as u64).saturating_sub(self.finalized_height) as i64);
             m.mempool_size.set(self.mempool.len() as i64);
         }
     }
@@ -1242,11 +1245,16 @@ impl Blockchain {
         }
         Ok(())
     }
-    fn get_tx_block_height_timed(&self, store: &Storage, hash: &str) -> std::io::Result<Option<u64>> {
+    fn get_tx_block_height_timed(
+        &self,
+        store: &Storage,
+        hash: &str,
+    ) -> std::io::Result<Option<u64>> {
         let read_start = std::time::Instant::now();
         let result = store.get_tx_block_height(hash);
         if let Some(ref m) = self.metrics {
-            m.storage_read_seconds.observe(read_start.elapsed().as_secs_f64());
+            m.storage_read_seconds
+                .observe(read_start.elapsed().as_secs_f64());
         }
         result
     }
@@ -1704,7 +1712,8 @@ impl Blockchain {
             let write_start = std::time::Instant::now();
             let result = store.commit_durable_batch(&batch);
             if let Some(ref m) = self.metrics {
-                m.storage_write_seconds.observe(write_start.elapsed().as_secs_f64());
+                m.storage_write_seconds
+                    .observe(write_start.elapsed().as_secs_f64());
             }
             result.map_err(|e| format!("Failed to commit durable batch: {}", e))?;
         }
@@ -1812,7 +1821,8 @@ impl Blockchain {
         self.mempool.set_min_fee(self.state.base_fee);
         self.emit_chain_metrics();
         if let Some(ref m) = self.metrics {
-            m.consensus_round_seconds.observe(round_start.elapsed().as_secs_f64());
+            m.consensus_round_seconds
+                .observe(round_start.elapsed().as_secs_f64());
         }
         Some(block)
     }
@@ -1971,7 +1981,11 @@ impl Blockchain {
         {
             let height = last_block.index;
             if pruning_manager.should_create_snapshot(height) {
-                let genesis_hash = self.chain.first().map(|b| b.hash.clone()).unwrap_or_default();
+                let genesis_hash = self
+                    .chain
+                    .first()
+                    .map(|b| b.hash.clone())
+                    .unwrap_or_default();
                 let certs: Vec<FinalityCert> = self
                     .pending_finality_certs
                     .values()
@@ -1986,10 +2000,8 @@ impl Blockchain {
                     finalized_hash: self.finalized_hash.clone(),
                     finality_certificates: certs,
                 };
-                let v2_snapshot = crate::chain::snapshot::StateSnapshotV2::from_state(
-                    &self.state,
-                    params,
-                );
+                let v2_snapshot =
+                    crate::chain::snapshot::StateSnapshotV2::from_state(&self.state, params);
                 if let Err(e) = pruning_manager.save_snapshot_v2(&v2_snapshot) {
                     warn!("Failed to save V2 snapshot at height {}: {}", height, e);
                 } else {
@@ -2205,7 +2217,11 @@ impl Blockchain {
             .unwrap_or_else(|| self.finalized_hash.clone());
 
         // Produce V2 snapshot with full consensus metadata
-        let genesis_hash = self.chain.first().map(|b| b.hash.clone()).unwrap_or_default();
+        let genesis_hash = self
+            .chain
+            .first()
+            .map(|b| b.hash.clone())
+            .unwrap_or_default();
         let certs: Vec<FinalityCert> = self
             .pending_finality_certs
             .values()
@@ -2367,7 +2383,10 @@ impl Blockchain {
 
         info!(
             "Applied V2 snapshot at height {} (epoch={}, base_fee={}, certs={})",
-            v2.height, v2.epoch_index, v2.base_fee, v2.finality_certificates.len()
+            v2.height,
+            v2.epoch_index,
+            v2.base_fee,
+            v2.finality_certificates.len()
         );
         Ok(())
     }
@@ -2471,10 +2490,7 @@ impl Blockchain {
         aggregator.add_prevote(vote).map_err(|e| e.to_string())
     }
 
-    pub fn handle_precommit(
-        &mut self,
-        vote: Precommit,
-    ) -> Result<Option<FinalityCert>, String> {
+    pub fn handle_precommit(&mut self, vote: Precommit) -> Result<Option<FinalityCert>, String> {
         let aggregator = self
             .finality_aggregator
             .as_mut()
@@ -2999,7 +3015,9 @@ mod tests {
         };
         let result = bc.handle_prevote(vote);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No active finality aggregator"));
+        assert!(result
+            .unwrap_err()
+            .contains("No active finality aggregator"));
     }
 
     #[test]
@@ -3016,7 +3034,9 @@ mod tests {
         };
         let result = bc.handle_precommit(vote);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("No active finality aggregator"));
+        assert!(result
+            .unwrap_err()
+            .contains("No active finality aggregator"));
     }
 
     #[test]

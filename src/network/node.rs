@@ -118,7 +118,11 @@ impl NodeClient {
             .peer_manager
             .lock()
             .map_err(|_| "Peer manager lock poisoned".to_string())?;
-        Ok(pm.get_banned_peers().iter().map(|p| p.to_string()).collect())
+        Ok(pm
+            .get_banned_peers()
+            .iter()
+            .map(|p| p.to_string())
+            .collect())
     }
 }
 #[tokio::test]
@@ -167,7 +171,8 @@ pub fn load_or_generate_identity_key(path: Option<&str>) -> identity::Keypair {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(file_path, std::fs::Permissions::from_mode(0o600));
+                    let _ =
+                        std::fs::set_permissions(file_path, std::fs::Permissions::from_mode(0o600));
                 }
             }
             Err(e) => warn!("Failed to encode identity key: {}", e),
@@ -335,9 +340,9 @@ impl Node {
         self.max_peers = security.max_peers;
         self.mdns_enabled = security.mdns_enabled;
         if security.persist_banned_peers && self.banned_peer_db.is_none() {
-            self.banned_peer_db = Some(
-                std::path::PathBuf::from(format!("./data/{:?}/banned-peers.json", network).to_lowercase())
-            );
+            self.banned_peer_db = Some(std::path::PathBuf::from(
+                format!("./data/{:?}/banned-peers.json", network).to_lowercase(),
+            ));
         }
     }
 
@@ -448,7 +453,10 @@ impl Node {
         let json = serde_json::json!({ "banned_peers": banned_peers });
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
-            if let Err(e) = std::fs::write(db_path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+            if let Err(e) = std::fs::write(
+                db_path,
+                serde_json::to_string_pretty(&json).unwrap_or_default(),
+            ) {
                 warn!("Failed to persist banned peers: {}", e);
             }
         }

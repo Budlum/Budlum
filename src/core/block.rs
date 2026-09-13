@@ -258,7 +258,8 @@ impl Block {
         self.producer = Some(signer.address());
         let binary_hash = self.calculate_hash_bytes();
         self.hash = hex::encode(binary_hash);
-        let signature = signer.sign_block(&binary_hash)
+        let signature = signer
+            .sign_block(&binary_hash)
             .map_err(|e| format!("Block signing failed: {}", e))?;
         self.signature = Some(signature);
         info!(

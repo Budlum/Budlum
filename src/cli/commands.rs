@@ -769,7 +769,11 @@ impl NodeConfig {
                     eprintln!("CRITICAL SECURITY FAILURE: PKCS#11 PIN environment variable '{}' is missing or empty.", pin_env);
                     std::process::exit(1);
                 }
-                println!("INFO: Mainnet validator will use PKCS#11 HSM backend (module: {}, slot: {})", module_path, self.pkcs11_slot_id.unwrap_or(0));
+                println!(
+                    "INFO: Mainnet validator will use PKCS#11 HSM backend (module: {}, slot: {})",
+                    module_path,
+                    self.pkcs11_slot_id.unwrap_or(0)
+                );
             }
 
             // Rule 2: No mDNS on mainnet!

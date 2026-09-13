@@ -8,14 +8,10 @@ pub trait ConsensusSigner: Send + Sync {
     }
     fn sign_block(&self, block_hash: &[u8; 32]) -> Result<Vec<u8>, CryptoError>;
     fn sign_prevote(&self, _msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        self.sign_block(
-            &crate::core::hash::calculate_hash_bytes(_msg),
-        )
+        self.sign_block(&crate::core::hash::calculate_hash_bytes(_msg))
     }
     fn sign_precommit(&self, _msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        self.sign_block(
-            &crate::core::hash::calculate_hash_bytes(_msg),
-        )
+        self.sign_block(&crate::core::hash::calculate_hash_bytes(_msg))
     }
     fn backend_name(&self) -> &'static str;
 }

@@ -1,6 +1,10 @@
 #[cfg(test)]
 mod integration_tests {
     use crate::chain::blockchain::Blockchain;
+    use crate::chain::finality::{
+        checkpoint_signing_message, is_checkpoint_height, sign_bls, verify_bls_sig,
+        FinalityAggregator, Precommit, Prevote, ValidatorEntry, ValidatorSetSnapshot,
+    };
     use crate::consensus::poa::PoAConfig;
     use crate::consensus::pos::PoSConfig;
     use crate::consensus::{poa::PoAEngine, pos::PoSEngine, pow::PoWEngine, ConsensusEngine};
@@ -9,11 +13,10 @@ mod integration_tests {
     use crate::core::block::Block;
     use crate::core::governance::ProposalType;
     use crate::core::transaction::Transaction;
-    use crate::crypto::primitives::KeyPair;
-    use crate::execution::executor::Executor;
-    use crate::chain::finality::{FinalityAggregator, ValidatorEntry, ValidatorSetSnapshot, Precommit, Prevote, is_checkpoint_height, sign_bls, verify_bls_sig, checkpoint_signing_message};
     use crate::crypto::primitives::BlsKeypair;
+    use crate::crypto::primitives::KeyPair;
     use crate::crypto::primitives::ValidatorKeys;
+    use crate::execution::executor::Executor;
     use std::sync::Arc;
 
     #[test]
@@ -625,7 +628,10 @@ mod integration_tests {
             sig_bls: vec![],
         };
         let result = bc.handle_precommit(vote2);
-        assert!(result.is_ok(), "single validator should reach both prevote and precommit quorum");
+        assert!(
+            result.is_ok(),
+            "single validator should reach both prevote and precommit quorum"
+        );
     }
 
     #[test]
@@ -667,18 +673,26 @@ mod integration_tests {
         keys
     }
 
-    fn make_validator_snapshot(addrs: &[(Address, u64)], bls_keys: &[BlsKeypair]) -> ValidatorSetSnapshot {
-        let entries: Vec<ValidatorEntry> = addrs.iter().enumerate().map(|(i, (addr, stake))| {
-            let pop_msg = crate::chain::finality::pop_signing_message(addr, &bls_keys[i].public_key);
-            let pop_sig = sign_bls(&bls_keys[i].secret_key, &pop_msg);
-            ValidatorEntry {
-                address: *addr,
-                stake: *stake,
-                bls_public_key: bls_keys[i].public_key.clone(),
-                pop_signature: pop_sig,
-                pq_public_key: vec![],
-            }
-        }).collect();
+    fn make_validator_snapshot(
+        addrs: &[(Address, u64)],
+        bls_keys: &[BlsKeypair],
+    ) -> ValidatorSetSnapshot {
+        let entries: Vec<ValidatorEntry> = addrs
+            .iter()
+            .enumerate()
+            .map(|(i, (addr, stake))| {
+                let pop_msg =
+                    crate::chain::finality::pop_signing_message(addr, &bls_keys[i].public_key);
+                let pop_sig = sign_bls(&bls_keys[i].secret_key, &pop_msg);
+                ValidatorEntry {
+                    address: *addr,
+                    stake: *stake,
+                    bls_public_key: bls_keys[i].public_key.clone(),
+                    pop_signature: pop_sig,
+                    pq_public_key: vec![],
+                }
+            })
+            .collect();
         ValidatorSetSnapshot::new(1, entries)
     }
 
@@ -832,10 +846,7 @@ mod integration_tests {
             let msg = pc.signing_message();
             let sig = sign_bls(&bls_keys[i].secret_key, &msg);
 
-            let signed_pc = Precommit {
-                sig_bls: sig,
-                ..pc
-            };
+            let signed_pc = Precommit { sig_bls: sig, ..pc };
             agg.add_precommit(signed_pc).unwrap();
         }
 
@@ -855,8 +866,11 @@ mod integration_tests {
             let idx = snapshot.validator_index(addr).unwrap();
             let byte_idx = idx / 8;
             let bit_idx = idx % 8;
-            assert!(cert.bitmap[byte_idx] & (1 << bit_idx) != 0,
-                "Validator {} should be in bitmap", i);
+            assert!(
+                cert.bitmap[byte_idx] & (1 << bit_idx) != 0,
+                "Validator {} should be in bitmap",
+                i
+            );
         }
     }
 
@@ -891,7 +905,11 @@ mod integration_tests {
         };
         let msg = vote.signing_message();
         let sig = sign_bls(&bls_key.secret_key, &msg);
-        agg.add_prevote(Prevote { sig_bls: sig, ..vote }).unwrap();
+        agg.add_prevote(Prevote {
+            sig_bls: sig,
+            ..vote
+        })
+        .unwrap();
 
         let state = agg.get_state();
         assert!(state.prevote_quorum_reached);
@@ -920,10 +938,17 @@ mod integration_tests {
         let msg = vote1.signing_message();
         let sig = sign_bls(&bls_key.secret_key, &msg);
 
-        agg.add_prevote(Prevote { sig_bls: sig.clone(), ..vote1.clone() }).unwrap();
+        agg.add_prevote(Prevote {
+            sig_bls: sig.clone(),
+            ..vote1.clone()
+        })
+        .unwrap();
 
         // Duplicate prevote from same validator should be rejected
-        let result = agg.add_prevote(Prevote { sig_bls: sig, ..vote1 });
+        let result = agg.add_prevote(Prevote {
+            sig_bls: sig,
+            ..vote1
+        });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Duplicate"));
     }
@@ -952,7 +977,9 @@ mod integration_tests {
 
         let result = agg.add_precommit(Precommit { sig_bls: sig, ..pc });
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Cannot precommit before prevote quorum"));
+        assert!(result
+            .unwrap_err()
+            .contains("Cannot precommit before prevote quorum"));
     }
 
     #[test]
@@ -973,14 +1000,30 @@ mod integration_tests {
         agg.set_validator_snapshot(snapshot.clone());
 
         for i in 0..3 {
-            let vote = Prevote { epoch: 1, checkpoint_height: 10, checkpoint_hash: "cp_hash".into(), voter_id: addrs[i].0, sig_bls: vec![] };
+            let vote = Prevote {
+                epoch: 1,
+                checkpoint_height: 10,
+                checkpoint_hash: "cp_hash".into(),
+                voter_id: addrs[i].0,
+                sig_bls: vec![],
+            };
             let msg = vote.signing_message();
             let sig = sign_bls(&bls_keys[i].secret_key, &msg);
-            agg.add_prevote(Prevote { sig_bls: sig, ..vote }).unwrap();
+            agg.add_prevote(Prevote {
+                sig_bls: sig,
+                ..vote
+            })
+            .unwrap();
         }
 
         for i in 0..3 {
-            let pc = Precommit { epoch: 1, checkpoint_height: 10, checkpoint_hash: "cp_hash".into(), voter_id: addrs[i].0, sig_bls: vec![] };
+            let pc = Precommit {
+                epoch: 1,
+                checkpoint_height: 10,
+                checkpoint_hash: "cp_hash".into(),
+                voter_id: addrs[i].0,
+                sig_bls: vec![],
+            };
             let msg = pc.signing_message();
             let sig = sign_bls(&bls_keys[i].secret_key, &msg);
             agg.add_precommit(Precommit { sig_bls: sig, ..pc }).unwrap();
@@ -994,8 +1037,11 @@ mod integration_tests {
             cert.agg_sig_bls[10] ^= 0xFF;
         }
         let result = cert.verify(&snapshot);
-        assert!(result.is_err(),
-            "Tampered cert should fail verification, got: {:?}", result);
+        assert!(
+            result.is_err(),
+            "Tampered cert should fail verification, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -1079,8 +1125,10 @@ mod integration_tests {
         let key2 = load_or_generate_identity_key(Some(path_str));
         let peer_id2 = libp2p::PeerId::from(key2.public());
 
-        assert_eq!(peer_id1, peer_id2,
-            "Persistent identity should survive reload");
+        assert_eq!(
+            peer_id1, peer_id2,
+            "Persistent identity should survive reload"
+        );
     }
 
     #[test]
@@ -1161,11 +1209,13 @@ mod integration_tests {
         original.epoch_index = 10;
         original.base_fee = 20;
         original.block_reward = 75;
-        original.unbonding_queue.push(crate::core::account::UnbondingEntry {
-            address: addr,
-            amount: 500,
-            release_epoch: 15,
-        });
+        original
+            .unbonding_queue
+            .push(crate::core::account::UnbondingEntry {
+                address: addr,
+                amount: 500,
+                release_epoch: 15,
+            });
 
         let params = StateSnapshotV2Params {
             height: 100,
@@ -1190,8 +1240,10 @@ mod integration_tests {
 
         let state_root_original = original.calculate_state_root();
         let state_root_restored = restored.calculate_state_root();
-        assert_eq!(state_root_original, state_root_restored,
-            "State root must be identical after V2 snapshot roundtrip");
+        assert_eq!(
+            state_root_original, state_root_restored,
+            "State root must be identical after V2 snapshot roundtrip"
+        );
     }
 
     #[test]
@@ -1202,14 +1254,8 @@ mod integration_tests {
         let addr = Address::from([1u8; 32]);
         state.add_balance(&addr, 3000);
 
-        let snapshot = StateSnapshot::from_state(
-            50,
-            "test_hash".into(),
-            1337,
-            &state,
-            10,
-            "fin_hash".into(),
-        );
+        let snapshot =
+            StateSnapshot::from_state(50, "test_hash".into(), 1337, &state, 10, "fin_hash".into());
 
         assert!(snapshot.verify());
         let bytes = snapshot.to_bytes();
@@ -1283,7 +1329,9 @@ mod integration_tests {
         let public_default = RpcSecurityConfig::default();
         let operator_default = RpcSecurityConfig::operator_default();
 
-        assert!(operator_default.allowed_ips.contains(&"127.0.0.1".to_string()));
+        assert!(operator_default
+            .allowed_ips
+            .contains(&"127.0.0.1".to_string()));
         assert!(!operator_default.auth_required);
         assert_eq!(operator_default.max_connections, Some(10));
         assert!(operator_default.max_request_body_size.is_some());
@@ -1311,9 +1359,9 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_mdns_policy_flag_is_stored() {
-        use crate::network::node::Node;
         use crate::chain::blockchain::Blockchain;
         use crate::consensus::pow::PoWEngine;
+        use crate::network::node::Node;
 
         let consensus = std::sync::Arc::new(PoWEngine::new(0));
         let bc = Blockchain::new(consensus, None, 1337, None);
@@ -1323,28 +1371,27 @@ mod integration_tests {
             handle.clone(),
             libp2p::identity::Keypair::generate_ed25519(),
             true,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(mdns_on.mdns_enabled);
 
-        let mdns_off = Node::with_key(
-            handle,
-            libp2p::identity::Keypair::generate_ed25519(),
-            false,
-        ).unwrap();
+        let mdns_off =
+            Node::with_key(handle, libp2p::identity::Keypair::generate_ed25519(), false).unwrap();
         assert!(!mdns_off.mdns_enabled);
     }
 
     #[tokio::test]
     async fn test_node_with_identity_sets_path() {
-        use crate::network::node::Node;
         use crate::chain::blockchain::Blockchain;
         use crate::consensus::pow::PoWEngine;
+        use crate::network::node::Node;
 
         let consensus = std::sync::Arc::new(PoWEngine::new(0));
         let bc = Blockchain::new(consensus, None, 1337, None);
         let (_actor, handle) = crate::chain::chain_actor::ChainActor::new(bc);
 
-        let node = Node::new(handle).unwrap()
+        let node = Node::new(handle)
+            .unwrap()
             .with_identity(Some("/tmp/test-id.key".to_string()));
 
         assert!(node.identity_path.is_some());
@@ -1358,15 +1405,14 @@ mod integration_tests {
 
     #[test]
     fn test_blockchain_emit_chain_metrics_updates_gauges() {
-        use crate::core::metrics::Metrics;
         use crate::chain::blockchain::Blockchain;
         use crate::consensus::pow::PoWEngine;
+        use crate::core::metrics::Metrics;
         use std::sync::Arc;
 
         let consensus = Arc::new(PoWEngine::new(0));
         let metrics = Arc::new(Metrics::new());
-        let bc = Blockchain::new(consensus.clone(), None, 1337, None)
-            .with_metrics(metrics.clone());
+        let bc = Blockchain::new(consensus.clone(), None, 1337, None).with_metrics(metrics.clone());
 
         bc.emit_chain_metrics();
         assert_eq!(metrics.chain_height.get(), 1); // genesis block
@@ -1375,15 +1421,14 @@ mod integration_tests {
 
     #[test]
     fn test_blockchain_emit_tx_processed_increments_counter() {
-        use crate::core::metrics::Metrics;
         use crate::chain::blockchain::Blockchain;
         use crate::consensus::pow::PoWEngine;
+        use crate::core::metrics::Metrics;
         use std::sync::Arc;
 
         let consensus = Arc::new(PoWEngine::new(0));
         let metrics = Arc::new(Metrics::new());
-        let bc = Blockchain::new(consensus.clone(), None, 1337, None)
-            .with_metrics(metrics.clone());
+        let bc = Blockchain::new(consensus.clone(), None, 1337, None).with_metrics(metrics.clone());
 
         bc.emit_tx_processed(5);
         assert_eq!(metrics.transactions_processed.get(), 5);
@@ -1394,15 +1439,14 @@ mod integration_tests {
 
     #[test]
     fn test_blockchain_emit_reorg_increments() {
-        use crate::core::metrics::Metrics;
         use crate::chain::blockchain::Blockchain;
         use crate::consensus::pow::PoWEngine;
+        use crate::core::metrics::Metrics;
         use std::sync::Arc;
 
         let consensus = Arc::new(PoWEngine::new(0));
         let metrics = Arc::new(Metrics::new());
-        let bc = Blockchain::new(consensus.clone(), None, 1337, None)
-            .with_metrics(metrics.clone());
+        let bc = Blockchain::new(consensus.clone(), None, 1337, None).with_metrics(metrics.clone());
 
         assert_eq!(metrics.reorgs_total.get(), 0);
         bc.emit_reorg();
@@ -1411,15 +1455,14 @@ mod integration_tests {
 
     #[test]
     fn test_blockchain_emit_mempool_events() {
-        use crate::core::metrics::Metrics;
         use crate::chain::blockchain::Blockchain;
         use crate::consensus::pow::PoWEngine;
+        use crate::core::metrics::Metrics;
         use std::sync::Arc;
 
         let consensus = Arc::new(PoWEngine::new(0));
         let metrics = Arc::new(Metrics::new());
-        let bc = Blockchain::new(consensus.clone(), None, 1337, None)
-            .with_metrics(metrics.clone());
+        let bc = Blockchain::new(consensus.clone(), None, 1337, None).with_metrics(metrics.clone());
 
         bc.emit_mempool_eviction();
         bc.emit_mempool_eviction();

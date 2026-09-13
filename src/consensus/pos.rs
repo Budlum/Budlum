@@ -396,7 +396,8 @@ impl ConsensusEngine for PoSEngine {
         self.preview_common(block, state)?;
 
         if let Some(signer) = &self.signer {
-            block.sign_with_signer(signer.as_ref())
+            block
+                .sign_with_signer(signer.as_ref())
                 .map_err(|e| ConsensusError(format!("HSM block signing failed: {}", e)))?;
             return Ok(());
         }

@@ -208,8 +208,7 @@ impl RpcServer {
         use jsonrpsee::server::ServerBuilder;
         let http_middleware =
             ServiceBuilder::new().layer(RpcSecurityLayer::new(self.security.clone()));
-        let mut builder = ServerBuilder::default()
-            .set_http_middleware(http_middleware);
+        let mut builder = ServerBuilder::default().set_http_middleware(http_middleware);
 
         if let Some(limit) = self.security.max_request_body_size {
             builder = builder.max_request_body_size(limit);
@@ -1110,7 +1109,10 @@ mod security_tests {
         };
 
         // Without trusted proxies and without x-real-ip, no IP can be extracted
-        let ip = extract_client_ip(&config, &request_with_headers(&[("x-forwarded-for", "10.0.0.100")]));
+        let ip = extract_client_ip(
+            &config,
+            &request_with_headers(&[("x-forwarded-for", "10.0.0.100")]),
+        );
         assert!(ip.is_none());
     }
 
@@ -1141,7 +1143,11 @@ mod security_tests {
             ..Default::default()
         };
         let rates = Arc::new(Mutex::new(HashMap::new()));
-        assert!(is_per_ip_rate_limited(&config, &rates, Some("1.1.1.1".parse().unwrap())));
+        assert!(is_per_ip_rate_limited(
+            &config,
+            &rates,
+            Some("1.1.1.1".parse().unwrap())
+        ));
     }
 
     #[test]
@@ -1204,8 +1210,8 @@ mod admin_rpc_tests {
     #[tokio::test]
     async fn admin_methods_rejected_on_public_listener() {
         let (public, _operator) = build_servers().await;
-        let fake_peer = PeerId::from(libp2p::identity::Keypair::generate_ed25519().public())
-            .to_string();
+        let fake_peer =
+            PeerId::from(libp2p::identity::Keypair::generate_ed25519().public()).to_string();
 
         assert!(public.admin_ban_peer(fake_peer.clone()).await.is_err());
         assert!(public.admin_unban_peer(fake_peer).await.is_err());
@@ -1215,8 +1221,8 @@ mod admin_rpc_tests {
     #[tokio::test]
     async fn admin_ban_and_unban_roundtrip_on_operator_listener() {
         let (_public, operator) = build_servers().await;
-        let fake_peer = PeerId::from(libp2p::identity::Keypair::generate_ed25519().public())
-            .to_string();
+        let fake_peer =
+            PeerId::from(libp2p::identity::Keypair::generate_ed25519().public()).to_string();
 
         let banned = operator.admin_list_banned_peers().await.unwrap();
         assert_eq!(banned["bannedPeers"].as_array().unwrap().len(), 0);
