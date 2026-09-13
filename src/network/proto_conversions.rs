@@ -831,6 +831,8 @@ mod tests {
             settlement_finality_root: [7u8; 32],
             global_state_root: [8u8; 32],
             global_state_finalized: true,
+            underlying_block_height: 12,
+            underlying_block_hash: [9u8; 32],
         };
         let msg = NetworkMessage::GlobalHeader(header.clone());
         let proto_msg = pb::ProtoNetworkMessage::from(&msg);

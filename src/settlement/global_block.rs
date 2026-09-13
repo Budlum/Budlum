@@ -22,6 +22,8 @@ pub struct GlobalBlockHeader {
     /// this, two nodes could seal identical-looking global headers while
     /// their underlying account state genuinely diverged.
     pub global_state_root: Hash32,
+    pub underlying_block_height: u64,
+    pub underlying_block_hash: Hash32,
     /// True if `global_state_root` was taken from a block height already
     /// covered by a BLS finality certificate on Budlum's own chain (i.e. a
     /// real quorum of Budlum's validators agreed on it). False means it was
@@ -53,6 +55,8 @@ impl GlobalBlockHeader {
             &proposer,
             &self.settlement_finality_root,
             &self.global_state_root,
+            &self.underlying_block_height.to_le_bytes(),
+            &self.underlying_block_hash,
             &[self.global_state_finalized as u8],
         ])
     }

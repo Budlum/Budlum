@@ -638,8 +638,27 @@ mod tests {
         // would require solving discrete log), unlike the old scheme where
         // the exact right ratio was directly computable.
         let sig1_affine = G1Affine::from_compressed(&sig1.clone().try_into().unwrap()).unwrap();
-        let arbitrary_scalar = Scalar::from(12345u64);
-        let forged_sig = G1Affine::from(G1Projective::from(sig1_affine) * arbitrary_scalar)
+        
+        // Attempt the actual rescaling attack: compute the scalar ratio
+        // r = H_scalar(msg2) * H_scalar(msg1)^-1
+        use sha2::{Sha256, Digest};
+        let mut hasher1 = Sha256::new();
+        hasher1.update(msg1);
+        let h1_bytes = hasher1.finalize();
+        let mut h1_wide = [0u8; 64];
+        h1_wide[..32].copy_from_slice(&h1_bytes);
+        let h1_scalar = Scalar::from_bytes_wide(&h1_wide);
+        
+        let mut hasher2 = Sha256::new();
+        hasher2.update(msg2);
+        let h2_bytes = hasher2.finalize();
+        let mut h2_wide = [0u8; 64];
+        h2_wide[..32].copy_from_slice(&h2_bytes);
+        let h2_scalar = Scalar::from_bytes_wide(&h2_wide);
+        
+        let ratio = h2_scalar * h1_scalar.invert().unwrap();
+        
+        let forged_sig = G1Affine::from(G1Projective::from(sig1_affine) * ratio)
             .to_compressed()
             .to_vec();
         assert!(verify_bls_sig(&pk_bytes, msg2, &forged_sig).is_err());

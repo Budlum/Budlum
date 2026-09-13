@@ -1078,6 +1078,15 @@ impl Blockchain {
                 Some(bytes)
             })
             .unwrap_or([0u8; 32]);
+            
+        let underlying_block_height = state_root_source.map(|b| b.index).unwrap_or(0);
+        let underlying_block_hash = state_root_source
+            .and_then(|b| {
+                let mut bytes = [0u8; 32];
+                hex::decode_to_slice(&b.hash, &mut bytes).ok()?;
+                Some(bytes)
+            })
+            .unwrap_or([0u8; 32]);
 
         GlobalBlockHeader {
             version: 1,
@@ -1093,6 +1102,8 @@ impl Blockchain {
             proposer,
             settlement_finality_root,
             global_state_root,
+            underlying_block_height,
+            underlying_block_hash,
             global_state_finalized,
         }
     }

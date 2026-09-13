@@ -302,6 +302,10 @@ impl RpcServer {
             "replayNonceRoot": Self::bytes32_to_0x(h.replay_nonce_root),
             "proposer": h.proposer.map(|p| p.to_string()),
             "settlementFinalityRoot": Self::bytes32_to_0x(h.settlement_finality_root),
+            "globalStateRoot": Self::bytes32_to_0x(h.global_state_root),
+            "underlyingBlockHeight": Self::to_hex(h.underlying_block_height),
+            "underlyingBlockHash": Self::bytes32_to_0x(h.underlying_block_hash),
+            "globalStateFinalized": h.global_state_finalized,
         })
     }
 
