@@ -58,6 +58,7 @@ pub struct Blockchain {
     pub message_registry: CrossDomainMessageRegistry,
     pub settlement_finality_hashes: Vec<crate::domain::Hash32>,
     pub pending_slashing_evidence: Vec<SlashingEvidence>,
+    pub pending_blocks: std::collections::HashMap<String, Block>,
     pub finality_aggregator: Option<FinalityAggregator>,
     pub metrics: Option<Arc<crate::core::metrics::Metrics>>,
 }
@@ -413,6 +414,7 @@ impl Blockchain {
             message_registry,
             settlement_finality_hashes: Vec::new(),
             pending_slashing_evidence: Vec::new(),
+            pending_blocks: std::collections::HashMap::new(),
             finality_aggregator: None,
             metrics: None,
         };
@@ -876,7 +878,7 @@ impl Blockchain {
                     .find_by_height(domain_id, next_height)
                     .ok_or_else(|| {
                         format!(
-                            "Domain {} commitment at height {} required to reach settlement watermark {} but not yet recorded",
+                            "MissingDomainCommitment: Domain {} commitment at height {} required to reach settlement watermark {} but not yet recorded",
                             domain_id, next_height, target_height
                         )
                     })?;
@@ -924,7 +926,10 @@ impl Blockchain {
         proof: FinalityProof,
     ) -> Result<(), String> {
         self.verify_domain_commitment_finality(&commitment, &proof)?;
-        self.accept_domain_commitment(commitment)
+        self.accept_domain_commitment(commitment)?;
+        
+        self.retry_pending_blocks();
+        Ok(())
     }
 
     pub fn verify_domain_commitment_finality(
@@ -2037,6 +2042,36 @@ impl Blockchain {
         }
     }
 
+    pub fn retry_pending_blocks(&mut self) {
+        let mut pending = std::mem::take(&mut self.pending_blocks);
+        let mut progress = true;
+
+        while progress && !pending.is_empty() {
+            progress = false;
+            let mut still_pending = std::collections::HashMap::new();
+
+            for (hash, block) in pending {
+                // Try to validate and add
+                match self.validate_and_add_block(block.clone()) {
+                    Ok(_) => {
+                        tracing::info!("Pending block {} successfully validated", block.index);
+                        progress = true;
+                    }
+                    Err(e) => {
+                        if e.starts_with("MissingDomainCommitment:") {
+                            still_pending.insert(hash, block);
+                        } else {
+                            tracing::warn!("Pending block {} failed validation: {}", block.index, e);
+                        }
+                    }
+                }
+            }
+            pending = still_pending;
+        }
+
+        self.pending_blocks = pending;
+    }
+
     pub fn validate_and_add_block(&mut self, block: Block) -> Result<(), String> {
         if block.index <= self.finalized_height && block.hash != self.finalized_hash {
             if let Some(finalized_path_block) = self.chain.get(block.index as usize) {
@@ -2101,7 +2136,14 @@ impl Blockchain {
             &block.settlement_watermarks,
         ) {
             Ok(res) => res,
-            Err(e) => return Err(format!("Failed to replay block settlement batch: {}", e)),
+            Err(e) => {
+                if e.starts_with("MissingDomainCommitment:") {
+                    tracing::warn!("Block {} queued as pending: {}", block.index, e);
+                    self.pending_blocks.insert(block.hash.clone(), block);
+                    return Err(e);
+                }
+                return Err(format!("Failed to replay block settlement batch: {}", e));
+            }
         };
 
         let expected_settlement_batch_root = hex::encode(
@@ -2858,6 +2900,7 @@ impl Clone for Blockchain {
             message_registry: self.message_registry.clone(),
             settlement_finality_hashes: self.settlement_finality_hashes.clone(),
             pending_slashing_evidence: self.pending_slashing_evidence.clone(),
+            pending_blocks: self.pending_blocks.clone(),
             finality_aggregator: None,
             metrics: self.metrics.clone(),
         }
