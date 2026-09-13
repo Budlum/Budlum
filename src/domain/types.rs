@@ -125,12 +125,46 @@ impl ConsensusDomain {
     }
 }
 
+/// Canonical leaf encoding for a single cross-domain state update, used to
+/// build/verify `DomainCommitment::state_root` as a Merkle root over
+/// `state_updates` (see `compute_state_updates_root`).
+pub fn state_update_leaf_hash(address: &Address, nonce: u64) -> Hash32 {
+    hash_fields_bytes(&[
+        b"BDLM_STATE_UPDATE_V1",
+        address.as_bytes(),
+        &nonce.to_le_bytes(),
+    ])
+}
+
+/// Computes the Merkle root that `DomainCommitment::state_root` must equal
+/// for its `state_updates` to be considered authentic. Because the
+/// commitment's `domain_block_hash`/`finality_proof_hash` are already
+/// verified against the domain's real consensus (PoW/PoS/BFT), and
+/// `state_root` is part of the commitment's own hash, requiring this
+/// equality means an attacker cannot attach arbitrary `state_updates` to a
+/// legitimately finalized commitment — any change to the update set changes
+/// the required `state_root`, which is covered by the finality proof.
+pub fn compute_state_updates_root(
+    state_updates: &std::collections::BTreeMap<Address, u64>,
+) -> Hash32 {
+    let leaves: Vec<Hash32> = state_updates
+        .iter()
+        .map(|(addr, nonce)| state_update_leaf_hash(addr, *nonce))
+        .collect();
+    crate::settlement::commitment_tree::merkle_root(&leaves)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DomainCommitment {
     pub domain_id: DomainId,
     pub domain_height: u64,
     pub domain_block_hash: Hash32,
     pub parent_domain_block_hash: Hash32,
+    /// Merkle root over `state_updates` (see `compute_state_updates_root`) —
+    /// NOT the domain's raw internal state root. Verified at acceptance time
+    /// so `state_updates` can't be tampered with independently of the
+    /// already-finality-proven commitment. Use `insert_state_update` to keep
+    /// this in sync instead of mutating `state_updates` directly.
     pub state_root: Hash32,
     pub tx_root: Hash32,
     pub event_root: Hash32,
@@ -166,12 +200,9 @@ impl DomainCommitment {
                 &domain.block_hash_scheme,
                 block.previous_hash.as_bytes(),
             )?,
-            state_root: normalize_hash32(
-                b"state_root",
-                domain.id,
-                &domain.state_root_scheme,
-                block.state_root.as_bytes(),
-            )?,
+            // No state updates yet — insert_state_update() keeps this in
+            // sync as updates are added.
+            state_root: compute_state_updates_root(&std::collections::BTreeMap::new()),
             tx_root: normalize_hash32(
                 b"tx_root",
                 domain.id,
@@ -187,6 +218,16 @@ impl DomainCommitment {
             producer: block.producer,
             state_updates: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// Inserts (or updates) a single account's state update and keeps
+    /// `state_root` in sync. Prefer this over mutating `state_updates`
+    /// directly — a commitment whose `state_root` doesn't match
+    /// `compute_state_updates_root(&state_updates)` is rejected at
+    /// acceptance time.
+    pub fn insert_state_update(&mut self, address: Address, new_nonce: u64) {
+        self.state_updates.insert(address, new_nonce);
+        self.state_root = compute_state_updates_root(&self.state_updates);
     }
 
     pub fn leaf_hash(&self) -> Hash32 {

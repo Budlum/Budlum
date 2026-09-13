@@ -101,7 +101,7 @@ mod distributed_settlement_tests {
                 i,
             )
             .unwrap();
-            com.state_updates.insert(alice, i);
+            com.insert_state_update(alice, i);
             commitments.push(com);
         }
 
@@ -264,7 +264,7 @@ mod distributed_settlement_tests {
             1,
         )
         .unwrap();
-        com_pow.state_updates.insert(alice, 1);
+        com_pow.insert_state_update(alice, 1);
 
         n1.chain_handle
             .submit_domain_commitment(com_pow.clone())
@@ -277,7 +277,7 @@ mod distributed_settlement_tests {
         pos_ref_domain.validator_set_hash = [0xABu8; 32];
         let mut com_pos =
             DomainCommitment::from_block(&pos_ref_domain, &b2, [0u8; 32], [0u8; 32], 1).unwrap();
-        com_pos.state_updates.insert(alice, 2);
+        com_pos.insert_state_update(alice, 2);
 
         n1.chain_handle
             .submit_domain_commitment(com_pos.clone())
@@ -305,7 +305,7 @@ mod distributed_settlement_tests {
 
         let mut com =
             DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 1).unwrap();
-        com.state_updates.insert(alice, 1);
+        com.insert_state_update(alice, 1);
         let proof = FinalityProof::PoW { headers: vec![] };
         com.finality_proof_hash = [0xFFu8; 32];
 

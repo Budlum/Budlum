@@ -644,6 +644,16 @@ impl Blockchain {
             return Err(format!("Domain {} is frozen", commitment.domain_id));
         }
 
+        if commitment.state_root
+            != crate::domain::types::compute_state_updates_root(&commitment.state_updates)
+        {
+            return Err(format!(
+                "Commitment state_root does not match its own state_updates for domain {} height {}; \
+                 state_updates cannot be tampered with independently of the already-finality-proven commitment",
+                commitment.domain_id, commitment.domain_height
+            ));
+        }
+
         if domain.validator_set_hash != [0u8; 32]
             && commitment.validator_set_hash != domain.validator_set_hash
         {

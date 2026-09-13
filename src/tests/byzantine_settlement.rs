@@ -192,7 +192,7 @@ mod byzantine_settlement_tests {
 
         let mut com_pow =
             DomainCommitment::from_block(&pow, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
-        com_pow.state_updates.insert(alice, 1); // Claims consuming nonce 0 -> 1
+        com_pow.insert_state_update(alice, 1); // Claims consuming nonce 0 -> 1
 
         let mut b_pos = Block::new(1, "pos".repeat(32), vec![]);
         b_pos.state_root = "pos_state".repeat(32)[0..64].to_string();
@@ -201,7 +201,7 @@ mod byzantine_settlement_tests {
 
         let mut com_pos =
             DomainCommitment::from_block(&pos, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
-        com_pos.state_updates.insert(alice, 1); // Also claims consuming nonce 0 -> 1
+        com_pos.insert_state_update(alice, 1); // Also claims consuming nonce 0 -> 1
 
         // Both commitments are independently valid on their own domain's chain,
         // so both are recorded — settlement (not submission) is what arbitrates
@@ -269,7 +269,7 @@ mod byzantine_settlement_tests {
         b_pow.hash = b_pow.calculate_hash();
         let mut com_pow =
             DomainCommitment::from_block(&pow_a, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
-        com_pow.state_updates.insert(alice_a, 1);
+        com_pow.insert_state_update(alice_a, 1);
 
         let mut b_pos = Block::new(1, "pos".repeat(32), vec![]);
         b_pos.state_root = "pos_state".repeat(32)[0..64].to_string();
@@ -277,7 +277,7 @@ mod byzantine_settlement_tests {
         b_pos.hash = b_pos.calculate_hash();
         let mut com_pos =
             DomainCommitment::from_block(&pos_a, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
-        com_pos.state_updates.insert(alice_a, 1);
+        com_pos.insert_state_update(alice_a, 1);
 
         let com_pow_b = com_pow.clone();
         let com_pos_b = com_pos.clone();
@@ -359,7 +359,7 @@ mod byzantine_settlement_tests {
         b_pow.hash = b_pow.calculate_hash();
         let mut com_pow =
             DomainCommitment::from_block(&pow, &b_pow, [0u8; 32], [0u8; 32], 1).unwrap();
-        com_pow.state_updates.insert(alice, 1);
+        com_pow.insert_state_update(alice, 1);
 
         let mut b_pos = Block::new(1, "pos".repeat(32), vec![]);
         b_pos.state_root = "pos_state".repeat(32)[0..64].to_string();
@@ -367,7 +367,7 @@ mod byzantine_settlement_tests {
         b_pos.hash = b_pos.calculate_hash();
         let mut com_pos =
             DomainCommitment::from_block(&pos, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
-        com_pos.state_updates.insert(bob, 1);
+        com_pos.insert_state_update(bob, 1);
 
         assert!(node.submit_domain_commitment(com_pow).is_ok());
         assert!(node.submit_domain_commitment(com_pos).is_ok());
@@ -515,7 +515,7 @@ mod byzantine_settlement_tests {
             block.hash = block.calculate_hash();
             let mut com =
                 DomainCommitment::from_block(&pow, &block, [0u8; 32], [0u8; 32], 1).unwrap();
-            com.state_updates.insert(alice, 1);
+            com.insert_state_update(alice, 1);
             node.submit_domain_commitment(com).unwrap();
             node.settle_pending_domain_commitments().unwrap();
 
@@ -550,7 +550,7 @@ mod byzantine_settlement_tests {
         block.hash = block.calculate_hash();
         let mut com =
             DomainCommitment::from_block(&pow_a, &block, [0u8; 32], [0u8; 32], 1).unwrap();
-        com.state_updates.insert(Address::from([1u8; 32]), 1);
+        com.insert_state_update(Address::from([1u8; 32]), 1);
 
         node_a.submit_domain_commitment(com.clone()).unwrap();
         node_b.submit_domain_commitment(com).unwrap();
@@ -587,11 +587,11 @@ mod byzantine_settlement_tests {
 
         let b1 = Block::new(1, "h1".to_string(), vec![]);
         let mut com1 = DomainCommitment::from_block(&pow_a, &b1, [0u8; 32], [0u8; 32], 1).unwrap();
-        com1.state_updates.insert(alice, 1);
+        com1.insert_state_update(alice, 1);
 
         let b2 = Block::new(1, "h2".to_string(), vec![]);
         let mut com2 = DomainCommitment::from_block(&pos_a, &b2, [0u8; 32], [0u8; 32], 1).unwrap();
-        com2.state_updates.insert(bob, 1);
+        com2.insert_state_update(bob, 1);
 
         node_a.submit_domain_commitment(com1.clone()).unwrap();
         node_b.submit_domain_commitment(com2.clone()).unwrap();
@@ -631,11 +631,11 @@ mod byzantine_settlement_tests {
 
         let b1 = Block::new(1, "h1".to_string(), vec![]);
         let mut com1 = DomainCommitment::from_block(&pow, &b1, [0u8; 32], [0u8; 32], 1).unwrap();
-        com1.state_updates.insert(alice, 1);
+        com1.insert_state_update(alice, 1);
 
         let b2 = Block::new(1, "h2".to_string(), vec![]);
         let mut com2 = DomainCommitment::from_block(&pow, &b2, [0u8; 32], [0u8; 32], 2).unwrap();
-        com2.state_updates.insert(alice, 1);
+        com2.insert_state_update(alice, 1);
 
         node.submit_domain_commitment(com1).unwrap();
         let res = node.submit_domain_commitment(com2);
@@ -961,7 +961,7 @@ mod byzantine_settlement_tests {
         let mut com =
             DomainCommitment::from_block(domain, &block, [0u8; 32], [0u8; 32], sequence).unwrap();
 
-        com.state_updates.insert(account, nonce);
+        com.insert_state_update(account, nonce);
         com
     }
 
@@ -980,7 +980,7 @@ mod byzantine_settlement_tests {
 
             let mut com =
                 make_commitment_for_account(node, domain_id, account, height, i as u64 + 1);
-            com.state_updates.insert(account, nonce);
+            com.insert_state_update(account, nonce);
             commitments.push(com);
         }
 
