@@ -17,6 +17,18 @@ pub struct GlobalBlockHeader {
     pub replay_nonce_root: Hash32,
     pub proposer: Option<Address>,
     pub settlement_finality_root: Hash32,
+    /// Root of Budlum's own global account state (balances/nonces) at the
+    /// referenced height — see `AccountState::calculate_state_root`. Without
+    /// this, two nodes could seal identical-looking global headers while
+    /// their underlying account state genuinely diverged.
+    pub global_state_root: Hash32,
+    /// True if `global_state_root` was taken from a block height already
+    /// covered by a BLS finality certificate on Budlum's own chain (i.e. a
+    /// real quorum of Budlum's validators agreed on it). False means it was
+    /// taken from the current, not-yet-finalized chain tip — which happens
+    /// on chains with no active BLS validator committee (e.g. a plain PoW
+    /// devnet) — and callers must not treat the header as consensus-final.
+    pub global_state_finalized: bool,
 }
 
 impl GlobalBlockHeader {
@@ -40,6 +52,8 @@ impl GlobalBlockHeader {
             &self.replay_nonce_root,
             &proposer,
             &self.settlement_finality_root,
+            &self.global_state_root,
+            &[self.global_state_finalized as u8],
         ])
     }
 

@@ -996,6 +996,29 @@ impl Blockchain {
             merkle_root(&self.settlement_finality_hashes)
         };
 
+        // Only trust `finalized_height` as a real BLS-quorum signal when a
+        // validator committee actually exists; with none registered (e.g. a
+        // plain PoW devnet) there is no committee to have finalized anything,
+        // regardless of what finalized_height currently holds.
+        let has_validator_committee = !self.state.get_active_validators().is_empty();
+        let global_state_finalized = has_validator_committee
+            && self
+                .chain
+                .get(self.finalized_height as usize)
+                .is_some_and(|b| b.index == self.finalized_height);
+        let state_root_source = if global_state_finalized {
+            self.chain.get(self.finalized_height as usize)
+        } else {
+            self.chain.last()
+        };
+        let global_state_root = state_root_source
+            .and_then(|b| {
+                let mut bytes = [0u8; 32];
+                hex::decode_to_slice(&b.state_root, &mut bytes).ok()?;
+                Some(bytes)
+            })
+            .unwrap_or([0u8; 32]);
+
         GlobalBlockHeader {
             version: 1,
             global_height: self.global_headers.len() as u64,
@@ -1009,6 +1032,8 @@ impl Blockchain {
             replay_nonce_root: self.bridge_state.replay_root(),
             proposer,
             settlement_finality_root,
+            global_state_root,
+            global_state_finalized,
         }
     }
 

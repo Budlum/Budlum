@@ -1557,4 +1557,56 @@ mod settlement_prod_tests {
         let s3 = normalize_hash32(b"tag", 2, &RootScheme::Sha256, short).unwrap();
         assert_ne!(s2, s3);
     }
+
+    #[test]
+    fn global_header_commits_to_real_account_state_root() {
+        let mut blockchain = test_chain();
+        // No validator committee: global_state_root must track the current
+        // (unfinalized) tip, since there's no finalized_height to anchor to.
+        blockchain.state.validators.clear();
+        let alice = Address::from([0xA1u8; 32]);
+        blockchain.state.add_balance(&alice, 1000);
+        blockchain.produce_block(Address::zero());
+
+        let header = blockchain.build_global_header(None);
+        assert!(!header.global_state_finalized);
+
+        // Must reflect the real account state of the produced block, not a
+        // placeholder disconnected from actual balances/nonces.
+        let expected_state_root_hex = blockchain.chain.last().unwrap().state_root.clone();
+        let mut expected_bytes = [0u8; 32];
+        hex::decode_to_slice(&expected_state_root_hex, &mut expected_bytes).unwrap();
+        assert_eq!(header.global_state_root, expected_bytes);
+        assert_ne!(header.global_state_root, [0u8; 32]);
+    }
+
+    #[test]
+    fn global_header_is_not_marked_finalized_without_a_validator_committee() {
+        let mut blockchain = test_chain();
+        // test_chain() seeds one default devnet validator; strip it so this
+        // test genuinely represents "no BLS committee exists" (e.g. a plain
+        // PoW chain that never registered any validators).
+        blockchain.state.validators.clear();
+
+        let alice = Address::from([0xA1u8; 32]);
+        blockchain.state.add_balance(&alice, 1000);
+        blockchain.produce_block(Address::zero());
+
+        let header = blockchain.build_global_header(None);
+        assert!(
+            !header.global_state_finalized,
+            "with no validator committee, nothing could have reached BLS quorum"
+        );
+    }
+
+    #[test]
+    fn global_header_can_be_marked_finalized_with_a_validator_committee() {
+        let mut blockchain = test_chain();
+        // test_chain() already seeds one default devnet validator.
+        blockchain.produce_block(Address::zero());
+        // finalized_height defaults to 0, which is the genesis block — a
+        // legitimate (trivial) finalized point once a committee exists.
+        let header = blockchain.build_global_header(None);
+        assert!(header.global_state_finalized);
+    }
 }
