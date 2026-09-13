@@ -16,6 +16,18 @@ Settlement katmanının bağımsız bir mimari incelemesi, sadece bireysel bir h
 
 Test sayısı: 342 → 346. Tam detay `SPECIFICATION.md` §1.4–1.5, §3.3, §6'da.
 
+## 0b. v0.5 İkinci Tur Düzeltmeleri
+
+Bağımsız bir ikinci inceleme turu üç bulgu daha tespit etti, v0.5'te kapatıldı:
+
+| Bulgu | Düzeltme |
+| --- | --- |
+| `hash_to_g1`, `H(m) = scalar_hash(m) · G` hesaplıyordu — üreteçin herkese açık, deterministik bir skaler katı. Herhangi bir geçerli BLS imzası, secret key olmadan *tamamen farklı bir mesaj* için geçerli bir imzaya ölçeklenebiliyordu (`σ₂ = (s₂/s₁) · σ₁`) — protokoldeki her BLS-imzalı yapıya (finality sertifikaları, quorum sertifikaları) karşı evrensel bir sahtecilik | `hash_to_g1` artık `bls12_381`'in yerleşik RFC 9380 hash-to-curve'ünü kullanıyor (`ExpandMsgXmd<Sha256>` + SSWU); mesajları birbirleriyle veya üreteçle bilinen bir discrete-log ilişkisi olmayan noktalara eşliyor (`src/chain/finality.rs`) |
+| §0'daki settlement determinizmi yalnızca "aynı kayıtlı domain verisi verildiğinde" geçerliydi — alıcı bir node settlement'ı kendi domain commitment görüşünden yeniden hesaplıyordu, bu da producer'dan farklı olabiliyor, geçerli blokların hatalı reddine veya `state_root` kontrolünün tek başına yakalayamayacağı bir ayrışmaya yol açabiliyordu | `Block` artık `settlement_watermarks` ve bunları blok hash'ine bağlayan bir `settlement_batch_root` taşıyor; `validate_and_add_block`, yerel olarak ne kadar veri mevcut olursa olsun bağımsızca yeniden hesaplamak yerine settlement'ı tam olarak bu watermark'larla sınırlı şekilde replay ediyor (`replay_settlement_to_watermarks`) (`src/chain/blockchain.rs`, `src/core/block.rs`) |
+| `state_updates`/`state_root` iç tutarlılığı (§0/§1.5) gerçekti ama yetersizdi: finality proof'ları (PoW header binding, BLS quorum sertifikaları) yalnızca bir commitment'ın ham `domain_block_hash`'ine taahhüt ediyordu, hangi `state_root`'un onunla geldiğine değil — bu yüzden geçerli bir proof, farklı ama yine iç-tutarlı bir `state_updates` grubuna karşı prensipte replay edilebilirdi | `DomainCommitment::commitment_payload_hash()`, `state_root`'u (ve iddia edilen diğer tüm root'ları) PoW'un `extra` alanının ve BLS quorum sertifikasının `checkpoint_hash`'inin gerçekten bağlandığı şeyin içine katıyor (`src/domain/finality_adapter.rs`, `src/domain/types.rs`) |
+
+Test sayısı: 346 → 351. Tam detay `SPECIFICATION.md` §1.6, §3.2.2, §3.3.4'te.
+
 ## 1. Uygulanan Korumalar
 
 | Alan | Güncel davranış |
@@ -29,7 +41,7 @@ Test sayısı: 342 → 346. Tam detay `SPECIFICATION.md` §1.4–1.5, §3.3, §6
 | RPC | Ayrı public ve operator HTTP listener'ları. Public: API-key auth, CORS allowlist, per-IP rate limiting, trusted-proxy doğrulama, 10MB body limiti, 500 max bağlantı. Operator: yalnızca localhost, auth yok, 50MB body limiti. `bud_health` ve `bud_nodeInfo` endpoint'leri. |
 | CI | GitHub Actions Rust `1.94.0` sürümünü pinler; format, `cargo check`, warning'leri reddeden Clippy, workspace testleri ve `--release --locked` build çalıştırır. |
 | PKCS#11 | `ConsensusSigner` trait + `Pkcs11Signer` adaptörü (`cryptoki` ile) + `KeyPairSigner` local fallback. `ConsensusEngine` trait `fn signer()` sunar. Blok imzalama HSM varsa onu, yoksa local dosyayı kullanır. |
-| BLS Finality | `ValidatorKeys` içinde yeni `sign_bls()` / `verify_bls_sig()` primitifleriyle `BlsKeypair`. `ConsensusEngine::bls_secret_key()`, PoS engine üzerinden açığa çıkar. Validatörler BLS imzalı prevote/precommit mesajları üretir. Prevote quorum'a ulaşıldığında periyodik auto-precommit tetiklenir. `FinalityCert` doğrulaması BLS pairing ile yapılır. |
+| BLS Finality | `ValidatorKeys` içinde yeni `sign_bls()` / `verify_bls_sig()` primitifleriyle `BlsKeypair`. `ConsensusEngine::bls_secret_key()`, PoS engine üzerinden açığa çıkar. Validatörler BLS imzalı prevote/precommit mesajları üretir. Prevote quorum'a ulaşıldığında periyodik auto-precommit tetiklenir. `FinalityCert` doğrulaması BLS pairing ile yapılır. `hash_to_g1` artık gerçek RFC 9380 hash-to-curve kullanıyor (v0.5), sahteciliğe açık hash-sonra-çarp yapısı değil. |
 | P2P Hardening | `p2p_identity_file` üzerinden kalıcı node kimliği (yükle-yoksa-üret deseni). Kalıcı peer ban'lar her 5 dakikada bir JSON'a yazılır ve başlangıçta yeniden yüklenir. mDNS politikası ağ bazlı `mdns_enabled` bayrağına uyar. `resolve_dns_seeds()` üzerinden DNS seed çözümlemesi. |
 
 ## 2. Aşamalı veya Kısmi İşler
@@ -66,7 +78,7 @@ nix develop --command cargo build --release --locked
 git diff --check
 ```
 
-Güncel durum: **346 test.** `cargo clippy -D warnings`, CI'ın pinlediği Rust 1.94.0 toolchain'inde geçiyor; daha yeni bir yerel toolchain'de clippy'nin kendisi geliştiği için yeni uyarılar çıkabilir. Kritik adapter'lar tamamlanmadığı sürece Mainnet profili bilinçli olarak fail-closed davranır.
+Güncel durum: **351 test.** `cargo clippy -D warnings`, CI'ın pinlediği Rust 1.94.0 toolchain'inde geçiyor; daha yeni bir yerel toolchain'de clippy'nin kendisi geliştiği için yeni uyarılar çıkabilir. Kritik adapter'lar tamamlanmadığı sürece Mainnet profili bilinçli olarak fail-closed davranır.
 
 ## 5. Mainnet v1 İçin Kalanlar
 

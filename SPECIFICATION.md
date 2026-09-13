@@ -1,4 +1,4 @@
-# Budlum Core Specification (v0.4)
+# Budlum Core Specification (v0.5)
 
 ## 1. Multi-Consensus Settlement
 
@@ -31,6 +31,14 @@ Recording a commitment into `DomainCommitmentRegistry` (sequence/equivocation ch
 - Because `state_root` is part of `DomainCommitment::leaf_hash()`, and the commitment is already verified against the domain's real finality proof (PoW/PoS/PoA/BFT), this closes the gap where `state_updates` could be swapped independently of an already-finality-proven commitment: any change to the update set requires a different `state_root`, which requires a different finalized block.
 - Use `DomainCommitment::insert_state_update(address, nonce)` to keep `state_updates` and `state_root` in sync — mutating `state_updates` directly produces a commitment that will be rejected at acceptance time.
 
+### 1.6 Block-Level Settlement Replay (v0.5)
+
+§1.4 makes settlement order-independent, but a receiving validator originally recomputed `settle_pending_domain_commitments()` from its *own* view of recorded domain commitments — which could differ from the producer's if the validator had already received (or was still missing) domain data the producer didn't have at production time, causing a valid block to be spuriously rejected or, worse, silently diverge without either node's `state_root` check ever seeing a mismatch on data outside the block itself.
+
+- `Block` now carries `settlement_watermarks: BTreeMap<DomainId, u64>` — the exact per-domain `last_settled_height` the producer reached during `settle_pending_domain_commitments()` — and `settlement_batch_root`, `compute_settlement_batch_root(&settlement_watermarks)`, both fed into the block's own hash.
+- `Blockchain::replay_settlement_to_watermarks(targets)` applies settlement bounded by explicit per-domain target heights, never further, even if more domain commitments are already locally available. `settle_pending_domain_commitments()` is now a thin wrapper calling this with each domain's `last_committed_height` as the target.
+- `validate_and_add_block()` first checks `block.settlement_batch_root == compute_settlement_batch_root(&block.settlement_watermarks)`, then calls `replay_settlement_to_watermarks(&block.settlement_watermarks)` before computing `commit_state` — so a validator reaches byte-identical account state to the producer for this block, rather than independently deciding how much domain data to settle. If the watermarks require a domain commitment the validator hasn't recorded yet, replay fails closed (`"...not yet recorded"`) rather than skipping or guessing.
+
 ---
 
 ## 2. Validator Economics (PoS)
@@ -60,8 +68,9 @@ The finality protocol uses BLS12-381 signatures for aggregated threshold verific
 - PoS engine populates BLS keys from `ValidatorKeys`; PoW/PoA return `None`.
 
 #### 3.2.2 Vote Signing
-- `sign_bls(sk, msg)` hashes the message to G1 (`hash_to_g1`) and multiplies by the secret key, producing a 48-byte compressed G1 signature.
+- `sign_bls(sk, msg)` hashes the message to a G1 curve point (`hash_to_g1`) and multiplies by the secret key, producing a 48-byte compressed G1 signature.
 - `verify_bls_sig(pk, msg, sig)` verifies the pairing: `e(sig, G2_gen) == e(H(msg), pk)`.
+- `hash_to_g1` (v0.5) uses `bls12_381`'s built-in RFC 9380 hash-to-curve (`ExpandMsgXmd<Sha256>` + SSWU, domain-separated with `BUDLUM_BLS_SIG_V2_BLS12381G1_XMD:SHA-256_SSWU_RO_`). The prior construction computed `H(m) = scalar_hash(m) · G` — a public, deterministic scalar multiple of the generator — which meant `H(m₂) = (s₂/s₁) · H(m₁)` for any two messages was computable without the secret key, so any valid signature could be rescaled into a valid signature over an *arbitrary different message* (`σ₂ = (s₂/s₁) · σ₁`). RFC 9380 hash-to-curve maps messages to points with no known discrete-log relationship to each other or to `G`, closing this universal forgery.
 
 #### 3.2.3 Protocol Phases
 At each checkpoint height (`FINALITY_CHECKPOINT_INTERVAL = 10`):
@@ -90,14 +99,14 @@ Each `ConsensusKind` a domain registers under has a corresponding `DomainFinalit
 
 - `PoWHeaderProof { prev_hash, target, nonce, timestamp_ms, extra }`; `hash()` is `SHA256("BDLM_POW_HEADER_V1" || prev_hash || target || nonce || timestamp_ms || extra)`.
 - Validity requires, for every header: `hash() <= target` (real proof-of-work), and `target <= domain.min_pow_target` (the domain's registered difficulty floor — operators must set this to reflect their chain's real difficulty; the default `[0xFF; 32]` provides no real security).
-- `headers[0].extra` must equal `commitment.domain_block_hash`, binding the proof-of-work chain to this specific commitment.
+- `headers[0].extra` must equal `commitment.commitment_payload_hash()` (v0.5; previously just `commitment.domain_block_hash` — see 3.3.4), binding the proof-of-work chain to this specific commitment.
 - Confirmation depth is `headers.len() - 1`, computed from real, independently-verified headers — not a submitted number.
 - This verifies a Budlum-defined header format's own proof-of-work; it does not sync or validate an external chain's actual header history (e.g. Bitcoin-compatible headers) — that remains future work.
 
 #### 3.3.2 PoA / BFT / PoS: Shared BLS Quorum Verification
 `FinalityProof::PoA` and `FinalityProof::Bft` now carry the same `{ cert: FinalityCert, validator_snapshot: ValidatorSetSnapshot }` shape as `FinalityProof::PoS`, verified by a shared `verify_quorum_cert()`:
 
-1. `cert.checkpoint_height`/`checkpoint_hash` must match the commitment.
+1. `cert.checkpoint_height` must match `commitment.domain_height`, and `cert.checkpoint_hash` must equal `hex(commitment.commitment_payload_hash())` (v0.5; see 3.3.4).
 2. `validator_snapshot.set_hash` must match `cert.set_hash` **and** the domain's registered `validator_set_hash` — unconditionally; there is no zero-hash bypass (see 3.3.3).
 3. `cert.verify(validator_snapshot)` performs the real BLS pairing check described in 3.2.4.
 
@@ -105,6 +114,13 @@ A self-reported `signer_count`/`validator_count` is no longer sufficient for PoA
 
 #### 3.3.3 Validator-Set Registration Requirement
 `validate_consensus_domain_registration` rejects registering a PoS/PoA/BFT-kind domain with `validator_set_hash == [0u8; 32]`. Previously, a zero hash caused the binding check above to be skipped entirely, letting any attacker-generated key set produce an accepted finality certificate for that domain. Operators must register a real validator set hash.
+
+#### 3.3.4 Finality Proofs Bind `state_root`, Not Just `domain_block_hash` (v0.5)
+
+§1.5 makes `state_updates` self-consistent with `state_root`, but through v0.4 no finality proof actually attested to *which* `state_root` accompanied a given `domain_block_hash` — PoW's `extra` field and the BLS quorum cert's `checkpoint_hash` both bound only `domain_block_hash`. Since `state_updates`/`state_root` are Budlum-side settlement data, not part of an external domain's own block hash, an attacker (or a malfunctioning producer) could take one commitment's exact finality proof and pair it with a *different*, still internally-self-consistent `state_updates`/`state_root` for the same domain block, and have it accepted as equally finalized — silently rewriting the nonce updates a finalized commitment actually settles.
+
+- `DomainCommitment::commitment_payload_hash()` hashes domain identity, position, and every root the commitment claims (`domain_id`, `domain_height`, `domain_block_hash`, `parent_domain_block_hash`, `state_root`, `tx_root`, `event_root`, `consensus_kind`, `validator_set_hash`, `sequence`) — deliberately excluding `finality_proof_hash` itself, since that field is only known after a proof exists and including it would make the binding circular.
+- Both the PoW `extra` binding (3.3.1) and the quorum-cert `checkpoint_hash` binding (3.3.2) now check against `commitment_payload_hash()` instead of the bare `domain_block_hash`. Reusing a valid finality proof against a commitment with a swapped `state_updates`/`state_root` now fails verification, because the payload hash the proof was produced over no longer matches.
 
 ### 3.4 JSON-RPC API (`bud_`)
 

@@ -16,6 +16,18 @@ An independent architecture review of the settlement layer identified five findi
 
 Test count: 342 → 346. Full detail in `SPECIFICATION.md` §1.4–1.5, §3.3, §6.
 
+## 0b. v0.5 Second-Pass Fixes
+
+A second, independent review pass identified three further findings, closed in v0.5:
+
+| Finding | Fix |
+| --- | --- |
+| `hash_to_g1` computed `H(m) = scalar_hash(m) · G`, a public deterministic scalar multiple of the generator — any valid BLS signature could be rescaled into a valid signature over an *arbitrary different message* without the secret key (`σ₂ = (s₂/s₁) · σ₁`), a universal forgery against every BLS-signed structure in the protocol | `hash_to_g1` now uses `bls12_381`'s built-in RFC 9380 hash-to-curve (`ExpandMsgXmd<Sha256>` + SSWU), which maps messages to points with no known discrete-log relationship to each other or to the generator (`src/chain/finality.rs`) |
+| §0's settlement determinism held only "given the same recorded domain data" — a receiving validator recomputed settlement from its own view of domain commitments, which could differ from the producer's, causing valid blocks to be spuriously rejected or state to diverge outside what `state_root` alone could catch | `Block` now carries `settlement_watermarks` and a `settlement_batch_root` binding them into the block hash; `validate_and_add_block` replays settlement bounded by exactly those watermarks (`replay_settlement_to_watermarks`) instead of independently recomputing as far as locally available data allows (`src/chain/blockchain.rs`, `src/core/block.rs`) |
+| `state_updates`/`state_root` self-consistency (§0/§1.5) was real but insufficient: finality proofs (PoW header binding, BLS quorum certs) attested only to a commitment's raw `domain_block_hash`, never to *which* `state_root` came with it, so a valid proof could in principle be replayed against a different, still self-consistent `state_updates` batch | `DomainCommitment::commitment_payload_hash()` folds `state_root` (and every other claimed root) into what PoW's `extra` field and the BLS quorum cert's `checkpoint_hash` actually bind to (`src/domain/finality_adapter.rs`, `src/domain/types.rs`) |
+
+Test count: 346 → 351. Full detail in `SPECIFICATION.md` §1.6, §3.2.2, §3.3.4.
+
 ## 1. Implemented Protections
 
 | Area | Current behavior |
@@ -29,7 +41,7 @@ Test count: 342 → 346. Full detail in `SPECIFICATION.md` §1.4–1.5, §3.3, �
 | RPC | Separate public and operator HTTP listeners. Public: API-key auth, CORS allowlists, per-IP rate limiting, trusted-proxy validation, 10MB body limit, 500 max connections. Operator: localhost-only, no auth, 50MB body limit. `bud_health` and `bud_nodeInfo` endpoints. |
 | CI | GitHub Actions pins Rust `1.94.0`, checks formatting, runs `cargo check`, denies Clippy warnings, executes workspace tests, and builds `--release --locked`. |
 | PKCS#11 | `ConsensusSigner` trait + `Pkcs11Signer` adapter (via `cryptoki`) + `KeyPairSigner` local fallback. `ConsensusEngine` trait exposes `fn signer()`. Block signing uses HSM when configured, with local file fallback. |
-| BLS Finality | `BlsKeypair` in `ValidatorKeys` with new `sign_bls()` / `verify_bls_sig()` primitives. `ConsensusEngine::bls_secret_key()` exposed through PoS engine. Validators produce BLS-signed prevote/precommit messages. Periodic auto-precommit triggers when prevote quorum is reached. `FinalityCert` verification via BLS pairing. |
+| BLS Finality | `BlsKeypair` in `ValidatorKeys` with new `sign_bls()` / `verify_bls_sig()` primitives. `ConsensusEngine::bls_secret_key()` exposed through PoS engine. Validators produce BLS-signed prevote/precommit messages. Periodic auto-precommit triggers when prevote quorum is reached. `FinalityCert` verification via BLS pairing. `hash_to_g1` uses real RFC 9380 hash-to-curve (v0.5), not a forgeable hash-then-multiply construction. |
 | P2P Hardening | Persistent node identity via `p2p_identity_file` (load-or-generate pattern). Durable peer bans persisted to JSON every 5 minutes and reloaded on startup. mDNS policy honors per-network `mdns_enabled` flag. DNS seed resolution via `resolve_dns_seeds()`. |
 
 ## 2. Staged or Partial Work
@@ -66,7 +78,7 @@ nix develop --command cargo build --release --locked
 git diff --check
 ```
 
-Current: **346 tests.** `cargo clippy -D warnings` passes on the CI-pinned Rust 1.94.0 toolchain; a newer local toolchain may surface new lints as clippy itself evolves.
+Current: **351 tests.** `cargo clippy -D warnings` passes on the CI-pinned Rust 1.94.0 toolchain; a newer local toolchain may surface new lints as clippy itself evolves.
 
 ## 5. What Remains for Mainnet v1
 
