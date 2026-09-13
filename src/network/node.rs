@@ -1487,7 +1487,7 @@ impl Node {
                         }
                         SwarmEvent::Behaviour(BudlumBehaviourEvent::Sync(event)) => {
                             match event {
-                                request_response::Event::Message { peer, message } => {
+                                request_response::Event::Message { peer, message, .. } => {
                                     match message {
                                         request_response::Message::Request { request, channel, .. } => {
                                             if let Ok(msg) = NetworkMessage::from_bytes(&request) {
