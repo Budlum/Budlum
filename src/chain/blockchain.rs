@@ -681,7 +681,7 @@ impl Blockchain {
                 .domain_commitment_registry
                 .find_by_height(commitment.domain_id, commitment.domain_height)
             {
-                if existing.domain_block_hash == commitment.domain_block_hash {
+                if existing.commitment_payload_hash() == commitment.commitment_payload_hash() {
                     return Ok(());
                 }
                 let d_mut = self
@@ -714,7 +714,7 @@ impl Blockchain {
             .domain_commitment_registry
             .find_by_height(commitment.domain_id, commitment.domain_height)
         {
-            if existing.domain_block_hash == commitment.domain_block_hash
+            if existing.commitment_payload_hash() == commitment.commitment_payload_hash()
                 && existing.sequence == commitment.sequence
             {
                 return Ok(());
@@ -927,7 +927,7 @@ impl Blockchain {
     ) -> Result<(), String> {
         self.verify_domain_commitment_finality(&commitment, &proof)?;
         self.accept_domain_commitment(commitment)?;
-        
+
         self.retry_pending_blocks();
         Ok(())
     }
@@ -1078,7 +1078,7 @@ impl Blockchain {
                 Some(bytes)
             })
             .unwrap_or([0u8; 32]);
-            
+
         let underlying_block_height = state_root_source.map(|b| b.index).unwrap_or(0);
         let underlying_block_hash = state_root_source
             .and_then(|b| {
@@ -2072,7 +2072,11 @@ impl Blockchain {
                         if e.starts_with("MissingDomainCommitment:") {
                             still_pending.insert(hash, block);
                         } else {
-                            tracing::warn!("Pending block {} failed validation: {}", block.index, e);
+                            tracing::warn!(
+                                "Pending block {} failed validation: {}",
+                                block.index,
+                                e
+                            );
                         }
                     }
                 }
@@ -2132,6 +2136,25 @@ impl Blockchain {
             .full_validate(&block, &self.chain, &self.state)
         {
             return Err(format!("Consensus validation failed: {}", e));
+        }
+
+        // A block's settlement watermarks must never ask a validator to move
+        // backwards relative to its own current (parent) settlement state —
+        // regressing a domain's watermark can't be caught by the batch-root
+        // check alone (a lower target simply settles nothing for that domain,
+        // which is still a self-consistent, correctly-rooted empty batch).
+        for (&domain_id, &target_height) in &block.settlement_watermarks {
+            let current = self
+                .domain_registry
+                .get(domain_id)
+                .map(|d| d.last_settled_height)
+                .unwrap_or(0);
+            if target_height < current {
+                return Err(format!(
+                    "Block {} declares a settlement watermark for domain {} ({}) that regresses behind the current settled height ({})",
+                    block.index, domain_id, target_height, current
+                ));
+            }
         }
 
         // Replay cross-domain settlement bounded by exactly the watermarks
@@ -2382,14 +2405,47 @@ impl Blockchain {
         );
 
         let old_chain = self.chain.clone();
-        let (new_state, _) = self.rebuild_state_and_registry(&new_chain)?;
+        let (new_state, new_registry) = self.rebuild_state_and_registry(&new_chain)?;
 
+        // Durably persist every post-fork block of the *new* chain before
+        // touching any in-memory state or deleting the old chain's blocks.
+        // If a required domain commitment is missing, a state transition
+        // fails, or a disk write errors out partway through, this returns
+        // early with `self.chain`/`self.state`/`self.domain_registry` and
+        // on-disk data completely untouched — the node stays on its old,
+        // still-canonical chain instead of ending up between the two.
+        if self.storage.is_some() {
+            let (mut current_state, mut current_registry) = if fork_point > 0 {
+                self.rebuild_state_and_registry(&new_chain[..fork_point])?
+            } else {
+                (AccountState::new(), ConsensusDomainRegistry::new())
+            };
+            for block in &new_chain[fork_point..] {
+                let (settled_domains, _) = self.replay_settlement_to_watermarks(
+                    &mut current_state,
+                    &mut current_registry,
+                    &block.settlement_watermarks,
+                )?;
+                current_state = Self::apply_block_effects(&current_state, block)?;
+                self.commit_block_durable(block, &current_state, settled_domains)
+                    .map_err(|e| {
+                        format!(
+                            "Failed to durably persist reorg block {}: {}",
+                            block.index, e
+                        )
+                    })?;
+            }
+        }
+
+        // Only now, with the new chain fully and durably persisted, adopt
+        // it in memory and clean up the orphaned old blocks.
         for block in &old_chain[fork_point..] {
             self.verified_qc_blobs.remove(&block.index);
         }
 
         self.chain = new_chain;
         self.state = new_state;
+        self.domain_registry = new_registry;
         self.validator_snapshots.clear();
         self.record_validator_snapshot(self.state.epoch_index);
 
@@ -2420,21 +2476,6 @@ impl Blockchain {
                 for tx in &block.transactions {
                     let _ = store.delete_tx_index(&tx.hash);
                 }
-            }
-            let (mut current_state, mut current_registry) = if fork_point > 0 {
-                self.rebuild_state_and_registry(&self.chain[..fork_point])?
-            } else {
-                (AccountState::new(), ConsensusDomainRegistry::new())
-            };
-            for block in &self.chain[fork_point..] {
-                let (settled_domains, _) = self.replay_settlement_to_watermarks(
-                    &mut current_state,
-                    &mut current_registry,
-                    &block.settlement_watermarks,
-                )?;
-                current_state = Self::apply_block_effects(&current_state, block)?;
-                self.commit_block_durable(block, &current_state, settled_domains)
-                    .unwrap();
             }
             if let Some(last) = self.chain.last() {
                 let _ = store.save_last_hash(&last.hash);

@@ -244,6 +244,11 @@ impl DomainCommitment {
     /// circular. Also excludes `producer`/`timestamp_ms`, which carry no
     /// security-relevant claim about domain state.
     pub fn commitment_payload_hash(&self) -> Hash32 {
+        // Deliberately excludes `sequence` (a caller-assigned submission
+        // counter, not domain state — the same real commitment can be
+        // legitimately resubmitted under a different sequence number and
+        // must still be recognized as identical) as well as
+        // `finality_proof_hash`/`producer`/`timestamp_ms` (see doc comment).
         hash_fields_bytes(&[
             b"BDLM_DOMAIN_COMMITMENT_PAYLOAD_V1",
             &self.domain_id.to_le_bytes(),
@@ -255,7 +260,6 @@ impl DomainCommitment {
             &self.event_root,
             &self.consensus_kind.as_bytes(),
             &self.validator_set_hash,
-            &self.sequence.to_le_bytes(),
         ])
     }
 

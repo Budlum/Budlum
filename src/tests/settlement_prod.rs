@@ -1787,4 +1787,133 @@ mod settlement_prod_tests {
             err
         );
     }
+
+    // --- Canonical commitment identity for equivocation dedup -----------
+    //
+    // Two commitments sharing the same `domain_block_hash` (and, for
+    // already-committed heights, no other constraint) used to be treated as
+    // "the same commitment, already recorded" and silently accepted a
+    // second time with no re-check of their actual content. That let a
+    // resubmission with a materially different `state_root`/`state_updates`
+    // slip past as a harmless duplicate instead of being flagged as
+    // equivocation. Identity is now `commitment_payload_hash()` (the same
+    // canonical payload finality proofs bind to), not the raw block hash.
+
+    #[test]
+    fn resubmission_with_same_block_hash_but_different_state_root_is_equivocation_not_a_duplicate()
+    {
+        let mut blockchain = test_chain();
+        let pow = domain(1, ConsensusKind::PoW);
+        blockchain.register_consensus_domain(pow.clone()).unwrap();
+
+        let alice = Address::from([0x61u8; 32]);
+        let original = state_update_commitment(&pow, 5, 0, 20, &alice, 1);
+        blockchain
+            .submit_domain_commitment(original.clone())
+            .unwrap();
+
+        // Same domain_block_hash (same `commitment_for` height/sequence/seed)
+        // and same sequence, but a materially different state_updates/state_root.
+        let conflicting = state_update_commitment(&pow, 5, 0, 20, &alice, 999);
+        assert_eq!(
+            original.domain_block_hash, conflicting.domain_block_hash,
+            "sanity: this test is about two commitments sharing a block hash"
+        );
+        assert_ne!(original.state_root, conflicting.state_root);
+
+        let err = blockchain
+            .submit_domain_commitment(conflicting)
+            .unwrap_err();
+        assert!(
+            err.contains("Equivocation"),
+            "expected the conflicting resubmission to be flagged as equivocation, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resubmitting_the_byte_identical_commitment_remains_idempotent() {
+        let mut blockchain = test_chain();
+        let pow = domain(1, ConsensusKind::PoW);
+        blockchain.register_consensus_domain(pow.clone()).unwrap();
+
+        let alice = Address::from([0x63u8; 32]);
+        let original = state_update_commitment(&pow, 5, 0, 22, &alice, 1);
+        blockchain
+            .submit_domain_commitment(original.clone())
+            .unwrap();
+
+        // The exact same commitment, resubmitted, must remain a harmless
+        // no-op rather than being flagged as equivocation.
+        blockchain.submit_domain_commitment(original).unwrap();
+        assert_eq!(blockchain.domain_commitment_registry.len(), 1);
+    }
+
+    #[test]
+    fn validator_rejects_block_whose_watermark_regresses_behind_current_settled_height() {
+        let pow = domain(1, ConsensusKind::PoW);
+        let alice = Address::from([0x62u8; 32]);
+
+        let mut producer = test_chain();
+        producer.register_consensus_domain(pow.clone()).unwrap();
+        let com = state_update_commitment(&pow, 1, 0, 21, &alice, 5);
+        producer.submit_domain_commitment(com.clone()).unwrap();
+        let block1 = producer.produce_block(Address::zero()).unwrap();
+
+        let mut validator = test_chain();
+        validator.register_consensus_domain(pow).unwrap();
+        validator.submit_domain_commitment(com).unwrap();
+        validator.validate_and_add_block(block1).unwrap();
+        assert_eq!(validator.get_nonce(&alice), 5);
+
+        // A later block tries to claim a regressed watermark (0) for a
+        // domain the validator has already settled up to height 1.
+        let mut block2 = producer.produce_block(Address::zero()).unwrap();
+        block2.settlement_watermarks.insert(1, 0);
+
+        let err = validator.validate_and_add_block(block2).unwrap_err();
+        assert!(
+            err.contains("regresses"),
+            "expected a watermark-regression rejection, got: {}",
+            err
+        );
+    }
+
+    // --- Global header binds its exact source block, not just a root -----
+
+    #[test]
+    fn global_header_binds_the_exact_underlying_block_height_and_hash() {
+        let mut blockchain = test_chain();
+        // No validator committee: `global_state_finalized` stays false, so
+        // the header's source block is the current chain tip rather than
+        // `finalized_height` — this test asserts against whichever block is
+        // actually chosen.
+        blockchain.state.validators.clear();
+        blockchain.produce_block(Address::zero());
+        blockchain.produce_block(Address::zero());
+
+        let header = blockchain.build_global_header(None);
+        let source_block = blockchain.chain.last().unwrap();
+        assert_eq!(header.underlying_block_height, source_block.index);
+        let mut expected_hash = [0u8; 32];
+        hex::decode_to_slice(&source_block.hash, &mut expected_hash).unwrap();
+        assert_eq!(header.underlying_block_hash, expected_hash);
+
+        // Tampering the bound block hash/height, independent of every other
+        // field, must change the header's own hash — a header can't claim
+        // one account-state root while silently pointing at a different
+        // source block.
+        let tampered_hash = {
+            let mut h = header.clone();
+            h.underlying_block_hash = [0xEEu8; 32];
+            h.calculate_hash_bytes()
+        };
+        let tampered_height = {
+            let mut h = header.clone();
+            h.underlying_block_height += 1;
+            h.calculate_hash_bytes()
+        };
+        assert_ne!(header.calculate_hash_bytes(), tampered_hash);
+        assert_ne!(header.calculate_hash_bytes(), tampered_height);
+    }
 }

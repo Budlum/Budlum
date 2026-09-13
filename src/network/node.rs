@@ -816,9 +816,20 @@ impl Node {
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    warn!("Block validation failed: {}", e);
-                                                    if let Ok(mut pm) = self.peer_manager.lock() {
-                                                        pm.report_invalid_block(&peer_id);
+                                                    if e.starts_with("MissingDomainCommitment:") {
+                                                        // The block itself may well be legitimate —
+                                                        // it just arrived before the domain
+                                                        // commitment(s) it settles. It's already
+                                                        // queued for retry (see
+                                                        // `Blockchain::retry_pending_blocks`), so
+                                                        // don't punish the peer for our own gossip
+                                                        // ordering.
+                                                        info!("Block #{} queued pending domain data: {}", block.index, e);
+                                                    } else {
+                                                        warn!("Block validation failed: {}", e);
+                                                        if let Ok(mut pm) = self.peer_manager.lock() {
+                                                            pm.report_invalid_block(&peer_id);
+                                                        }
                                                     }
                                                 }
                                             }

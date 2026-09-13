@@ -632,32 +632,33 @@ mod tests {
         let sig1 = sign_bls(&sk, msg1);
         let msg2 = b"malicious finalized block B";
 
-        // Old attack: scale the observed signature by an attacker-chosen
-        // scalar and hope it lands on a valid signature for msg2. With a
-        // real hash-to-curve this has negligible success probability (it
-        // would require solving discrete log), unlike the old scheme where
-        // the exact right ratio was directly computable.
+        // The real rescaling attack: under the OLD (vulnerable) `hash_to_g1`,
+        // `H(m) = old_scalar_hash(m) * G`, so `sig = sk * H(m) = (sk *
+        // old_scalar_hash(m)) * G`. Given a valid `sig1` over `msg1`, an
+        // attacker who can compute `old_scalar_hash` for any message (it was
+        // just SHA3-256 with a public domain tag — no secret key needed) can
+        // compute the exact ratio `r = old_scalar_hash(msg2) /
+        // old_scalar_hash(msg1)` and forge `sig2 = r * sig1`, since `r *
+        // sig1 = r * sk * old_scalar_hash(msg1) * G = sk *
+        // old_scalar_hash(msg2) * G`, which is exactly a valid signature
+        // over `msg2`. This reconstructs that exact historical formula
+        // (not an arbitrary wrong scalar) to prove the *specific* forgery
+        // this fix closed no longer succeeds against the real `hash_to_g1`.
+        fn old_vulnerable_scalar_hash(msg: &[u8]) -> Scalar {
+            let mut hasher = Sha3_256::new();
+            hasher.update(b"BUDLUM_BLS_SIG_DST");
+            hasher.update(msg);
+            let h = hasher.finalize();
+            let mut scalar_bytes = [0u8; 64];
+            scalar_bytes[0..32].copy_from_slice(&h);
+            Scalar::from_bytes_wide(&scalar_bytes)
+        }
+
         let sig1_affine = G1Affine::from_compressed(&sig1.clone().try_into().unwrap()).unwrap();
-        
-        // Attempt the actual rescaling attack: compute the scalar ratio
-        // r = H_scalar(msg2) * H_scalar(msg1)^-1
-        use sha2::{Sha256, Digest};
-        let mut hasher1 = Sha256::new();
-        hasher1.update(msg1);
-        let h1_bytes = hasher1.finalize();
-        let mut h1_wide = [0u8; 64];
-        h1_wide[..32].copy_from_slice(&h1_bytes);
-        let h1_scalar = Scalar::from_bytes_wide(&h1_wide);
-        
-        let mut hasher2 = Sha256::new();
-        hasher2.update(msg2);
-        let h2_bytes = hasher2.finalize();
-        let mut h2_wide = [0u8; 64];
-        h2_wide[..32].copy_from_slice(&h2_bytes);
-        let h2_scalar = Scalar::from_bytes_wide(&h2_wide);
-        
+        let h1_scalar = old_vulnerable_scalar_hash(msg1);
+        let h2_scalar = old_vulnerable_scalar_hash(msg2);
         let ratio = h2_scalar * h1_scalar.invert().unwrap();
-        
+
         let forged_sig = G1Affine::from(G1Projective::from(sig1_affine) * ratio)
             .to_compressed()
             .to_vec();
