@@ -539,9 +539,14 @@ async fn main() {
         }
     }
 
-    node.listen(port).unwrap();
+    if let Err(e) = node.listen(port) {
+        eprintln!("Failed to listen on port {}: {}", port, e);
+        std::process::exit(1);
+    }
     if let Some(ref addr) = config.dial {
-        node.dial(addr).expect("Failed to dial");
+        if let Err(e) = node.dial(addr) {
+            eprintln!("Failed to dial {}: {}", addr, e);
+        }
     }
     let client = node.get_client();
     let peer_id = node.peer_id.to_string();
