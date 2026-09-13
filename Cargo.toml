@@ -14,7 +14,7 @@ sled = "0.34"
 
 # P2P Networking
 tokio = { version = "1", features = ["full"] }
-libp2p = { version = "0.56", features = [
+libp2p = { version = "0.57", features = [
     "tokio",
     "tcp",
     "noise",
