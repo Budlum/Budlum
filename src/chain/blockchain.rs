@@ -826,7 +826,7 @@ impl Blockchain {
         
         let mut temp_state = self.state.clone();
         let mut temp_registry = self.domain_registry.clone();
-        let settled_domains = self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets)?;
+        let (settled_domains, _) = self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets)?;
         
         self.state = temp_state;
         self.domain_registry = temp_registry;
@@ -853,8 +853,9 @@ impl Blockchain {
         temp_state: &mut AccountState,
         temp_registry: &mut ConsensusDomainRegistry,
         targets: &BTreeMap<DomainId, u64>,
-    ) -> Result<Vec<ConsensusDomain>, String> {
+    ) -> Result<(Vec<ConsensusDomain>, Vec<crate::domain::Hash32>), String> {
         let mut settled_domains = Vec::new();
+        let mut settled_commitment_ids = Vec::new();
         for (&domain_id, &target_height) in targets {
             loop {
                 let last_settled = temp_registry
@@ -892,9 +893,10 @@ impl Blockchain {
                     .ok_or_else(|| format!("Domain {} not found", domain_id))?;
                 d_mut.last_settled_height = next_height;
                 settled_domains.push(d_mut.clone());
+                settled_commitment_ids.push(com.commitment_payload_hash());
             }
         }
-        Ok(settled_domains)
+        Ok((settled_domains, settled_commitment_ids))
     }
 
     fn replay_settlement_to_watermarks(
@@ -902,7 +904,7 @@ impl Blockchain {
         temp_state: &mut AccountState,
         temp_registry: &mut ConsensusDomainRegistry,
         targets: &BTreeMap<DomainId, u64>,
-    ) -> Result<Vec<ConsensusDomain>, String> {
+    ) -> Result<(Vec<ConsensusDomain>, Vec<crate::domain::Hash32>), String> {
         Self::replay_settlement_to_watermarks_internal(
             &self.domain_commitment_registry,
             temp_state,
@@ -1897,8 +1899,8 @@ impl Blockchain {
         let mut temp_state = self.state.clone();
         let mut temp_registry = self.domain_registry.clone();
 
-        let settled_domains = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets) {
-            Ok(domains) => domains,
+        let (settled_domains, settled_commitment_ids) = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets) {
+            Ok(res) => res,
             Err(e) => {
                 tracing::error!("Failed to settle pending domain commitments: {}", e);
                 return None;
@@ -1924,7 +1926,7 @@ impl Blockchain {
             .collect();
             
         block.settlement_batch_root = hex::encode(
-            crate::core::block::compute_settlement_batch_root(&block.settlement_watermarks),
+            crate::core::block::compute_settlement_batch_root(&settled_commitment_ids),
         );
         block.producer = Some(producer_address);
         block.timestamp =
@@ -2073,15 +2075,6 @@ impl Blockchain {
             return Err("Block missing state_root".into());
         }
 
-        let expected_settlement_batch_root = hex::encode(
-            crate::core::block::compute_settlement_batch_root(&block.settlement_watermarks),
-        );
-        if block.settlement_batch_root != expected_settlement_batch_root {
-            return Err(format!(
-                "settlement_batch_root mismatch: expected {}, got {}",
-                expected_settlement_batch_root, block.settlement_batch_root
-            ));
-        }
 
         if let Err(e) = self
             .consensus
@@ -2097,10 +2090,20 @@ impl Blockchain {
         let mut temp_state = self.state.clone();
         let mut temp_registry = self.domain_registry.clone();
         
-        let settled_domains = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &block.settlement_watermarks) {
-            Ok(domains) => domains,
+        let (settled_domains, settled_commitment_ids) = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &block.settlement_watermarks) {
+            Ok(res) => res,
             Err(e) => return Err(format!("Failed to replay block settlement batch: {}", e)),
         };
+
+        let expected_settlement_batch_root = hex::encode(
+            crate::core::block::compute_settlement_batch_root(&settled_commitment_ids),
+        );
+        if block.settlement_batch_root != expected_settlement_batch_root {
+            return Err(format!(
+                "settlement_batch_root mismatch: expected {}, got {}",
+                expected_settlement_batch_root, block.settlement_batch_root
+            ));
+        }
 
         for (i, tx) in block.transactions.iter().enumerate() {
             if tx.chain_id != block.chain_id {
@@ -2362,7 +2365,7 @@ impl Blockchain {
                 (AccountState::new(), ConsensusDomainRegistry::new())
             };
             for block in &self.chain[fork_point..] {
-                let settled_domains = self.replay_settlement_to_watermarks(&mut current_state, &mut current_registry, &block.settlement_watermarks)?;
+                let (settled_domains, _) = self.replay_settlement_to_watermarks(&mut current_state, &mut current_registry, &block.settlement_watermarks)?;
                 current_state = Self::apply_block_effects(&current_state, block)?;
                 self.commit_block_durable(block, &current_state, settled_domains).unwrap();
             }

@@ -94,9 +94,7 @@ impl GenesisConfig {
             vrf_proof: Vec::new(),
             validator_set_hash: self.validator_set_hash(),
             settlement_watermarks: std::collections::BTreeMap::new(),
-            settlement_batch_root: hex::encode(crate::core::block::compute_settlement_batch_root(
-                &std::collections::BTreeMap::new(),
-            )),
+            settlement_batch_root: hex::encode(crate::core::block::compute_settlement_batch_root(&[])),
         };
 
         block.tx_root = block.calculate_tx_root();

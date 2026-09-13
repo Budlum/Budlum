@@ -12,9 +12,11 @@ use tracing::{info, warn};
 /// batch it applied (`Blockchain::settlement_watermarks`), so every validator
 /// can replay that same bounded batch and reach byte-identical account state,
 /// rather than each independently deciding how much domain data to settle.
-pub fn compute_settlement_batch_root(watermarks: &BTreeMap<DomainId, u64>) -> [u8; 32] {
-    let serialized = bincode::serialize(watermarks).unwrap_or_default();
-    hash_fields_bytes(&[b"BDLM_SETTLE_BATCH_V1", &serialized])
+pub fn compute_settlement_batch_root(settled_commitment_ids: &[crate::domain::Hash32]) -> [u8; 32] {
+    if settled_commitment_ids.is_empty() {
+        return crate::settlement::commitment_tree::merkle_root(&[]);
+    }
+    crate::settlement::commitment_tree::merkle_root(settled_commitment_ids)
 }
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
@@ -180,7 +182,7 @@ impl Block {
             vrf_proof: Vec::new(),
             validator_set_hash: String::new(),
             settlement_watermarks: BTreeMap::new(),
-            settlement_batch_root: hex::encode(compute_settlement_batch_root(&BTreeMap::new())),
+            settlement_batch_root: hex::encode(compute_settlement_batch_root(&[])),
         };
         block.tx_root = block.calculate_tx_root();
         block.hash = block.calculate_hash();
