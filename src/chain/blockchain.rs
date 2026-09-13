@@ -358,7 +358,7 @@ impl Blockchain {
                 &mut domain_registry,
                 &block.settlement_watermarks,
             );
-            
+
             state = match Self::apply_block_effects(&state, block) {
                 Ok(next_state) => next_state,
                 Err(e) => {
@@ -688,7 +688,9 @@ impl Blockchain {
                     .ok_or_else(|| format!("Domain {} not found", commitment.domain_id))?;
                 d_mut.status = DomainStatus::Frozen;
                 if let Some(store) = &self.storage {
-                    store.save_consensus_domain(d_mut).map_err(|e| format!("Failed to persist frozen domain: {}", e))?;
+                    store
+                        .save_consensus_domain(d_mut)
+                        .map_err(|e| format!("Failed to persist frozen domain: {}", e))?;
                 }
                 return Err(format!(
                     "Equivocation or invalid sequence detected for domain {} height {}",
@@ -721,7 +723,9 @@ impl Blockchain {
                     .ok_or_else(|| format!("Domain {} not found", commitment.domain_id))?;
                 d_mut.status = DomainStatus::Frozen;
                 if let Some(store) = &self.storage {
-                    store.save_consensus_domain(d_mut).map_err(|e| format!("Failed to persist frozen domain: {}", e))?;
+                    store
+                        .save_consensus_domain(d_mut)
+                        .map_err(|e| format!("Failed to persist frozen domain: {}", e))?;
                 }
                 return Err(format!(
                     "Equivocation or invalid sequence detected for domain {} height {}",
@@ -823,11 +827,12 @@ impl Blockchain {
             .into_iter()
             .map(|d| (d.id, d.last_committed_height))
             .collect();
-        
+
         let mut temp_state = self.state.clone();
         let mut temp_registry = self.domain_registry.clone();
-        let (settled_domains, _) = self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets)?;
-        
+        let (settled_domains, _) =
+            self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets)?;
+
         self.state = temp_state;
         self.domain_registry = temp_registry;
         if let Some(store) = &self.storage {
@@ -912,8 +917,6 @@ impl Blockchain {
             targets,
         )
     }
-
-
 
     pub fn submit_verified_domain_commitment(
         &mut self,
@@ -1888,7 +1891,7 @@ impl Blockchain {
 
     pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
         let round_start = std::time::Instant::now();
-        
+
         let targets: BTreeMap<DomainId, u64> = self
             .domain_registry
             .domains()
@@ -1899,7 +1902,11 @@ impl Blockchain {
         let mut temp_state = self.state.clone();
         let mut temp_registry = self.domain_registry.clone();
 
-        let (settled_domains, settled_commitment_ids) = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets) {
+        let (settled_domains, settled_commitment_ids) = match self.replay_settlement_to_watermarks(
+            &mut temp_state,
+            &mut temp_registry,
+            &targets,
+        ) {
             Ok(res) => res,
             Err(e) => {
                 tracing::error!("Failed to settle pending domain commitments: {}", e);
@@ -1918,13 +1925,13 @@ impl Blockchain {
         if !self.pending_slashing_evidence.is_empty() {
             block.slashing_evidence = Some(self.pending_slashing_evidence.clone());
         }
-        
+
         block.settlement_watermarks = temp_registry
             .domains()
             .into_iter()
             .map(|d| (d.id, d.last_settled_height))
             .collect();
-            
+
         block.settlement_batch_root = hex::encode(
             crate::core::block::compute_settlement_batch_root(&settled_commitment_ids),
         );
@@ -1989,7 +1996,6 @@ impl Blockchain {
                 .record_block(last_block, self.storage.as_ref())
             {
                 warn!("Engine record block error: {}", e);
-
             }
         }
 
@@ -2075,7 +2081,6 @@ impl Blockchain {
             return Err("Block missing state_root".into());
         }
 
-
         if let Err(e) = self
             .consensus
             .full_validate(&block, &self.chain, &self.state)
@@ -2089,8 +2094,12 @@ impl Blockchain {
         // the producer did before checking `state_root` below.
         let mut temp_state = self.state.clone();
         let mut temp_registry = self.domain_registry.clone();
-        
-        let (settled_domains, settled_commitment_ids) = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &block.settlement_watermarks) {
+
+        let (settled_domains, settled_commitment_ids) = match self.replay_settlement_to_watermarks(
+            &mut temp_state,
+            &mut temp_registry,
+            &block.settlement_watermarks,
+        ) {
             Ok(res) => res,
             Err(e) => return Err(format!("Failed to replay block settlement batch: {}", e)),
         };
@@ -2365,9 +2374,14 @@ impl Blockchain {
                 (AccountState::new(), ConsensusDomainRegistry::new())
             };
             for block in &self.chain[fork_point..] {
-                let (settled_domains, _) = self.replay_settlement_to_watermarks(&mut current_state, &mut current_registry, &block.settlement_watermarks)?;
+                let (settled_domains, _) = self.replay_settlement_to_watermarks(
+                    &mut current_state,
+                    &mut current_registry,
+                    &block.settlement_watermarks,
+                )?;
                 current_state = Self::apply_block_effects(&current_state, block)?;
-                self.commit_block_durable(block, &current_state, settled_domains).unwrap();
+                self.commit_block_durable(block, &current_state, settled_domains)
+                    .unwrap();
             }
             if let Some(last) = self.chain.last() {
                 let _ = store.save_last_hash(&last.hash);
@@ -2384,7 +2398,10 @@ impl Blockchain {
             .and_then(|store| store.get_state_root(height).unwrap_or(None))
     }
 
-    pub fn rebuild_state_and_registry(&self, chain: &[Block]) -> Result<(AccountState, ConsensusDomainRegistry), String> {
+    pub fn rebuild_state_and_registry(
+        &self,
+        chain: &[Block],
+    ) -> Result<(AccountState, ConsensusDomainRegistry), String> {
         let chain_id = chain
             .first()
             .map(|block| block.chain_id)
@@ -2394,13 +2411,17 @@ impl Blockchain {
             .unwrap_or_else(|| GenesisConfig::new(chain_id));
         let mut state = genesis_config.build_state();
         let mut domain_registry = self.domain_registry.clone();
-        
+
         for domain in domain_registry.iter_mut() {
             domain.last_settled_height = 0;
         }
 
         for block in chain.iter().skip(1) {
-            let _ = self.replay_settlement_to_watermarks(&mut state, &mut domain_registry, &block.settlement_watermarks)?;
+            let _ = self.replay_settlement_to_watermarks(
+                &mut state,
+                &mut domain_registry,
+                &block.settlement_watermarks,
+            )?;
             state = Self::apply_block_effects(&state, block)
                 .map_err(|e| format!("Failed to rebuild state at block {}: {}", block.index, e))?;
         }
@@ -2420,7 +2441,9 @@ impl Blockchain {
             return None;
         }
         let block = &self.chain[height as usize];
-        let (state, _) = self.rebuild_state_and_registry(&self.chain[..=height as usize]).ok()?;
+        let (state, _) = self
+            .rebuild_state_and_registry(&self.chain[..=height as usize])
+            .ok()?;
         let finalized_height = self.finalized_height.min(height);
         let finalized_hash = self
             .chain

@@ -332,7 +332,6 @@ impl Storage {
             b.insert(key.as_bytes(), val.as_slice());
         }
 
-
         // 11. Remove IN_PROGRESS_HEIGHT marker
         b.remove(b"IN_PROGRESS_HEIGHT");
 
