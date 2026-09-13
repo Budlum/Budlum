@@ -638,6 +638,16 @@ mod tests {
     use super::*;
     use crate::crypto::primitives::KeyPair;
 
+    fn test_header() -> crate::domain::finality_adapter::PoWHeaderProof {
+        crate::domain::finality_adapter::PoWHeaderProof {
+            prev_hash: [0u8; 32],
+            target: [0xFFu8; 32],
+            nonce: 42,
+            timestamp_ms: 123,
+            extra: [1u8; 32],
+        }
+    }
+
     #[test]
     fn test_transaction_proto_conversion() {
         let keypair = KeyPair::generate().unwrap();
@@ -753,8 +763,7 @@ mod tests {
             event_root: [5u8; 32],
             finality_proof_hash: crate::domain::hash_finality_proof(
                 &crate::domain::FinalityProof::PoW {
-                    confirmations: 64,
-                    total_work_hint: 1000,
+                    headers: vec![test_header()],
                 },
             ),
             consensus_kind: crate::domain::ConsensusKind::PoW,
@@ -767,8 +776,7 @@ mod tests {
         let payload = crate::domain::VerifiedDomainCommitment {
             commitment: commitment.clone(),
             proof: crate::domain::FinalityProof::PoW {
-                confirmations: 64,
-                total_work_hint: 1000,
+                headers: vec![test_header()],
             },
         };
         let msg = NetworkMessage::VerifiedDomainCommitment(payload);
@@ -780,12 +788,8 @@ mod tests {
             NetworkMessage::VerifiedDomainCommitment(decoded) => {
                 assert_eq!(decoded.commitment, commitment);
                 match decoded.proof {
-                    crate::domain::FinalityProof::PoW {
-                        confirmations,
-                        total_work_hint,
-                    } => {
-                        assert_eq!(confirmations, 64);
-                        assert_eq!(total_work_hint, 1000);
+                    crate::domain::FinalityProof::PoW { headers } => {
+                        assert_eq!(headers, vec![test_header()]);
                     }
                     _ => panic!("Expected PoW finality proof"),
                 }

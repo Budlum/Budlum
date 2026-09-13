@@ -13,25 +13,67 @@ pub enum FinalityStatus {
     Rejected(String),
 }
 
+/// A single proof-of-work header submitted as evidence of chain depth on top
+/// of a committed block. Verified independently: its own hash must satisfy
+/// its own claimed `target`, its `target` must not be easier than the
+/// domain's registered `min_pow_target` floor, and (for headers after the
+/// first) it must link to the previous header's hash.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PoWHeaderProof {
+    pub prev_hash: Hash32,
+    /// Maximum allowed hash value for this header (big-endian; smaller =
+    /// harder). The header is only valid if `hash() <= target`.
+    pub target: Hash32,
+    pub nonce: u64,
+    pub timestamp_ms: u128,
+    /// On the base header (index 0), must equal the commitment's
+    /// `domain_block_hash` — this is what binds the proof-of-work chain to
+    /// the specific commitment being finalized. Confirmation headers built on
+    /// top may leave this zeroed.
+    pub extra: Hash32,
+}
+
+const POW_HEADER_HASH_DOMAIN: &[u8] = b"BDLM_POW_HEADER_V1";
+
+impl PoWHeaderProof {
+    pub fn hash(&self) -> Hash32 {
+        crate::core::hash::hash_fields_bytes(&[
+            POW_HEADER_HASH_DOMAIN,
+            &self.prev_hash,
+            &self.target,
+            &self.nonce.to_le_bytes(),
+            &self.timestamp_ms.to_le_bytes(),
+            &self.extra,
+        ])
+    }
+
+    pub fn meets_own_target(&self) -> bool {
+        self.hash() <= self.target
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FinalityProof {
+    /// A chain of real proof-of-work headers, `headers[0]` being the header
+    /// that mines the committed block and each subsequent header extending
+    /// it. Depth (`headers.len() - 1`) is the confirmation count.
     PoW {
-        confirmations: u64,
-        total_work_hint: u128,
+        headers: Vec<PoWHeaderProof>,
     },
     PoS {
         cert: FinalityCert,
         validator_snapshot: ValidatorSetSnapshot,
     },
+    /// Reuses the same BLS aggregate-signature machinery as PoS: a quorum of
+    /// the domain's registered validator set signs off on the commitment.
     PoA {
-        signer_count: u64,
-        validator_count: u64,
+        cert: FinalityCert,
+        validator_snapshot: ValidatorSetSnapshot,
     },
+    /// Same BLS aggregate-signature verification as PoA/PoS.
     Bft {
-        round: u64,
-        signer_count: u64,
-        total_validators: u64,
-        commit_hash: Hash32,
+        cert: FinalityCert,
+        validator_snapshot: ValidatorSetSnapshot,
     },
     Zk {
         proof_hash: Hash32,
@@ -84,24 +126,118 @@ impl DomainFinalityAdapter for PoWFinalityAdapter {
     fn verify_finality(
         &self,
         domain: &ConsensusDomain,
-        _commitment: &DomainCommitment,
+        commitment: &DomainCommitment,
         proof: &FinalityProof,
     ) -> Result<FinalityStatus, FinalityError> {
-        let min_depth = domain.min_confirmations.max(self.default_min_confirmations);
-        match proof {
-            FinalityProof::PoW {
-                confirmations,
-                total_work_hint,
-            } if *confirmations >= min_depth && *total_work_hint > 0 => {
-                Ok(FinalityStatus::Finalized)
+        let FinalityProof::PoW { headers } = proof else {
+            return Err(FinalityError("Expected PoW finality proof".into()));
+        };
+
+        let Some(base) = headers.first() else {
+            return Ok(FinalityStatus::Rejected(
+                "PoW proof must include at least one header".into(),
+            ));
+        };
+
+        if base.extra != commitment.domain_block_hash {
+            return Ok(FinalityStatus::Rejected(
+                "Base PoW header does not commit to this block".into(),
+            ));
+        }
+
+        for (i, header) in headers.iter().enumerate() {
+            if header.target > domain.min_pow_target {
+                return Ok(FinalityStatus::Rejected(format!(
+                    "PoW header {} is below the domain's required difficulty",
+                    i
+                )));
             }
-            FinalityProof::PoW { confirmations, .. } => Ok(FinalityStatus::Pending {
+            if !header.meets_own_target() {
+                return Ok(FinalityStatus::Rejected(format!(
+                    "PoW header {} hash does not satisfy its own claimed target",
+                    i
+                )));
+            }
+            if i > 0 && header.prev_hash != headers[i - 1].hash() {
+                return Ok(FinalityStatus::Rejected(format!(
+                    "PoW header {} does not link to the previous header",
+                    i
+                )));
+            }
+        }
+
+        let confirmations = (headers.len() - 1) as u64;
+        let min_depth = domain.min_confirmations.max(self.default_min_confirmations);
+        if confirmations >= min_depth {
+            Ok(FinalityStatus::Finalized)
+        } else {
+            Ok(FinalityStatus::Pending {
                 required_depth: min_depth,
-                observed_depth: *confirmations,
-            }),
-            _ => Err(FinalityError("Expected PoW finality proof".into())),
+                observed_depth: confirmations,
+            })
         }
     }
+}
+
+/// Shared BLS quorum-certificate verification used by PoS, PoA, and BFT
+/// adapters: a quorum of the domain's registered validator set must have
+/// signed off on this exact commitment.
+fn verify_quorum_cert(
+    domain: &ConsensusDomain,
+    commitment: &DomainCommitment,
+    cert: &FinalityCert,
+    validator_snapshot: &ValidatorSetSnapshot,
+    adapter_label: &str,
+) -> Result<FinalityStatus, FinalityError> {
+    if cert.checkpoint_height != commitment.domain_height {
+        return Ok(FinalityStatus::Rejected(format!(
+            "{} cert height does not match commitment",
+            adapter_label
+        )));
+    }
+
+    let commitment_hash = hex::encode(commitment.domain_block_hash);
+    if cert.checkpoint_hash != commitment_hash {
+        return Ok(FinalityStatus::Rejected(format!(
+            "{} cert hash does not match commitment",
+            adapter_label
+        )));
+    }
+
+    if validator_snapshot.set_hash != cert.set_hash {
+        return Ok(FinalityStatus::Rejected(format!(
+            "{} cert set hash does not match validator snapshot",
+            adapter_label
+        )));
+    }
+
+    if let Ok(decoded_set_hash) = hex::decode(&validator_snapshot.set_hash) {
+        if decoded_set_hash.len() == 32 {
+            let mut snapshot_set_hash = [0u8; 32];
+            snapshot_set_hash.copy_from_slice(&decoded_set_hash);
+            if domain.validator_set_hash != [0u8; 32]
+                && snapshot_set_hash != domain.validator_set_hash
+            {
+                return Ok(FinalityStatus::Rejected(format!(
+                    "{} validator snapshot does not match registered domain set",
+                    adapter_label
+                )));
+            }
+            if commitment.validator_set_hash != [0u8; 32]
+                && commitment.validator_set_hash != snapshot_set_hash
+            {
+                return Ok(FinalityStatus::Rejected(format!(
+                    "{} commitment validator set does not match finality proof",
+                    adapter_label
+                )));
+            }
+        }
+    }
+
+    cert.verify(validator_snapshot)
+        .map_err(|e| FinalityError(format!("Invalid {} finality cert: {}", adapter_label, e)))?;
+
+    Ok(FinalityStatus::Finalized)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -125,51 +261,7 @@ impl DomainFinalityAdapter for PoSFinalityAdapter {
         else {
             return Err(FinalityError("Expected PoS finality proof".into()));
         };
-
-        if cert.checkpoint_height != commitment.domain_height {
-            return Ok(FinalityStatus::Rejected(
-                "PoS cert height does not match commitment".into(),
-            ));
-        }
-
-        let commitment_hash = hex::encode(commitment.domain_block_hash);
-        if cert.checkpoint_hash != commitment_hash {
-            return Ok(FinalityStatus::Rejected(
-                "PoS cert hash does not match commitment".into(),
-            ));
-        }
-
-        if validator_snapshot.set_hash != cert.set_hash {
-            return Ok(FinalityStatus::Rejected(
-                "PoS cert set hash does not match validator snapshot".into(),
-            ));
-        }
-
-        if let Ok(decoded_set_hash) = hex::decode(&validator_snapshot.set_hash) {
-            if decoded_set_hash.len() == 32 {
-                let mut snapshot_set_hash = [0u8; 32];
-                snapshot_set_hash.copy_from_slice(&decoded_set_hash);
-                if domain.validator_set_hash != [0u8; 32]
-                    && snapshot_set_hash != domain.validator_set_hash
-                {
-                    return Ok(FinalityStatus::Rejected(
-                        "PoS validator snapshot does not match registered domain set".into(),
-                    ));
-                }
-                if commitment.validator_set_hash != [0u8; 32]
-                    && commitment.validator_set_hash != snapshot_set_hash
-                {
-                    return Ok(FinalityStatus::Rejected(
-                        "PoS commitment validator set does not match finality proof".into(),
-                    ));
-                }
-            }
-        }
-
-        cert.verify(validator_snapshot)
-            .map_err(|e| FinalityError(format!("Invalid PoS finality cert: {}", e)))?;
-
-        Ok(FinalityStatus::Finalized)
+        verify_quorum_cert(domain, commitment, cert, validator_snapshot, "PoS")
     }
 }
 
@@ -195,34 +287,18 @@ impl DomainFinalityAdapter for PoAFinalityAdapter {
 
     fn verify_finality(
         &self,
-        _domain: &ConsensusDomain,
-        _commitment: &DomainCommitment,
+        domain: &ConsensusDomain,
+        commitment: &DomainCommitment,
         proof: &FinalityProof,
     ) -> Result<FinalityStatus, FinalityError> {
         let FinalityProof::PoA {
-            signer_count,
-            validator_count,
+            cert,
+            validator_snapshot,
         } = proof
         else {
             return Err(FinalityError("Expected PoA finality proof".into()));
         };
-
-        if *validator_count == 0 {
-            return Ok(FinalityStatus::Rejected(
-                "PoA validator set is empty".into(),
-            ));
-        }
-
-        let required = (*validator_count * self.quorum_numerator).div_ceil(self.quorum_denominator);
-
-        if *signer_count >= required {
-            Ok(FinalityStatus::Finalized)
-        } else {
-            Ok(FinalityStatus::Pending {
-                required_depth: required,
-                observed_depth: *signer_count,
-            })
-        }
+        verify_quorum_cert(domain, commitment, cert, validator_snapshot, "PoA")
     }
 }
 
@@ -248,41 +324,18 @@ impl DomainFinalityAdapter for BftFinalityAdapter {
 
     fn verify_finality(
         &self,
-        _domain: &ConsensusDomain,
+        domain: &ConsensusDomain,
         commitment: &DomainCommitment,
         proof: &FinalityProof,
     ) -> Result<FinalityStatus, FinalityError> {
         let FinalityProof::Bft {
-            round: _,
-            signer_count,
-            total_validators,
-            commit_hash,
+            cert,
+            validator_snapshot,
         } = proof
         else {
             return Err(FinalityError("Expected BFT finality proof".into()));
         };
-
-        if *total_validators == 0 {
-            return Ok(FinalityStatus::Rejected(
-                "BFT validator set is empty".into(),
-            ));
-        }
-
-        if *commit_hash != commitment.domain_block_hash {
-            return Ok(FinalityStatus::Rejected(
-                "BFT commit hash does not match commitment block hash".into(),
-            ));
-        }
-
-        let required = (*total_validators * self.quorum_numerator) / self.quorum_denominator + 1;
-        if *signer_count >= required {
-            Ok(FinalityStatus::Finalized)
-        } else {
-            Ok(FinalityStatus::Pending {
-                required_depth: required,
-                observed_depth: *signer_count,
-            })
-        }
+        verify_quorum_cert(domain, commitment, cert, validator_snapshot, "BFT")
     }
 }
 
@@ -368,67 +421,24 @@ mod tests {
 
     #[test]
     fn pow_finality_requires_confirmation_depth_and_rejects_wrong_proof() {
-        let domain = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 80);
+        let domain = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 3);
         let commitment = commitment(ConsensusKind::PoW);
-        let adapter = PoWFinalityAdapter::default();
+        let adapter = PoWFinalityAdapter {
+            default_min_confirmations: 3,
+        };
 
+        let short_chain = crate::tests::finality_proof_support::mine_pow_chain(
+            commitment.domain_block_hash,
+            domain.min_pow_target,
+            2,
+        );
         assert_eq!(
             adapter
                 .verify_finality(
                     &domain,
                     &commitment,
                     &FinalityProof::PoW {
-                        confirmations: 79,
-                        total_work_hint: 100,
-                    },
-                )
-                .unwrap(),
-            FinalityStatus::Pending {
-                required_depth: 80,
-                observed_depth: 79,
-            }
-        );
-
-        assert_eq!(
-            adapter
-                .verify_finality(
-                    &domain,
-                    &commitment,
-                    &FinalityProof::PoW {
-                        confirmations: 80,
-                        total_work_hint: 100,
-                    },
-                )
-                .unwrap(),
-            FinalityStatus::Finalized
-        );
-
-        assert!(adapter
-            .verify_finality(
-                &domain,
-                &commitment,
-                &FinalityProof::PoA {
-                    signer_count: 3,
-                    validator_count: 4,
-                },
-            )
-            .is_err());
-    }
-
-    #[test]
-    fn poa_finality_enforces_quorum_and_empty_validator_set_rejection() {
-        let domain = default_domain(2, ConsensusKind::PoA, 1337, "poa-authority-quorum", 0);
-        let commitment = commitment(ConsensusKind::PoA);
-        let adapter = PoAFinalityAdapter::default();
-
-        assert_eq!(
-            adapter
-                .verify_finality(
-                    &domain,
-                    &commitment,
-                    &FinalityProof::PoA {
-                        signer_count: 2,
-                        validator_count: 4,
+                        headers: short_chain,
                     },
                 )
                 .unwrap(),
@@ -437,32 +447,136 @@ mod tests {
                 observed_depth: 2,
             }
         );
+
+        let full_chain = crate::tests::finality_proof_support::mine_pow_chain(
+            commitment.domain_block_hash,
+            domain.min_pow_target,
+            3,
+        );
+        assert_eq!(
+            adapter
+                .verify_finality(
+                    &domain,
+                    &commitment,
+                    &FinalityProof::PoW {
+                        headers: full_chain,
+                    },
+                )
+                .unwrap(),
+            FinalityStatus::Finalized
+        );
+
+        // A header that doesn't actually satisfy its own claimed target is a
+        // forged proof, not just "not enough confirmations yet".
+        let mut forged = crate::tests::finality_proof_support::mine_pow_chain(
+            commitment.domain_block_hash,
+            domain.min_pow_target,
+            3,
+        );
+        forged[0].nonce = forged[0].nonce.wrapping_add(1);
+        assert!(matches!(
+            adapter
+                .verify_finality(
+                    &domain,
+                    &commitment,
+                    &FinalityProof::PoW { headers: forged }
+                )
+                .unwrap(),
+            FinalityStatus::Rejected(_)
+        ));
+
+        let snapshot = ValidatorSetSnapshot::new(0, vec![]);
+        assert!(adapter
+            .verify_finality(
+                &domain,
+                &commitment,
+                &FinalityProof::PoA {
+                    cert: FinalityCert {
+                        epoch: 0,
+                        checkpoint_height: 0,
+                        checkpoint_hash: String::new(),
+                        agg_sig_bls: vec![],
+                        bitmap: vec![],
+                        set_hash: snapshot.set_hash.clone(),
+                    },
+                    validator_snapshot: snapshot,
+                },
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn poa_finality_enforces_quorum_and_empty_validator_set_rejection() {
+        let domain = default_domain(2, ConsensusKind::PoA, 1337, "poa-authority-quorum", 0);
+        let commitment = DomainCommitment {
+            domain_height: 10,
+            validator_set_hash: [0u8; 32],
+            ..commitment(ConsensusKind::PoA)
+        };
+        let adapter = PoAFinalityAdapter::default();
+
+        let (full_cert, full_snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+            commitment.domain_height,
+            commitment.domain_block_hash,
+            4,
+            100,
+        );
         assert_eq!(
             adapter
                 .verify_finality(
                     &domain,
                     &commitment,
                     &FinalityProof::PoA {
-                        signer_count: 3,
-                        validator_count: 4,
+                        cert: full_cert,
+                        validator_snapshot: full_snapshot,
                     },
                 )
                 .unwrap(),
             FinalityStatus::Finalized
         );
-        assert!(matches!(
-            adapter
-                .verify_finality(
-                    &domain,
-                    &commitment,
-                    &FinalityProof::PoA {
-                        signer_count: 0,
-                        validator_count: 0,
+
+        // Only 1 of 4 validators signed: below the 2/3 quorum, real BLS
+        // verification must reject it rather than trust a claimed count.
+        let (mut short_cert, short_snapshot) =
+            crate::tests::finality_proof_support::make_quorum_proof(
+                commitment.domain_height,
+                commitment.domain_block_hash,
+                4,
+                100,
+            );
+        for byte in short_cert.bitmap.iter_mut() {
+            *byte = 0;
+        }
+        short_cert.bitmap[0] = 0b0000_0001;
+        assert!(adapter
+            .verify_finality(
+                &domain,
+                &commitment,
+                &FinalityProof::PoA {
+                    cert: short_cert,
+                    validator_snapshot: short_snapshot,
+                },
+            )
+            .is_err());
+
+        let empty_snapshot = ValidatorSetSnapshot::new(0, vec![]);
+        assert!(adapter
+            .verify_finality(
+                &domain,
+                &commitment,
+                &FinalityProof::PoA {
+                    cert: FinalityCert {
+                        epoch: 0,
+                        checkpoint_height: commitment.domain_height,
+                        checkpoint_hash: hex::encode(commitment.domain_block_hash),
+                        agg_sig_bls: vec![],
+                        bitmap: vec![],
+                        set_hash: empty_snapshot.set_hash.clone(),
                     },
-                )
-                .unwrap(),
-            FinalityStatus::Rejected(_)
-        ));
+                    validator_snapshot: empty_snapshot,
+                },
+            )
+            .is_err());
     }
 
     #[test]

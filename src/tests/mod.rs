@@ -7,6 +7,8 @@ pub mod chaos;
 #[cfg(test)]
 pub mod distributed_settlement;
 #[cfg(test)]
+pub mod finality_proof_support;
+#[cfg(test)]
 pub mod hardening;
 #[cfg(test)]
 pub mod integration;

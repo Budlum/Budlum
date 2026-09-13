@@ -490,17 +490,26 @@ mod chaos_tests {
         };
 
         let wrong_for_pow = FinalityProof::PoA {
-            signer_count: 10,
-            validator_count: 10,
+            cert: crate::chain::finality::FinalityCert {
+                epoch: 1,
+                checkpoint_height: 1,
+                checkpoint_hash: "aa".repeat(32),
+                agg_sig_bls: vec![0u8; 48],
+                bitmap: vec![1],
+                set_hash: "set".to_string(),
+            },
+            validator_snapshot: crate::chain::finality::ValidatorSetSnapshot {
+                epoch: 1,
+                validators: vec![],
+                set_hash: "set".to_string(),
+                total_stake: 100,
+            },
         };
         assert!(blockchain
             .submit_verified_domain_commitment(make_commitment(&pow, &wrong_for_pow), wrong_for_pow)
             .is_err());
 
-        let wrong_for_poa = FinalityProof::PoW {
-            confirmations: 100,
-            total_work_hint: 1000,
-        };
+        let wrong_for_poa = FinalityProof::PoW { headers: vec![] };
         assert!(blockchain
             .submit_verified_domain_commitment(make_commitment(&poa, &wrong_for_poa), wrong_for_poa)
             .is_err());
@@ -575,10 +584,7 @@ mod chaos_tests {
             let mut pow_com =
                 DomainCommitment::from_block(&pow_domain, &block_pow, [1u8; 32], [2u8; 32], i)
                     .unwrap();
-            let pow_proof = FinalityProof::PoW {
-                confirmations: 10,
-                total_work_hint: 1000 + (i as u128),
-            };
+            let pow_proof = FinalityProof::PoW { headers: vec![] };
             pow_com.finality_proof_hash = hash_finality_proof(&pow_proof);
             commitments_to_submit.push((pow_com, pow_proof));
 
@@ -617,8 +623,20 @@ mod chaos_tests {
                 DomainCommitment::from_block(&poa_domain, &block_poa, [5u8; 32], [6u8; 32], i)
                     .unwrap();
             let poa_proof = FinalityProof::PoA {
-                signer_count: 5,
-                validator_count: 7,
+                cert: FinalityCert {
+                    epoch: i,
+                    checkpoint_height: i,
+                    checkpoint_hash: format!("poa_hash_{}", i),
+                    agg_sig_bls: vec![0u8; 48],
+                    bitmap: vec![255],
+                    set_hash: "poa_snap_hash".to_string(),
+                },
+                validator_snapshot: ValidatorSetSnapshot {
+                    epoch: i,
+                    validators: vec![],
+                    set_hash: "poa_snap_hash".to_string(),
+                    total_stake: 100,
+                },
             };
             poa_com.finality_proof_hash = hash_finality_proof(&poa_proof);
             commitments_to_submit.push((poa_com, poa_proof));

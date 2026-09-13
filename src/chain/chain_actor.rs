@@ -1267,13 +1267,16 @@ mod tests {
             .unwrap();
 
         let block = crate::core::block::Block::new(1, "aa".repeat(32), vec![]);
-        let proof = crate::domain::FinalityProof::PoW {
-            confirmations: 64,
-            total_work_hint: 1000,
-        };
         let mut commitment =
             crate::domain::DomainCommitment::from_block(&domain, &block, [2u8; 32], [3u8; 32], 0)
                 .unwrap();
+        let proof = crate::domain::FinalityProof::PoW {
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                commitment.domain_block_hash,
+                domain.min_pow_target,
+                64,
+            ),
+        };
         commitment.finality_proof_hash = crate::domain::hash_finality_proof(&proof);
 
         let payload = crate::domain::VerifiedDomainCommitment { commitment, proof };

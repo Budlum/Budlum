@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod settlement_prod_tests {
     use crate::chain::blockchain::Blockchain;
+    use crate::chain::finality::{FinalityCert, ValidatorSetSnapshot};
     use crate::consensus::pow::PoWEngine;
     use crate::core::address::Address;
     use crate::core::block::Block;
@@ -293,8 +294,11 @@ mod settlement_prod_tests {
         blockchain.register_consensus_domain(pow.clone()).unwrap();
 
         let pending_proof = FinalityProof::PoW {
-            confirmations: 3,
-            total_work_hint: 100,
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                commitment_for(&pow, 10, 0, 1).domain_block_hash,
+                pow.min_pow_target,
+                3,
+            ),
         };
         let pending_commitment = commitment_with_proof(&pow, 10, 0, 1, &pending_proof);
         let err = blockchain
@@ -304,8 +308,11 @@ mod settlement_prod_tests {
         assert!(blockchain.domain_commitment_registry.is_empty());
 
         let finalized_proof = FinalityProof::PoW {
-            confirmations: 64,
-            total_work_hint: 200,
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                commitment_for(&pow, 10, 0, 1).domain_block_hash,
+                pow.min_pow_target,
+                64,
+            ),
         };
         let mut bad_hash_commitment = commitment_with_proof(&pow, 10, 0, 1, &finalized_proof);
         bad_hash_commitment.finality_proof_hash = [9u8; 32];
@@ -327,19 +334,37 @@ mod settlement_prod_tests {
         let poa = domain(3, ConsensusKind::PoA);
         blockchain.register_consensus_domain(poa.clone()).unwrap();
 
+        let base_commitment = commitment_for(&poa, 3, 0, 3);
+        let (mut weak_cert, weak_snapshot) =
+            crate::tests::finality_proof_support::make_quorum_proof(
+                base_commitment.domain_height,
+                base_commitment.domain_block_hash,
+                4,
+                100,
+            );
+        // Only 1 of 4 signed: below the required 2/3 quorum.
+        for byte in weak_cert.bitmap.iter_mut() {
+            *byte = 0;
+        }
+        weak_cert.bitmap[0] = 0b0000_0001;
         let weak_proof = FinalityProof::PoA {
-            signer_count: 2,
-            validator_count: 4,
+            cert: weak_cert,
+            validator_snapshot: weak_snapshot,
         };
         let weak_commitment = commitment_with_proof(&poa, 3, 0, 3, &weak_proof);
-        let err = blockchain
+        assert!(blockchain
             .submit_verified_domain_commitment(weak_commitment, weak_proof)
-            .unwrap_err();
-        assert!(err.contains("not finalized"));
+            .is_err());
 
+        let (full_cert, full_snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+            base_commitment.domain_height,
+            base_commitment.domain_block_hash,
+            4,
+            100,
+        );
         let quorum_proof = FinalityProof::PoA {
-            signer_count: 3,
-            validator_count: 4,
+            cert: full_cert,
+            validator_snapshot: full_snapshot,
         };
         let quorum_commitment = commitment_with_proof(&poa, 3, 0, 3, &quorum_proof);
         blockchain
@@ -767,25 +792,39 @@ mod settlement_prod_tests {
         let dom = bft_domain(10);
         bc.register_consensus_domain(dom.clone()).unwrap();
 
-        let weak = FinalityProof::Bft {
-            round: 1,
-            signer_count: 2,
-            total_validators: 4,
-            commit_hash: [0u8; 32],
-        };
         let mut c = commitment_for(&dom, 5, 0, 10);
         c.consensus_kind = ConsensusKind::Bft;
-        c.finality_proof_hash = hash_finality_proof(&weak);
-        let err = bc
-            .submit_verified_domain_commitment(c.clone(), weak)
-            .unwrap_err();
-        assert!(err.contains("not match") || err.contains("not finalized"));
 
+        let (mut weak_cert, weak_snapshot) =
+            crate::tests::finality_proof_support::make_quorum_proof(
+                c.domain_height,
+                c.domain_block_hash,
+                4,
+                100,
+            );
+        for byte in weak_cert.bitmap.iter_mut() {
+            *byte = 0;
+        }
+        weak_cert.bitmap[0] = 0b0000_0001;
+        let weak = FinalityProof::Bft {
+            cert: weak_cert,
+            validator_snapshot: weak_snapshot,
+        };
+        c.finality_proof_hash = hash_finality_proof(&weak);
+        assert!(bc
+            .submit_verified_domain_commitment(c.clone(), weak)
+            .is_err());
+
+        let (strong_cert, strong_snapshot) =
+            crate::tests::finality_proof_support::make_quorum_proof(
+                c.domain_height,
+                c.domain_block_hash,
+                4,
+                100,
+            );
         let strong = FinalityProof::Bft {
-            round: 1,
-            signer_count: 3,
-            total_validators: 4,
-            commit_hash: c.domain_block_hash,
+            cert: strong_cert,
+            validator_snapshot: strong_snapshot,
         };
         c.finality_proof_hash = hash_finality_proof(&strong);
         bc.submit_verified_domain_commitment(c, strong).unwrap();
@@ -798,17 +837,22 @@ mod settlement_prod_tests {
         let dom = bft_domain(11);
         bc.register_consensus_domain(dom.clone()).unwrap();
 
-        let proof = FinalityProof::Bft {
-            round: 0,
-            signer_count: 0,
-            total_validators: 0,
-            commit_hash: [1u8; 32],
-        };
         let mut c = commitment_for(&dom, 1, 0, 11);
         c.consensus_kind = ConsensusKind::Bft;
+        let empty_snapshot = ValidatorSetSnapshot::new(0, vec![]);
+        let proof = FinalityProof::Bft {
+            cert: FinalityCert {
+                epoch: 0,
+                checkpoint_height: c.domain_height,
+                checkpoint_hash: hex::encode(c.domain_block_hash),
+                agg_sig_bls: vec![],
+                bitmap: vec![],
+                set_hash: empty_snapshot.set_hash.clone(),
+            },
+            validator_snapshot: empty_snapshot,
+        };
         c.finality_proof_hash = hash_finality_proof(&proof);
-        let err = bc.submit_verified_domain_commitment(c, proof).unwrap_err();
-        assert!(err.contains("Rejected") || err.contains("empty"));
+        assert!(bc.submit_verified_domain_commitment(c, proof).is_err());
     }
 
     #[test]
@@ -817,14 +861,18 @@ mod settlement_prod_tests {
         let dom = bft_domain(12);
         bc.register_consensus_domain(dom.clone()).unwrap();
 
-        let proof = FinalityProof::Bft {
-            round: 1,
-            signer_count: 4,
-            total_validators: 4,
-            commit_hash: [0xFFu8; 32],
-        };
         let mut c = commitment_for(&dom, 1, 0, 12);
         c.consensus_kind = ConsensusKind::Bft;
+        let (cert, snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+            c.domain_height,
+            [0xFFu8; 32], // signed a different block hash than the commitment
+            4,
+            100,
+        );
+        let proof = FinalityProof::Bft {
+            cert,
+            validator_snapshot: snapshot,
+        };
         c.finality_proof_hash = hash_finality_proof(&proof);
         let err = bc.submit_verified_domain_commitment(c, proof).unwrap_err();
         assert!(err.contains("Rejected") || err.contains("not match"));
@@ -882,10 +930,7 @@ mod settlement_prod_tests {
         let dom = zk_domain(22);
         bc.register_consensus_domain(dom.clone()).unwrap();
 
-        let wrong_proof = FinalityProof::PoW {
-            confirmations: 100,
-            total_work_hint: 999,
-        };
+        let wrong_proof = FinalityProof::PoW { headers: vec![] };
         let mut c = commitment_for(&dom, 1, 0, 22);
         c.consensus_kind = ConsensusKind::Zk;
         c.finality_proof_hash = hash_finality_proof(&wrong_proof);
@@ -900,13 +945,15 @@ mod settlement_prod_tests {
         let pow = domain(1, ConsensusKind::PoW);
         bc.register_consensus_domain(pow.clone()).unwrap();
 
-        let real_proof = FinalityProof::PoW {
-            confirmations: 3,
-            total_work_hint: 10,
-        };
+        let real_proof = FinalityProof::PoW { headers: vec![] };
         let fake_proof = FinalityProof::PoW {
-            confirmations: 999,
-            total_work_hint: 10,
+            headers: vec![crate::domain::finality_adapter::PoWHeaderProof {
+                prev_hash: [0u8; 32],
+                target: [0xFFu8; 32],
+                nonce: 999,
+                timestamp_ms: 0,
+                extra: [0u8; 32],
+            }],
         };
         let mut c = commitment_for(&pow, 10, 0, 1);
         c.finality_proof_hash = hash_finality_proof(&fake_proof);

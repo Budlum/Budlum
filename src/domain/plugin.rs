@@ -253,5 +253,16 @@ pub fn default_domain(
         last_committed_height: 0,
         last_committed_hash: [0u8; 32],
         last_settled_height: 0,
+        min_pow_target: DEFAULT_TEST_POW_TARGET,
     }
 }
+
+/// A low-but-nonzero difficulty floor (first byte of the hash must be zero,
+/// ~1/256 chance per nonce) so tests can mine real, valid PoW headers in a
+/// handful of iterations while still exercising genuine proof-of-work checks.
+/// Real deployments must set a much harder `min_pow_target` on the domain.
+pub const DEFAULT_TEST_POW_TARGET: Hash32 = {
+    let mut t = [0xFFu8; 32];
+    t[0] = 0x00;
+    t
+};

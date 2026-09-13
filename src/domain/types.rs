@@ -100,6 +100,19 @@ pub struct ConsensusDomain {
     /// rather than by network arrival order.
     #[serde(default)]
     pub last_settled_height: u64,
+    /// For PoW domains: the maximum allowed header hash (big-endian, smaller
+    /// = harder). Real proof-of-work headers submitted as finality proof must
+    /// each independently hash below this floor, and below their own claimed
+    /// target — the operator is responsible for setting this to reflect the
+    /// real difficulty of the domain's chain. Defaults to the maximum
+    /// (`[0xFF; 32]`), which accepts any nonce and provides no real security;
+    /// operators of a genuine PoW domain must lower it.
+    #[serde(default = "default_min_pow_target")]
+    pub min_pow_target: Hash32,
+}
+
+fn default_min_pow_target() -> Hash32 {
+    [0xFFu8; 32]
 }
 
 impl ConsensusDomain {

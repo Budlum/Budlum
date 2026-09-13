@@ -309,10 +309,7 @@ mod distributed_settlement_tests {
         let mut com =
             DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 1).unwrap();
         com.state_updates.insert(alice, 1);
-        let proof = FinalityProof::PoW {
-            confirmations: 100,
-            total_work_hint: 5000,
-        };
+        let proof = FinalityProof::PoW { headers: vec![] };
         com.finality_proof_hash = [0xFFu8; 32];
 
         let res = n
@@ -328,8 +325,11 @@ mod distributed_settlement_tests {
         let mut com2 =
             DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 2).unwrap();
         let proof2 = FinalityProof::PoW {
-            confirmations: 1,
-            total_work_hint: 5000,
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                com2.domain_block_hash,
+                pow_domain.min_pow_target,
+                1,
+            ),
         };
         com2.finality_proof_hash = hash_finality_proof(&proof2);
 

@@ -277,13 +277,16 @@ mod rpc_tests {
         let raw_rejected_commitments = server.get_domain_commitments().await.unwrap();
         assert_eq!(raw_rejected_commitments.as_array().unwrap().len(), 1);
 
-        let proof2 = crate::domain::FinalityProof::PoW {
-            confirmations: 64,
-            total_work_hint: 4000,
-        };
         let new_commitment =
             crate::domain::DomainCommitment::from_block(&domain, &block2, [4u8; 32], [5u8; 32], 1)
                 .unwrap();
+        let proof2 = crate::domain::FinalityProof::PoW {
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                new_commitment.domain_block_hash,
+                domain.min_pow_target,
+                64,
+            ),
+        };
         let mut new_commitment = new_commitment;
         new_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&proof2);
         let result = server
@@ -305,13 +308,16 @@ mod rpc_tests {
         block3.index = 3;
         block3.previous_hash = block2.hash.clone();
         block3.hash = block3.calculate_hash();
-        let proof = crate::domain::FinalityProof::PoW {
-            confirmations: 64,
-            total_work_hint: 5000,
-        };
         let mut verified_commitment =
             crate::domain::DomainCommitment::from_block(&domain, &block3, [6u8; 32], [7u8; 32], 2)
                 .unwrap();
+        let proof = crate::domain::FinalityProof::PoW {
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                verified_commitment.domain_block_hash,
+                domain.min_pow_target,
+                64,
+            ),
+        };
         verified_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&proof);
         let verified_payload = crate::domain::VerifiedDomainCommitment {
             commitment: verified_commitment.clone(),
@@ -328,13 +334,16 @@ mod rpc_tests {
 
         let mut block4 = block.clone();
         block4.index = 4;
-        let weak_proof = crate::domain::FinalityProof::PoW {
-            confirmations: 1,
-            total_work_hint: 5001,
-        };
         let mut weak_commitment =
             crate::domain::DomainCommitment::from_block(&domain, &block4, [8u8; 32], [9u8; 32], 3)
                 .unwrap();
+        let weak_proof = crate::domain::FinalityProof::PoW {
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                weak_commitment.domain_block_hash,
+                domain.min_pow_target,
+                1,
+            ),
+        };
         weak_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&weak_proof);
         let weak_payload = crate::domain::VerifiedDomainCommitment {
             commitment: weak_commitment,
@@ -391,10 +400,6 @@ mod rpc_tests {
 
         let mut bridge_block = block.clone();
         bridge_block.index = 20;
-        let bridge_proof = crate::domain::FinalityProof::PoW {
-            confirmations: 64,
-            total_work_hint: 6000,
-        };
         let mut bridge_commitment = crate::domain::DomainCommitment::from_block(
             &domain,
             &bridge_block,
@@ -403,6 +408,13 @@ mod rpc_tests {
             4,
         )
         .unwrap();
+        let bridge_proof = crate::domain::FinalityProof::PoW {
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                bridge_commitment.domain_block_hash,
+                domain.min_pow_target,
+                64,
+            ),
+        };
         bridge_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&bridge_proof);
         server
             .submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {
@@ -438,10 +450,6 @@ mod rpc_tests {
         burn_event_tree.push(burn_event.clone());
         let mut burn_block = block.clone();
         burn_block.index = 21;
-        let burn_proof = crate::domain::FinalityProof::PoA {
-            signer_count: 2,
-            validator_count: 3,
-        };
         let target_domain = crate::domain::plugin::default_domain(
             2,
             crate::domain::ConsensusKind::PoA,
@@ -457,6 +465,16 @@ mod rpc_tests {
             5,
         )
         .unwrap();
+        let (burn_cert, burn_snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+            burn_commitment.domain_height,
+            burn_commitment.domain_block_hash,
+            3,
+            100,
+        );
+        let burn_proof = crate::domain::FinalityProof::PoA {
+            cert: burn_cert,
+            validator_snapshot: burn_snapshot,
+        };
         burn_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&burn_proof);
         server
             .submit_verified_domain_commitment(crate::domain::VerifiedDomainCommitment {

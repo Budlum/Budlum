@@ -46,10 +46,7 @@ mod byzantine_settlement_tests {
             let mut com_pow =
                 DomainCommitment::from_block(&pow_domain, &b_pow, [i as u8; 32], [0u8; 32], i)
                     .unwrap();
-            let proof_pow = FinalityProof::PoW {
-                confirmations: 10,
-                total_work_hint: 1000 + i as u128,
-            };
+            let proof_pow = FinalityProof::PoW { headers: vec![] };
             com_pow.finality_proof_hash = hash_finality_proof(&proof_pow);
             pow_commitments.push((com_pow, proof_pow));
 
@@ -87,8 +84,20 @@ mod byzantine_settlement_tests {
                 DomainCommitment::from_block(&poa_domain, &b_poa, [i as u8; 32], [0u8; 32], i)
                     .unwrap();
             let proof_poa = FinalityProof::PoA {
-                signer_count: 5,
-                validator_count: 5,
+                cert: FinalityCert {
+                    epoch: 1,
+                    checkpoint_height: i,
+                    checkpoint_hash: b_poa.hash.clone(),
+                    agg_sig_bls: vec![0u8; 48],
+                    bitmap: vec![1],
+                    set_hash: "set".to_string(),
+                },
+                validator_snapshot: ValidatorSetSnapshot {
+                    epoch: 1,
+                    validators: vec![],
+                    set_hash: "set".to_string(),
+                    total_stake: 100,
+                },
             };
             com_poa.finality_proof_hash = hash_finality_proof(&proof_poa);
             poa_commitments.push((com_poa, proof_poa));
