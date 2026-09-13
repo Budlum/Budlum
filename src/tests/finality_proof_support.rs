@@ -66,11 +66,13 @@ pub fn make_validator_set(
     for i in 0..num_validators {
         let kp = BlsKeypair::generate().unwrap();
         let addr = crate::core::address::Address::from([(i + 1) as u8; 32]);
+        let pop_msg = crate::chain::finality::pop_signing_message(&addr, &kp.public_key);
+        let pop_signature = sign_bls(&kp.secret_key, &pop_msg);
         entries.push(ValidatorEntry {
             address: addr,
             stake: stake_each,
             bls_public_key: kp.public_key.clone(),
-            pop_signature: vec![],
+            pop_signature,
             pq_public_key: vec![],
         });
         keys.push(kp);

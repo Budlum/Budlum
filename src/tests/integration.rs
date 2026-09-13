@@ -307,8 +307,10 @@ mod integration_tests {
         let bls_pk_point = bls12_381::G2Affine::from(bls12_381::G2Projective::generator() * bls_sk);
         let bls_pk = bls_pk_point.to_compressed().to_vec();
 
+        let pop_msg = crate::chain::finality::pop_signing_message(&pubkey, &bls_pk);
+        let pop_signature = crate::chain::finality::sign_bls(&bls_sk, &pop_msg);
         validator.bls_public_key = bls_pk.clone();
-        validator.pop_signature = vec![0u8; 48];
+        validator.pop_signature = pop_signature;
         validator.pq_public_key = pq_key.public_key_bytes().to_vec();
         blockchain.state.validators.insert(pubkey, validator);
 
@@ -488,8 +490,11 @@ mod integration_tests {
         sk_bytes[0] = 7;
         let bls_sk = bls12_381::Scalar::from_bytes_wide(&sk_bytes);
         let bls_pk_point = bls12_381::G2Affine::from(bls12_381::G2Projective::generator() * bls_sk);
-        validator.bls_public_key = bls_pk_point.to_compressed().to_vec();
-        validator.pop_signature = vec![0u8; 48];
+        let bls_pk_bytes = bls_pk_point.to_compressed().to_vec();
+        let pop_msg = crate::chain::finality::pop_signing_message(&pubkey, &bls_pk_bytes);
+        let pop_signature = crate::chain::finality::sign_bls(&bls_sk, &pop_msg);
+        validator.bls_public_key = bls_pk_bytes;
+        validator.pop_signature = pop_signature;
         blockchain.state.validators.insert(pubkey, validator);
 
         for _ in 1..=10 {

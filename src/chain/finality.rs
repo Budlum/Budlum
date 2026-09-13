@@ -55,6 +55,51 @@ impl ValidatorSetSnapshot {
         hex::encode(hasher.finalize())
     }
 
+    /// Verifies that `set_hash`/`total_stake` are not just claimed but
+    /// actually derived from `validators`, and that `validators` itself is
+    /// unambiguous: no duplicate addresses, and stored in the one canonical
+    /// (ascending-by-address) order the bitmap indexes into.
+    ///
+    /// Without this, a `ValidatorSetSnapshot` arriving inside an untrusted
+    /// `FinalityProof` could claim a domain's real, registered `set_hash`
+    /// while actually carrying an attacker-controlled `validators` list (the
+    /// attacker's own keypairs) — `FinalityCert::verify` would then check
+    /// the cert's signature against the attacker's own keys, which the
+    /// attacker can trivially satisfy, and the separate domain-hash binding
+    /// check never catches it because it only compares `set_hash` strings,
+    /// never recomputes one from the actual validator data.
+    pub fn verify_self_consistent(&self) -> Result<(), String> {
+        for pair in self.validators.windows(2) {
+            if pair[0].address >= pair[1].address {
+                return Err(
+                    "validator_snapshot: validators must be strictly sorted by address, with no duplicates".into(),
+                );
+            }
+        }
+
+        let expected_hash = Self::compute_hash(&self.validators);
+        if expected_hash != self.set_hash {
+            return Err(
+                "validator_snapshot: set_hash does not match the recomputed hash of validators"
+                    .into(),
+            );
+        }
+
+        let mut total: u64 = 0;
+        for v in &self.validators {
+            total = total
+                .checked_add(v.stake)
+                .ok_or_else(|| "validator_snapshot: total stake overflow".to_string())?;
+        }
+        if total != self.total_stake {
+            return Err(
+                "validator_snapshot: total_stake does not match the sum of validator stakes".into(),
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn find_validator(&self, address: &Address) -> Option<&ValidatorEntry> {
         self.validators.iter().find(|v| &v.address == address)
     }
@@ -422,6 +467,13 @@ impl FinalityAggregator {
 
 impl FinalityCert {
     pub fn verify(&self, snapshot: &ValidatorSetSnapshot) -> Result<(), String> {
+        // A snapshot arriving inside an untrusted finality proof is only as
+        // trustworthy as its own internal consistency: without this, the
+        // checks below would verify a cert against whatever `validators`
+        // list happens to accompany it, regardless of whether that list is
+        // what `set_hash`/`total_stake` actually claim.
+        snapshot.verify_self_consistent()?;
+
         if self.set_hash != snapshot.set_hash {
             return Err("Validator set hash mismatch".into());
         }
@@ -435,7 +487,9 @@ impl FinalityCert {
             let byte_idx = idx / 8;
             let bit_idx = idx % 8;
             if byte_idx < self.bitmap.len() && (self.bitmap[byte_idx] & (1 << bit_idx)) != 0 {
-                voted_stake += validator.stake;
+                voted_stake = voted_stake.checked_add(validator.stake).ok_or_else(|| {
+                    "voted_stake overflow while summing signer stakes".to_string()
+                })?;
 
                 let pk_bytes: [u8; 96] =
                     validator
@@ -452,7 +506,25 @@ impl FinalityCert {
                         validator.address
                     ));
                 }
-                signers_pks.push(G2Projective::from(pk.unwrap()));
+                let pk = pk.unwrap();
+                if bool::from(pk.is_identity()) {
+                    return Err(format!(
+                        "Signer {} uses an identity BLS public key",
+                        validator.address
+                    ));
+                }
+                // Proof-of-possession blocks rogue-key attacks: without it, a
+                // signer could adversarially choose a public key derived
+                // from other validators' real keys (e.g. pk_bad = pk_target
+                // - pk_victim) to forge an aggregate signature that looks
+                // like it includes a validator who never actually signed.
+                if !verify_pop(validator) {
+                    return Err(format!(
+                        "Signer {} has no valid proof-of-possession for its BLS key",
+                        validator.address
+                    ));
+                }
+                signers_pks.push(G2Projective::from(pk));
             }
         }
 
@@ -780,6 +852,144 @@ mod tests {
         assert_eq!(cert.signer_count(4), 3);
 
         assert!(cert.verify(&snap).is_ok());
+    }
+
+    // --- ValidatorSetSnapshot self-consistency (closing snapshot-spoofing
+    //     forgeries against untrusted finality proofs) ---------------------
+
+    #[test]
+    fn cert_verify_rejects_snapshot_with_spoofed_set_hash() {
+        // The domain's real, registered committee.
+        let (real_snap, _) = make_snapshot_with_keys(4, 1000);
+
+        // Attacker builds their own, different committee (their own keys,
+        // their own valid PoPs, different stake so the two sets are
+        // provably distinct — a real, internally-consistent snapshot on its
+        // own), but claims the *real* domain's set_hash instead of their own.
+        let (attacker_snap, attacker_sks) = make_snapshot_with_keys(4, 2000);
+        assert_ne!(
+            attacker_snap.set_hash, real_snap.set_hash,
+            "sanity: attacker and real committees must actually differ"
+        );
+        let mut spoofed = attacker_snap.clone();
+        spoofed.set_hash = real_snap.set_hash.clone();
+
+        let pc = Precommit {
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: "cp_hash".into(),
+            voter_id: attacker_snap.validators[0].address,
+            sig_bls: vec![],
+        };
+        let sig_bytes = sign_msg(attacker_sks[0], &pc.signing_message());
+        let cert = FinalityCert {
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: "cp_hash".into(),
+            agg_sig_bls: sig_bytes,
+            bitmap: vec![0b0000_1111],
+            set_hash: spoofed.set_hash.clone(),
+        };
+
+        let err = cert.verify(&spoofed).unwrap_err();
+        assert!(
+            err.contains("set_hash does not match"),
+            "expected a set_hash self-consistency rejection, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn cert_verify_rejects_tampered_total_stake() {
+        let (snap, sks) = make_snapshot_with_keys(4, 1000);
+        let mut tampered = snap.clone();
+        tampered.total_stake += 1_000_000; // inflate to make quorum trivial
+
+        let pc = Precommit {
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: "cp_hash".into(),
+            voter_id: snap.validators[0].address,
+            sig_bls: vec![],
+        };
+        let sig_bytes = sign_msg(sks[0], &pc.signing_message());
+        let cert = FinalityCert {
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: "cp_hash".into(),
+            agg_sig_bls: sig_bytes,
+            bitmap: vec![0b0000_0001],
+            set_hash: tampered.set_hash.clone(),
+        };
+
+        let err = cert.verify(&tampered).unwrap_err();
+        assert!(
+            err.contains("total_stake does not match"),
+            "expected a total_stake self-consistency rejection, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn cert_verify_rejects_duplicate_validator_addresses() {
+        let (mut snap, _) = make_snapshot_with_keys(2, 1000);
+        // Duplicate the first validator in place of the second — same
+        // address twice, breaking the strict-sort/no-duplicates invariant.
+        snap.validators[1] = snap.validators[0].clone();
+        // Recompute set_hash/total_stake so only the duplication (not an
+        // unrelated hash/stake mismatch) is under test.
+        snap.set_hash = ValidatorSetSnapshot::compute_hash(&snap.validators);
+        snap.total_stake = snap.validators.iter().map(|v| v.stake).sum();
+
+        let cert = FinalityCert {
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: "cp_hash".into(),
+            agg_sig_bls: vec![],
+            bitmap: vec![0b0000_0011],
+            set_hash: snap.set_hash.clone(),
+        };
+
+        let err = cert.verify(&snap).unwrap_err();
+        assert!(
+            err.contains("strictly sorted"),
+            "expected a duplicate/ordering rejection, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn cert_verify_rejects_identity_bls_public_key_even_with_a_trivially_valid_pop() {
+        // The BLS pairing equation e(sig, G2_gen) == e(H(msg), pk) is
+        // trivially satisfied when pk is the identity point and sig is also
+        // the identity: both sides degenerate to the Gt identity regardless
+        // of the message, with no secret key involved at all. `verify_pop`
+        // alone can't catch this — it must be rejected explicitly.
+        let (mut snap, _) = make_snapshot_with_keys(1, 1000);
+        snap.validators[0].bls_public_key = G2Affine::identity().to_compressed().to_vec();
+        snap.validators[0].pop_signature = G1Affine::identity().to_compressed().to_vec();
+        snap.set_hash = ValidatorSetSnapshot::compute_hash(&snap.validators);
+
+        assert!(
+            verify_pop(&snap.validators[0]),
+            "sanity: the trivial identity/identity pairing must satisfy verify_pop's equation"
+        );
+
+        let cert = FinalityCert {
+            epoch: 1,
+            checkpoint_height: 10,
+            checkpoint_hash: "cp_hash".into(),
+            agg_sig_bls: vec![],
+            bitmap: vec![0b0000_0001],
+            set_hash: snap.set_hash.clone(),
+        };
+
+        let err = cert.verify(&snap).unwrap_err();
+        assert!(
+            err.contains("identity BLS public key"),
+            "expected an identity-key rejection, got: {}",
+            err
+        );
     }
 
     #[test]
