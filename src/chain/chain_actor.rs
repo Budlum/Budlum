@@ -1272,7 +1272,7 @@ mod tests {
                 .unwrap();
         let proof = crate::domain::FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                commitment.domain_block_hash,
+                commitment.commitment_payload_hash(),
                 domain.min_pow_target,
                 64,
             ),

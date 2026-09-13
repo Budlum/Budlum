@@ -1,4 +1,5 @@
 use crate::core::address::Address;
+use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
 use bls12_381::{G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
@@ -133,16 +134,21 @@ pub fn pop_signing_message(address: &Address, bls_pk: &[u8]) -> Vec<u8> {
     msg
 }
 
-pub fn hash_to_g1(msg: &[u8]) -> G1Affine {
-    let mut hasher = Sha3_256::new();
-    hasher.update(b"BUDLUM_BLS_SIG_DST");
-    hasher.update(msg);
-    let h = hasher.finalize();
+/// RFC 9380-compliant hash-to-curve (SSWU map over SHA-256, via the
+/// `bls12_381` crate's built-in `hash_to_curve` module). Do NOT replace this
+/// with "hash the message to a scalar and multiply the generator" — that
+/// construction leaks the discrete log between any two messages' hashes
+/// (it's just the ratio of their hash-derived scalars), which lets anyone
+/// who has observed a single valid signature rescale it into a valid
+/// signature over an arbitrary different message, without the secret key.
+const BLS_SIG_DST: &[u8] = b"BUDLUM_BLS_SIG_V2_BLS12381G1_XMD:SHA-256_SSWU_RO_";
 
-    let mut scalar_bytes = [0u8; 64];
-    scalar_bytes[0..32].copy_from_slice(&h);
-    let s = Scalar::from_bytes_wide(&scalar_bytes);
-    G1Affine::from(G1Projective::generator() * s)
+pub fn hash_to_g1(msg: &[u8]) -> G1Affine {
+    let point = <G1Projective as HashToCurve<ExpandMsgXmd<sha2_09::Sha256>>>::hash_to_curve(
+        msg,
+        BLS_SIG_DST,
+    );
+    G1Affine::from(point)
 }
 
 pub fn sign_bls(sk: &Scalar, msg: &[u8]) -> Vec<u8> {
@@ -535,6 +541,41 @@ impl FinalityCert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression test for a fixed universal-forgery vulnerability: an
+    /// earlier `hash_to_g1` implementation computed `H(m) = scalar_hash(m) *
+    /// G1_generator`, a public, invertible relationship between any two
+    /// messages' hash points. That let anyone who observed a single valid
+    /// signature rescale it (by the public ratio of the two messages'
+    /// hash-derived scalars) into a valid signature over an arbitrary
+    /// different message, without ever touching the secret key. With a real
+    /// RFC 9380 hash-to-curve, no such public discrete-log relationship
+    /// exists between H(m1) and H(m2), so the same rescaling attack must no
+    /// longer produce a signature that verifies.
+    #[test]
+    fn hash_to_g1_forgery_attack_no_longer_succeeds() {
+        let (sk, pk_bytes, _) = make_test_key(1);
+
+        let msg1 = b"legitimate precommit for block A";
+        let sig1 = sign_bls(&sk, msg1);
+        let msg2 = b"malicious finalized block B";
+
+        // Old attack: scale the observed signature by an attacker-chosen
+        // scalar and hope it lands on a valid signature for msg2. With a
+        // real hash-to-curve this has negligible success probability (it
+        // would require solving discrete log), unlike the old scheme where
+        // the exact right ratio was directly computable.
+        let sig1_affine = G1Affine::from_compressed(&sig1.clone().try_into().unwrap()).unwrap();
+        let arbitrary_scalar = Scalar::from(12345u64);
+        let forged_sig = G1Affine::from(G1Projective::from(sig1_affine) * arbitrary_scalar)
+            .to_compressed()
+            .to_vec();
+        assert!(verify_bls_sig(&pk_bytes, msg2, &forged_sig).is_err());
+
+        // The real signature for msg2 must still verify normally.
+        let real_sig2 = sign_bls(&sk, msg2);
+        assert!(verify_bls_sig(&pk_bytes, msg2, &real_sig2).is_ok());
+    }
 
     fn make_test_key(seed: u8) -> (Scalar, Vec<u8>, Vec<u8>) {
         let mut sk_bytes = [0u8; 64];

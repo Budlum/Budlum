@@ -27,9 +27,10 @@ pub struct PoWHeaderProof {
     pub nonce: u64,
     pub timestamp_ms: u128,
     /// On the base header (index 0), must equal the commitment's
-    /// `domain_block_hash` — this is what binds the proof-of-work chain to
-    /// the specific commitment being finalized. Confirmation headers built on
-    /// top may leave this zeroed.
+    /// `commitment_payload_hash()` — this is what binds the proof-of-work
+    /// chain to the specific commitment being finalized, including its
+    /// claimed `state_root`, not just its raw `domain_block_hash`.
+    /// Confirmation headers built on top may leave this zeroed.
     pub extra: Hash32,
 }
 
@@ -139,7 +140,7 @@ impl DomainFinalityAdapter for PoWFinalityAdapter {
             ));
         };
 
-        if base.extra != commitment.domain_block_hash {
+        if base.extra != commitment.commitment_payload_hash() {
             return Ok(FinalityStatus::Rejected(
                 "Base PoW header does not commit to this block".into(),
             ));
@@ -196,7 +197,7 @@ fn verify_quorum_cert(
         )));
     }
 
-    let commitment_hash = hex::encode(commitment.domain_block_hash);
+    let commitment_hash = hex::encode(commitment.commitment_payload_hash());
     if cert.checkpoint_hash != commitment_hash {
         return Ok(FinalityStatus::Rejected(format!(
             "{} cert hash does not match commitment",
@@ -436,7 +437,7 @@ mod tests {
         };
 
         let short_chain = crate::tests::finality_proof_support::mine_pow_chain(
-            commitment.domain_block_hash,
+            commitment.commitment_payload_hash(),
             domain.min_pow_target,
             2,
         );
@@ -457,7 +458,7 @@ mod tests {
         );
 
         let full_chain = crate::tests::finality_proof_support::mine_pow_chain(
-            commitment.domain_block_hash,
+            commitment.commitment_payload_hash(),
             domain.min_pow_target,
             3,
         );
@@ -477,7 +478,7 @@ mod tests {
         // A header that doesn't actually satisfy its own claimed target is a
         // forged proof, not just "not enough confirmations yet".
         let mut forged = crate::tests::finality_proof_support::mine_pow_chain(
-            commitment.domain_block_hash,
+            commitment.commitment_payload_hash(),
             domain.min_pow_target,
             3,
         );
@@ -528,7 +529,7 @@ mod tests {
 
         let full_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             commitment.domain_height,
-            commitment.domain_block_hash,
+            commitment.commitment_payload_hash(),
             &snapshot,
             &keys,
             &[0, 1, 2, 3],
@@ -551,7 +552,7 @@ mod tests {
         // verification must reject it rather than trust a claimed count.
         let short_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             commitment.domain_height,
-            commitment.domain_block_hash,
+            commitment.commitment_payload_hash(),
             &snapshot,
             &keys,
             &[0],
@@ -577,7 +578,7 @@ mod tests {
                         cert: FinalityCert {
                             epoch: 0,
                             checkpoint_height: commitment.domain_height,
-                            checkpoint_hash: hex::encode(commitment.domain_block_hash),
+                            checkpoint_hash: hex::encode(commitment.commitment_payload_hash()),
                             agg_sig_bls: vec![],
                             bitmap: vec![],
                             set_hash: empty_snapshot.set_hash.clone(),
@@ -600,7 +601,7 @@ mod tests {
         let wrong_height = FinalityCert {
             epoch: 0,
             checkpoint_height: 9,
-            checkpoint_hash: hex::encode(commitment.domain_block_hash),
+            checkpoint_hash: hex::encode(commitment.commitment_payload_hash()),
             agg_sig_bls: vec![],
             bitmap: vec![],
             set_hash: snapshot.set_hash.clone(),

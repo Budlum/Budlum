@@ -230,6 +230,35 @@ impl DomainCommitment {
         self.state_root = compute_state_updates_root(&self.state_updates);
     }
 
+    /// The payload finality proofs actually attest to: domain identity,
+    /// position, and every root this commitment claims — crucially
+    /// including `state_root`, not just `domain_block_hash`. Without this,
+    /// a valid (commitment, proof) pair for one `state_updates` batch could
+    /// be replayed against a different, still self-consistent
+    /// `state_updates`/`state_root` pair, since a proof binding only
+    /// `domain_block_hash` never actually vouches for the state transition.
+    ///
+    /// Deliberately excludes `finality_proof_hash`: that field is only
+    /// known *after* a proof exists (it hashes the proof itself), so it
+    /// cannot be part of what the proof commits to without becoming
+    /// circular. Also excludes `producer`/`timestamp_ms`, which carry no
+    /// security-relevant claim about domain state.
+    pub fn commitment_payload_hash(&self) -> Hash32 {
+        hash_fields_bytes(&[
+            b"BDLM_DOMAIN_COMMITMENT_PAYLOAD_V1",
+            &self.domain_id.to_le_bytes(),
+            &self.domain_height.to_le_bytes(),
+            &self.domain_block_hash,
+            &self.parent_domain_block_hash,
+            &self.state_root,
+            &self.tx_root,
+            &self.event_root,
+            &self.consensus_kind.as_bytes(),
+            &self.validator_set_hash,
+            &self.sequence.to_le_bytes(),
+        ])
+    }
+
     pub fn leaf_hash(&self) -> Hash32 {
         let kind = self.consensus_kind.as_bytes();
         let producer = self

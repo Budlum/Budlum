@@ -806,22 +806,39 @@ impl Blockchain {
     /// Called during block production so settlement is anchored to the
     /// network's already-agreed-upon block ordering.
     pub fn settle_pending_domain_commitments(&mut self) -> Result<Vec<ConsensusDomain>, String> {
+        let targets: BTreeMap<DomainId, u64> = self
+            .domain_registry
+            .domains()
+            .into_iter()
+            .map(|d| (d.id, d.last_committed_height))
+            .collect();
+        self.replay_settlement_to_watermarks(&targets)
+    }
+
+    /// Applies cross-domain settlement bounded by explicit per-domain target
+    /// heights ("watermarks") rather than settling as far as locally
+    /// available data allows. Called with each domain's `last_committed_height`
+    /// at block-production time (via `settle_pending_domain_commitments`), and
+    /// with the exact watermarks a block declares at validation time (via
+    /// `validate_and_add_block`) — the same replay logic in both places is
+    /// what makes settlement consensus-deterministic: a validator that has
+    /// already received *more* domain commitments than the block accounts for
+    /// still only applies the block's declared batch, so it reaches the same
+    /// state the producer did instead of racing ahead independently.
+    fn replay_settlement_to_watermarks(
+        &mut self,
+        targets: &BTreeMap<DomainId, u64>,
+    ) -> Result<Vec<ConsensusDomain>, String> {
         let mut settled_domains = Vec::new();
-        for domain in self.domain_registry.domains() {
-            let domain_id = domain.id;
+        for (&domain_id, &target_height) in targets {
             loop {
                 let last_settled = self
                     .domain_registry
                     .get(domain_id)
                     .ok_or_else(|| format!("Domain {} not found", domain_id))?
                     .last_settled_height;
-                let last_committed = self
-                    .domain_registry
-                    .get(domain_id)
-                    .ok_or_else(|| format!("Domain {} not found", domain_id))?
-                    .last_committed_height;
                 let next_height = last_settled + 1;
-                if next_height > last_committed {
+                if next_height > target_height {
                     break;
                 }
 
@@ -830,8 +847,8 @@ impl Blockchain {
                     .find_by_height(domain_id, next_height)
                     .ok_or_else(|| {
                         format!(
-                            "Domain {} committed height {} missing from registry",
-                            domain_id, next_height
+                            "Domain {} commitment at height {} required to reach settlement watermark {} but not yet recorded",
+                            domain_id, next_height, target_height
                         )
                     })?;
 
@@ -861,6 +878,18 @@ impl Blockchain {
             }
         }
         Ok(settled_domains)
+    }
+
+    /// The current per-domain settlement watermarks (`last_settled_height`),
+    /// suitable for embedding in a produced block via
+    /// `compute_settlement_batch_root` so receiving validators can replay the
+    /// exact same bounded settlement batch.
+    fn current_settlement_watermarks(&self) -> BTreeMap<DomainId, u64> {
+        self.domain_registry
+            .domains()
+            .into_iter()
+            .map(|d| (d.id, d.last_settled_height))
+            .collect()
     }
 
     pub fn submit_verified_domain_commitment(
@@ -1849,6 +1878,10 @@ impl Blockchain {
         if !self.pending_slashing_evidence.is_empty() {
             block.slashing_evidence = Some(self.pending_slashing_evidence.clone());
         }
+        block.settlement_watermarks = self.current_settlement_watermarks();
+        block.settlement_batch_root = hex::encode(
+            crate::core::block::compute_settlement_batch_root(&block.settlement_watermarks),
+        );
         block.producer = Some(producer_address);
         block.timestamp =
             self.genesis_time + (index as u128 * crate::core::chain_config::SLOT_MS as u128);
@@ -1994,11 +2027,29 @@ impl Blockchain {
             return Err("Block missing state_root".into());
         }
 
+        let expected_settlement_batch_root = hex::encode(
+            crate::core::block::compute_settlement_batch_root(&block.settlement_watermarks),
+        );
+        if block.settlement_batch_root != expected_settlement_batch_root {
+            return Err(format!(
+                "settlement_batch_root mismatch: expected {}, got {}",
+                expected_settlement_batch_root, block.settlement_batch_root
+            ));
+        }
+
         if let Err(e) = self
             .consensus
             .full_validate(&block, &self.chain, &self.state)
         {
             return Err(format!("Consensus validation failed: {}", e));
+        }
+
+        // Replay cross-domain settlement bounded by exactly the watermarks
+        // this block declares (never further, even if we already hold later
+        // domain commitments), so this node reaches the same account state
+        // the producer did before checking `state_root` below.
+        if let Err(e) = self.replay_settlement_to_watermarks(&block.settlement_watermarks) {
+            return Err(format!("Failed to replay block settlement batch: {}", e));
         }
 
         let mut temp_state = self.state.clone();

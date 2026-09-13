@@ -3,8 +3,19 @@ use crate::core::hash::hash_fields_bytes;
 use crate::core::transaction::Transaction;
 use crate::crypto::primitives::{verify_signature, KeyPair};
 use crate::crypto::signer::ConsensusSigner;
+use crate::domain::DomainId;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use tracing::{info, warn};
+
+/// Computes the hash committing a block to the exact cross-domain settlement
+/// batch it applied (`Blockchain::settlement_watermarks`), so every validator
+/// can replay that same bounded batch and reach byte-identical account state,
+/// rather than each independently deciding how much domain data to settle.
+pub fn compute_settlement_batch_root(watermarks: &BTreeMap<DomainId, u64>) -> [u8; 32] {
+    let serialized = bincode::serialize(watermarks).unwrap_or_default();
+    hash_fields_bytes(&[b"BDLM_SETTLE_BATCH_V1", &serialized])
+}
 
 pub const DEFAULT_CHAIN_ID: u64 = 1337;
 use crate::consensus::pos::SlashingEvidence;
@@ -26,6 +37,7 @@ pub struct BlockHeader {
     pub vrf_output: Vec<u8>,
     pub vrf_proof: Vec<u8>,
     pub validator_set_hash: String,
+    pub settlement_batch_root: String,
 }
 
 impl BlockHeader {
@@ -46,6 +58,7 @@ impl BlockHeader {
             vrf_output: block.vrf_output.clone(),
             vrf_proof: block.vrf_proof.clone(),
             validator_set_hash: block.validator_set_hash.clone(),
+            settlement_batch_root: block.settlement_batch_root.clone(),
         }
     }
 
@@ -82,6 +95,7 @@ impl BlockHeader {
             &self.vrf_output,
             &self.vrf_proof,
             self.validator_set_hash.as_bytes(),
+            self.settlement_batch_root.as_bytes(),
         ])
     }
 
@@ -119,6 +133,16 @@ pub struct Block {
     pub vrf_output: Vec<u8>,
     pub vrf_proof: Vec<u8>,
     pub validator_set_hash: String,
+    /// The exact per-domain settlement heights this block advances
+    /// cross-domain account state to. A receiving validator replays
+    /// settlement bounded by these watermarks (never further, even if it has
+    /// already recorded later domain commitments), so every honest node
+    /// reaches byte-identical state for this block regardless of what domain
+    /// data happened to arrive first.
+    #[serde(default)]
+    pub settlement_watermarks: BTreeMap<DomainId, u64>,
+    #[serde(default)]
+    pub settlement_batch_root: String,
 }
 
 impl Block {
@@ -155,6 +179,8 @@ impl Block {
             vrf_output: Vec::new(),
             vrf_proof: Vec::new(),
             validator_set_hash: String::new(),
+            settlement_watermarks: BTreeMap::new(),
+            settlement_batch_root: hex::encode(compute_settlement_batch_root(&BTreeMap::new())),
         };
         block.tx_root = block.calculate_tx_root();
         block.hash = block.calculate_hash();
@@ -236,6 +262,7 @@ impl Block {
             &self.vrf_output,
             &self.vrf_proof,
             self.validator_set_hash.as_bytes(),
+            self.settlement_batch_root.as_bytes(),
         ])
     }
     pub fn sign(&mut self, keypair: &KeyPair) {

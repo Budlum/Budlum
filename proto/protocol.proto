@@ -47,6 +47,12 @@ message ProtoBlockHeader {
     bytes vrf_output = 13;
     bytes vrf_proof = 14;
     string validator_set_hash = 15;
+    string settlement_batch_root = 16;
+}
+
+message ProtoSettlementWatermark {
+    uint32 domain_id = 1;
+    uint64 height = 2;
 }
 
 message ProtoBlock {
@@ -67,6 +73,8 @@ message ProtoBlock {
     bytes vrf_output = 16;
     bytes vrf_proof = 17;
     string validator_set_hash = 18;
+    string settlement_batch_root = 19;
+    repeated ProtoSettlementWatermark settlement_watermarks = 20;
 }
 
 message ProtoNetworkMessage {

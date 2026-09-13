@@ -307,7 +307,7 @@ mod settlement_prod_tests {
 
         let pending_proof = FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                commitment_for(&pow, 10, 0, 1).domain_block_hash,
+                commitment_for(&pow, 10, 0, 1).commitment_payload_hash(),
                 pow.min_pow_target,
                 3,
             ),
@@ -321,7 +321,7 @@ mod settlement_prod_tests {
 
         let finalized_proof = FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                commitment_for(&pow, 10, 0, 1).domain_block_hash,
+                commitment_for(&pow, 10, 0, 1).commitment_payload_hash(),
                 pow.min_pow_target,
                 64,
             ),
@@ -354,7 +354,7 @@ mod settlement_prod_tests {
         // Only 1 of 4 signed: below the required 2/3 quorum.
         let weak_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             base_commitment.domain_height,
-            base_commitment.domain_block_hash,
+            base_commitment.commitment_payload_hash(),
             &snapshot,
             &keys,
             &[0],
@@ -370,7 +370,7 @@ mod settlement_prod_tests {
 
         let full_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             base_commitment.domain_height,
-            base_commitment.domain_block_hash,
+            base_commitment.commitment_payload_hash(),
             &snapshot,
             &keys,
             &[0, 1, 2, 3],
@@ -815,7 +815,7 @@ mod settlement_prod_tests {
 
         let weak_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             c.domain_height,
-            c.domain_block_hash,
+            c.commitment_payload_hash(),
             &snapshot,
             &keys,
             &[0],
@@ -831,7 +831,7 @@ mod settlement_prod_tests {
 
         let strong_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             c.domain_height,
-            c.domain_block_hash,
+            c.commitment_payload_hash(),
             &snapshot,
             &keys,
             &[0, 1, 2, 3],
@@ -858,7 +858,7 @@ mod settlement_prod_tests {
             cert: FinalityCert {
                 epoch: 0,
                 checkpoint_height: c.domain_height,
-                checkpoint_hash: hex::encode(c.domain_block_hash),
+                checkpoint_hash: hex::encode(c.commitment_payload_hash()),
                 agg_sig_bls: vec![],
                 bitmap: vec![],
                 set_hash: empty_snapshot.set_hash.clone(),
@@ -1608,5 +1608,183 @@ mod settlement_prod_tests {
         // legitimate (trivial) finalized point once a committee exists.
         let header = blockchain.build_global_header(None);
         assert!(header.global_state_finalized);
+    }
+
+    // --- Consensus-deterministic settlement replay ---------------------
+    //
+    // A block only carries transactions and its resulting `state_root`.
+    // Cross-domain settlement (`settle_pending_domain_commitments`) mutates
+    // account state independently of the transaction list, keyed off
+    // whatever domain commitments the *producer* happened to have recorded
+    // at production time. A receiving validator that recomputed settlement
+    // from its own, possibly different, view of recorded domain commitments
+    // (e.g. having already received a later commitment the producer had not
+    // yet seen) could reach different account state and legitimately reject
+    // a valid block, or silently diverge. The fix: the block carries the
+    // exact per-domain settlement watermarks the producer applied plus a
+    // `settlement_batch_root` binding them into the block hash, and
+    // `validate_and_add_block` replays settlement bounded by exactly those
+    // watermarks instead of recomputing independently.
+
+    fn state_update_commitment(
+        domain: &crate::domain::ConsensusDomain,
+        height: u64,
+        sequence: u64,
+        seed: u8,
+        addr: &Address,
+        new_nonce: u64,
+    ) -> DomainCommitment {
+        let mut com = commitment_for(domain, height, sequence, seed);
+        com.insert_state_update(*addr, new_nonce);
+        com
+    }
+
+    #[test]
+    fn validator_replays_producers_settlement_batch_and_reaches_matching_state_root() {
+        let pow = domain(1, ConsensusKind::PoW);
+        let alice = Address::from([0x42u8; 32]);
+
+        let mut producer = test_chain();
+        producer.register_consensus_domain(pow.clone()).unwrap();
+        let com = state_update_commitment(&pow, 1, 0, 7, &alice, 5);
+        producer.submit_domain_commitment(com.clone()).unwrap();
+
+        // The validator has independently recorded the identical, already
+        // domain-consensus-agreed commitment (as it would via commitment
+        // gossip, ahead of the block itself) — but must NOT independently
+        // decide how far to settle; it must replay exactly what the block
+        // declares.
+        let mut validator = test_chain();
+        validator.register_consensus_domain(pow.clone()).unwrap();
+        validator.submit_domain_commitment(com).unwrap();
+
+        let block = producer.produce_block(Address::zero()).unwrap();
+        assert_eq!(
+            producer.state.get_nonce(&alice),
+            5,
+            "producer should have settled the domain's state update"
+        );
+        assert!(
+            !block.settlement_watermarks.is_empty(),
+            "block should declare the settlement it applied"
+        );
+
+        validator.validate_and_add_block(block).unwrap();
+        assert_eq!(
+            validator.state.get_nonce(&alice),
+            5,
+            "validator must replay the same settlement batch and reach the same state"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_block_when_it_lacks_the_domain_commitment_the_batch_requires() {
+        let pow = domain(1, ConsensusKind::PoW);
+        let alice = Address::from([0x43u8; 32]);
+
+        let mut producer = test_chain();
+        producer.register_consensus_domain(pow.clone()).unwrap();
+        let com = state_update_commitment(&pow, 1, 0, 7, &alice, 5);
+        producer.submit_domain_commitment(com).unwrap();
+        let block = producer.produce_block(Address::zero()).unwrap();
+
+        // This validator registered the domain but never received the
+        // commitment the block's settlement watermark depends on.
+        let mut validator = test_chain();
+        validator.register_consensus_domain(pow).unwrap();
+
+        let err = validator.validate_and_add_block(block).unwrap_err();
+        assert!(
+            err.contains("not yet recorded"),
+            "expected a missing-commitment replay error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn validator_rejects_block_whose_watermarks_dont_match_its_declared_batch_root() {
+        let pow = domain(1, ConsensusKind::PoW);
+        let alice = Address::from([0x44u8; 32]);
+
+        let mut producer = test_chain();
+        producer.register_consensus_domain(pow.clone()).unwrap();
+        let com = state_update_commitment(&pow, 1, 0, 7, &alice, 5);
+        producer.submit_domain_commitment(com.clone()).unwrap();
+        let mut block = producer.produce_block(Address::zero()).unwrap();
+
+        // Tamper the settlement watermarks while leaving the block hash and
+        // `settlement_batch_root` field untouched, simulating a producer
+        // that claims one settlement batch in its root commitment but tries
+        // to sneak a different one past replay. This must be caught by the
+        // batch-root check before any settlement replay is attempted, not
+        // silently accepted or caught only incidentally by a hash mismatch.
+        block.settlement_watermarks.insert(pow.id, 0);
+
+        let mut validator = test_chain();
+        validator.register_consensus_domain(pow).unwrap();
+        validator.submit_domain_commitment(com).unwrap();
+
+        let err = validator.validate_and_add_block(block).unwrap_err();
+        assert!(
+            err.contains("settlement_batch_root mismatch"),
+            "expected a settlement_batch_root mismatch error, got: {}",
+            err
+        );
+    }
+
+    // --- Finality proofs must bind state_updates/state_root, not just
+    //     domain_block_hash ----------------------------------------------
+    //
+    // `DomainCommitment.state_root` is a Merkle root over `state_updates`,
+    // and acceptance checks that binding for internal self-consistency. But
+    // a finality proof that only attests to `domain_block_hash` never
+    // actually vouches for *which* state_updates/state_root accompanied it:
+    // an attacker (or malfunctioning producer) could take one finalized
+    // commitment's exact finality proof, pair it with a different,
+    // internally-self-consistent state_updates/state_root for the same
+    // domain block, and have it accepted as equally finalized. The fix
+    // (`commitment_payload_hash`) folds `state_root` into what PoW header
+    // binding and PoS/PoA/BFT quorum certs actually commit to.
+
+    #[test]
+    fn pow_proof_cannot_be_replayed_against_a_swapped_state_updates_batch() {
+        let pow = domain(1, ConsensusKind::PoW);
+        let alice = Address::from([0x55u8; 32]);
+        let mut blockchain = test_chain();
+        blockchain.register_consensus_domain(pow.clone()).unwrap();
+
+        let legitimate = state_update_commitment(&pow, 10, 0, 5, &alice, 1);
+        let proof = FinalityProof::PoW {
+            headers: crate::tests::finality_proof_support::mine_pow_chain(
+                legitimate.commitment_payload_hash(),
+                pow.min_pow_target,
+                64,
+            ),
+        };
+        let legitimate = commitment_with_proof(&pow, 10, 0, 5, &proof);
+        // commitment_with_proof rebuilds the commitment from scratch (no
+        // state_updates); attach the real state update after, as the
+        // producer would.
+        let mut legitimate = legitimate;
+        legitimate.insert_state_update(alice, 1);
+        blockchain
+            .submit_verified_domain_commitment(legitimate, proof.clone())
+            .unwrap();
+
+        // Attacker: same domain/height/block hash, same exact finality
+        // proof, but a swapped, still internally self-consistent
+        // state_updates/state_root claiming a much larger nonce jump.
+        let mut forged = commitment_for(&pow, 10, 0, 5);
+        forged.insert_state_update(alice, 999);
+        forged.finality_proof_hash = hash_finality_proof(&proof);
+
+        let err = blockchain
+            .submit_verified_domain_commitment(forged, proof)
+            .unwrap_err();
+        assert!(
+            err.contains("not finalized") || err.contains("does not commit"),
+            "expected the replayed proof to be rejected for the swapped state_updates batch, got: {}",
+            err
+        );
     }
 }

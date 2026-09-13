@@ -289,7 +289,7 @@ mod rpc_tests {
                 .unwrap();
         let proof2 = crate::domain::FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                new_commitment.domain_block_hash,
+                new_commitment.commitment_payload_hash(),
                 domain.min_pow_target,
                 64,
             ),
@@ -320,7 +320,7 @@ mod rpc_tests {
                 .unwrap();
         let proof = crate::domain::FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                verified_commitment.domain_block_hash,
+                verified_commitment.commitment_payload_hash(),
                 domain.min_pow_target,
                 64,
             ),
@@ -346,7 +346,7 @@ mod rpc_tests {
                 .unwrap();
         let weak_proof = crate::domain::FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                weak_commitment.domain_block_hash,
+                weak_commitment.commitment_payload_hash(),
                 domain.min_pow_target,
                 1,
             ),
@@ -417,7 +417,7 @@ mod rpc_tests {
         .unwrap();
         let bridge_proof = crate::domain::FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                bridge_commitment.domain_block_hash,
+                bridge_commitment.commitment_payload_hash(),
                 domain.min_pow_target,
                 64,
             ),
@@ -467,7 +467,7 @@ mod rpc_tests {
         .unwrap();
         let burn_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             burn_commitment.domain_height,
-            burn_commitment.domain_block_hash,
+            burn_commitment.commitment_payload_hash(),
             &poa_validator_snapshot,
             &poa_validator_keys,
             &[0, 1, 2],

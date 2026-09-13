@@ -323,7 +323,7 @@ mod distributed_settlement_tests {
             DomainCommitment::from_block(&pow_domain, &b, [0u8; 32], [0u8; 32], 2).unwrap();
         let proof2 = FinalityProof::PoW {
             headers: crate::tests::finality_proof_support::mine_pow_chain(
-                com2.domain_block_hash,
+                com2.commitment_payload_hash(),
                 pow_domain.min_pow_target,
                 1,
             ),

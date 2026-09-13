@@ -165,6 +165,7 @@ mod tests {
             vrf_output: Vec::new(),
             vrf_proof: Vec::new(),
             validator_set_hash: String::new(),
+            settlement_batch_root: String::new(),
         };
         let enc = encode_block_header(&header);
         assert!(!enc.is_empty());

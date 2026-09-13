@@ -120,6 +120,7 @@ impl From<&BlockHeader> for pb::ProtoBlockHeader {
             vrf_output: header.vrf_output.clone(),
             vrf_proof: header.vrf_proof.clone(),
             validator_set_hash: header.validator_set_hash.clone(),
+            settlement_batch_root: header.settlement_batch_root.clone(),
         }
     }
 }
@@ -164,6 +165,7 @@ impl TryFrom<pb::ProtoBlockHeader> for BlockHeader {
             vrf_output: proto.vrf_output,
             vrf_proof: proto.vrf_proof,
             validator_set_hash: proto.validator_set_hash,
+            settlement_batch_root: proto.settlement_batch_root,
         })
     }
 }
@@ -198,6 +200,12 @@ impl From<&Block> for pb::ProtoBlock {
             vrf_output: block.vrf_output.clone(),
             vrf_proof: block.vrf_proof.clone(),
             validator_set_hash: block.validator_set_hash.clone(),
+            settlement_batch_root: block.settlement_batch_root.clone(),
+            settlement_watermarks: block
+                .settlement_watermarks
+                .iter()
+                .map(|(&domain_id, &height)| pb::ProtoSettlementWatermark { domain_id, height })
+                .collect(),
         }
     }
 }
@@ -238,6 +246,12 @@ impl TryFrom<pb::ProtoBlock> for Block {
             transactions.push(Transaction::try_from(t)?);
         }
 
+        let settlement_watermarks = proto
+            .settlement_watermarks
+            .into_iter()
+            .map(|w| (w.domain_id, w.height))
+            .collect();
+
         Ok(Block {
             index: proto.index,
             timestamp,
@@ -256,6 +270,8 @@ impl TryFrom<pb::ProtoBlock> for Block {
             vrf_output: proto.vrf_output,
             vrf_proof: proto.vrf_proof,
             validator_set_hash: proto.validator_set_hash,
+            settlement_batch_root: proto.settlement_batch_root,
+            settlement_watermarks,
         })
     }
 }
