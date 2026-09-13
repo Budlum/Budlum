@@ -95,14 +95,20 @@ async fn main() {
                                 let addr = match Address::from_hex(parts[0].trim()) {
                                     Ok(a) => a,
                                     Err(_) => {
-                                        eprintln!("Error: Invalid allocation address '{}'", parts[0]);
+                                        eprintln!(
+                                            "Error: Invalid allocation address '{}'",
+                                            parts[0]
+                                        );
                                         std::process::exit(1);
                                     }
                                 };
                                 let amount: u64 = match parts[1].trim().parse() {
                                     Ok(v) => v,
                                     Err(_) => {
-                                        eprintln!("Error: Invalid allocation amount '{}'", parts[1]);
+                                        eprintln!(
+                                            "Error: Invalid allocation amount '{}'",
+                                            parts[1]
+                                        );
                                         std::process::exit(1);
                                     }
                                 };
@@ -230,7 +236,10 @@ async fn main() {
             }
         };
         if let Err(e) = std::fs::write(&output_path, data) {
-            eprintln!("Error: Failed to write genesis file '{}': {}", output_path, e);
+            eprintln!(
+                "Error: Failed to write genesis file '{}': {}",
+                output_path, e
+            );
             std::process::exit(1);
         }
         println!(
@@ -363,31 +372,34 @@ async fn main() {
     );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let hsm_signer: Option<Arc<dyn ConsensusSigner>> = if config.signer_backend.as_deref() == Some("pkcs11") {
-        let module_path = config.pkcs11_module_path.as_deref().unwrap_or("");
-        let slot_id = config.pkcs11_slot_id.unwrap_or(0);
-        let pin_env = config.pkcs11_token_pin_env.as_deref().unwrap_or("");
-        if module_path.is_empty() || pin_env.is_empty() {
-            eprintln!("ERROR: PKCS#11 backend requires --pkcs11-module-path and --pkcs11-token-pin-env");
-            std::process::exit(1);
-        }
-        match budlum_core::crypto::pkcs11::Pkcs11Signer::new(
-            module_path.to_string(),
-            slot_id,
-            pin_env.to_string(),
-        ) {
-            Ok(signer) => {
-                println!("PKCS#11 HSM initialized (slot: {})", slot_id);
-                Some(Arc::new(signer))
-            }
-            Err(e) => {
-                eprintln!("CRITICAL: Failed to initialize PKCS#11 signer: {}", e);
+    let hsm_signer: Option<Arc<dyn ConsensusSigner>> =
+        if config.signer_backend.as_deref() == Some("pkcs11") {
+            let module_path = config.pkcs11_module_path.as_deref().unwrap_or("");
+            let slot_id = config.pkcs11_slot_id.unwrap_or(0);
+            let pin_env = config.pkcs11_token_pin_env.as_deref().unwrap_or("");
+            if module_path.is_empty() || pin_env.is_empty() {
+                eprintln!(
+                "ERROR: PKCS#11 backend requires --pkcs11-module-path and --pkcs11-token-pin-env"
+            );
                 std::process::exit(1);
             }
-        }
-    } else {
-        None
-    };
+            match budlum_core::crypto::pkcs11::Pkcs11Signer::new(
+                module_path.to_string(),
+                slot_id,
+                pin_env.to_string(),
+            ) {
+                Ok(signer) => {
+                    println!("PKCS#11 HSM initialized (slot: {})", slot_id);
+                    Some(Arc::new(signer))
+                }
+                Err(e) => {
+                    eprintln!("CRITICAL: Failed to initialize PKCS#11 signer: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        };
 
     let consensus: Arc<dyn ConsensusEngine> = match consensus_type {
         ConsensusType::PoW => {
@@ -586,8 +598,9 @@ async fn main() {
     }
 
     // Load or generate persistent P2P identity
-    let identity_key =
-        budlum_core::network::node::load_or_generate_identity_key(config.p2p_identity_file.as_deref());
+    let identity_key = budlum_core::network::node::load_or_generate_identity_key(
+        config.p2p_identity_file.as_deref(),
+    );
 
     let node = match Node::with_key(chain.clone(), identity_key, true) {
         Ok(n) => n,

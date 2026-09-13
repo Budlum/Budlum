@@ -32,11 +32,42 @@ pub struct Storage {
 }
 impl Storage {
     pub fn new(path: &str) -> std::io::Result<Self> {
-        let db = sled::open(path)?;
+        let db = Self::open_with_retry(path)?;
         let storage = Storage { db };
         storage.apply_migrations()?;
         storage.recover_interrupted_commit()?;
         Ok(storage)
+    }
+
+    /// Opens the database, retrying briefly if the OS reports the file lock
+    /// as transiently unavailable (EAGAIN). This happens when a database is
+    /// reopened at the same path immediately after a previous handle was
+    /// dropped — under load, the OS/sled may not have released the advisory
+    /// lock yet. Any other error (corruption, permissions, ...) is returned
+    /// immediately without retrying.
+    fn open_with_retry(path: &str) -> std::io::Result<Db> {
+        const MAX_ATTEMPTS: u32 = 5;
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let mut last_err = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            match sled::open(path) {
+                Ok(db) => return Ok(db),
+                Err(e) => {
+                    let io_err: std::io::Error = e.into();
+                    let is_transient_lock_error = io_err.kind() == std::io::ErrorKind::WouldBlock
+                        || io_err.to_string().contains("could not acquire lock");
+                    if !is_transient_lock_error || attempt + 1 == MAX_ATTEMPTS {
+                        return Err(io_err);
+                    }
+                    last_err = Some(io_err);
+                    std::thread::sleep(RETRY_DELAY);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            std::io::Error::other(format!("failed to open database at {}", path))
+        }))
     }
 
     /// Staged migrations, ordered by ascending `to_version`. Each entry transforms
@@ -98,7 +129,12 @@ impl Storage {
     pub fn apply_migrations(&self) -> std::io::Result<()> {
         const CURRENT_SCHEMA_VERSION: u64 = 1;
         let current = self.schema_version()?;
-        Self::run_migrations(&self.db, current, CURRENT_SCHEMA_VERSION, &Self::migrations())
+        Self::run_migrations(
+            &self.db,
+            current,
+            CURRENT_SCHEMA_VERSION,
+            &Self::migrations(),
+        )
     }
 
     pub fn schema_version(&self) -> std::io::Result<u64> {
@@ -1016,6 +1052,35 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn reopening_locked_database_retries_until_lock_is_released() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("locked-reopen-db");
+        let path_str = path.to_str().unwrap().to_string();
+
+        // Hold the lock on a background thread for a short window, then release it.
+        let holder_path = path_str.clone();
+        let holder = std::thread::spawn(move || {
+            let storage = Storage::new(&holder_path).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            drop(storage);
+        });
+
+        // Give the holder thread a moment to actually acquire the lock first.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // This would fail immediately without the retry loop, since the holder
+        // above is still open on the same path.
+        let reopened = Storage::new(&path_str);
+        holder.join().unwrap();
+
+        assert!(
+            reopened.is_ok(),
+            "expected retry to succeed once the lock was released, got: {:?}",
+            reopened.err()
+        );
+    }
+
+    #[test]
     fn test_durable_commit_batch_and_recovery() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
@@ -1092,10 +1157,7 @@ mod tests {
                 Ok(())
             },
             "fails" => |_db: &Db| -> std::io::Result<()> {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "simulated migration failure",
-                ))
+                Err(std::io::Error::other("simulated migration failure"))
             },
             _ => unreachable!(),
         }
@@ -1128,8 +1190,10 @@ mod tests {
         let db: Db = sled::open(dir.path()).unwrap();
 
         // Already at version 2 — the (2, ...) step must not re-run.
-        let steps: Vec<(u64, MigrationFn)> =
-            vec![(2, migration_marker_fn("mark_a")), (3, migration_marker_fn("mark_b"))];
+        let steps: Vec<(u64, MigrationFn)> = vec![
+            (2, migration_marker_fn("mark_a")),
+            (3, migration_marker_fn("mark_b")),
+        ];
 
         Storage::run_migrations(&db, 2, 3, &steps).unwrap();
 
