@@ -527,7 +527,9 @@ mod byzantine_settlement_tests {
             let consensus = Arc::new(crate::consensus::pow::PoWEngine::new(0));
             let node = Blockchain::new(consensus, Some(storage), 1337, None);
 
-            assert_eq!(node.state.get_nonce(&alice), 1);
+            // Blok üretilmediği için (settlement batch root zincire eklenmediği için)
+            // restart sonrasında state, canonical zincirle senkronize olmalı ve nonce 0 kalmalı.
+            assert_eq!(node.state.get_nonce(&alice), 0);
             assert!(node.domain_registry.get(1).is_some());
             assert_eq!(node.domain_commitment_registry.len(), 1);
         }

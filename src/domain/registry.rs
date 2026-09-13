@@ -61,6 +61,10 @@ impl ConsensusDomainRegistry {
         self.domains.values().cloned().collect()
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ConsensusDomain> {
+        self.domains.values_mut()
+    }
+
     pub fn root(&self) -> Hash32 {
         let leaves: Vec<Hash32> = self.domains.values().map(domain_leaf_hash).collect();
         crate::settlement::commitment_tree::merkle_root(&leaves)

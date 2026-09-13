@@ -281,45 +281,6 @@ impl Blockchain {
             chain_len - 1
         );
 
-        let mut validator_snapshots = BTreeMap::new();
-        validator_snapshots.insert(
-            state.epoch_index,
-            Self::build_validator_snapshot_from_state(state.epoch_index, &state),
-        );
-
-        for block in chain_vec.iter().skip(start_index) {
-            state = match Self::apply_block_effects(&state, block) {
-                Ok(next_state) => next_state,
-                Err(e) => {
-                    error!(
-                        "Failed to apply block {} during init: {}. Corrupted database, exiting.",
-                        block.index, e
-                    );
-                    std::process::exit(1);
-                }
-            };
-            validator_snapshots.insert(
-                state.epoch_index,
-                Self::build_validator_snapshot_from_state(state.epoch_index, &state),
-            );
-        }
-
-        let mempool_config = Network::from_chain_id(chain_id)
-            .map(|network| network.mempool_config())
-            .unwrap_or_default();
-        let mut mempool = Mempool::new(mempool_config);
-        if let Some(ref store) = storage {
-            if let Ok(txs) = store.load_mempool_txs() {
-                let count = txs.len();
-                for tx in txs {
-                    let _ = mempool.add_transaction(tx);
-                }
-                if count > 0 {
-                    info!("Restored {} transactions from mempool persistence", count);
-                }
-            }
-        }
-
         let mut domain_registry = ConsensusDomainRegistry::new();
         let mut domain_commitment_registry = DomainCommitmentRegistry::new();
         let mut bridge_state = BridgeState::new();
@@ -350,13 +311,6 @@ impl Blockchain {
                     }
                     if let Err(e) = domain_commitment_registry.insert(commitment.clone()) {
                         warn!("Skipping duplicate stored domain commitment: {}", e);
-                    } else {
-                        for (addr, new_nonce) in &commitment.state_updates {
-                            if *new_nonce > state.get_nonce(addr) {
-                                let account = state.get_or_create(addr);
-                                account.nonce = *new_nonce;
-                            }
-                        }
                     }
                 }
             }
@@ -378,6 +332,62 @@ impl Blockchain {
                     }
                 }
                 message_registry = registry;
+            }
+        }
+
+        if start_index > 0 {
+            if let Some(snapshot_block) = chain_vec.get(start_index - 1) {
+                for (domain_id, target) in &snapshot_block.settlement_watermarks {
+                    if let Some(d) = domain_registry.get_mut(*domain_id) {
+                        d.last_settled_height = *target;
+                    }
+                }
+            }
+        }
+
+        let mut validator_snapshots = BTreeMap::new();
+        validator_snapshots.insert(
+            state.epoch_index,
+            Self::build_validator_snapshot_from_state(state.epoch_index, &state),
+        );
+
+        for block in chain_vec.iter().skip(start_index) {
+            let _ = Self::replay_settlement_to_watermarks_internal(
+                &domain_commitment_registry,
+                &mut state,
+                &mut domain_registry,
+                &block.settlement_watermarks,
+            );
+            
+            state = match Self::apply_block_effects(&state, block) {
+                Ok(next_state) => next_state,
+                Err(e) => {
+                    error!(
+                        "Failed to apply block {} during init: {}. Corrupted database, exiting.",
+                        block.index, e
+                    );
+                    std::process::exit(1);
+                }
+            };
+            validator_snapshots.insert(
+                state.epoch_index,
+                Self::build_validator_snapshot_from_state(state.epoch_index, &state),
+            );
+        }
+
+        let mempool_config = Network::from_chain_id(chain_id)
+            .map(|network| network.mempool_config())
+            .unwrap_or_default();
+        let mut mempool = Mempool::new(mempool_config);
+        if let Some(ref store) = storage {
+            if let Ok(txs) = store.load_mempool_txs() {
+                let count = txs.len();
+                for tx in txs {
+                    let _ = mempool.add_transaction(tx);
+                }
+                if count > 0 {
+                    info!("Restored {} transactions from mempool persistence", count);
+                }
             }
         }
 
@@ -838,8 +848,8 @@ impl Blockchain {
     /// already received *more* domain commitments than the block accounts for
     /// still only applies the block's declared batch, so it reaches the same
     /// state the producer did instead of racing ahead independently.
-    fn replay_settlement_to_watermarks(
-        &self,
+    fn replay_settlement_to_watermarks_internal(
+        domain_commitment_registry: &DomainCommitmentRegistry,
         temp_state: &mut AccountState,
         temp_registry: &mut ConsensusDomainRegistry,
         targets: &BTreeMap<DomainId, u64>,
@@ -856,8 +866,7 @@ impl Blockchain {
                     break;
                 }
 
-                let com = self
-                    .domain_commitment_registry
+                let com = domain_commitment_registry
                     .find_by_height(domain_id, next_height)
                     .ok_or_else(|| {
                         format!(
@@ -886,7 +895,20 @@ impl Blockchain {
             }
         }
         Ok(settled_domains)
+    }
 
+    fn replay_settlement_to_watermarks(
+        &self,
+        temp_state: &mut AccountState,
+        temp_registry: &mut ConsensusDomainRegistry,
+        targets: &BTreeMap<DomainId, u64>,
+    ) -> Result<Vec<ConsensusDomain>, String> {
+        Self::replay_settlement_to_watermarks_internal(
+            &self.domain_commitment_registry,
+            temp_state,
+            temp_registry,
+            targets,
+        )
     }
 
 
@@ -2295,7 +2317,7 @@ impl Blockchain {
         );
 
         let old_chain = self.chain.clone();
-        let new_state = Blockchain::rebuild_state(&new_chain)?;
+        let (new_state, _) = self.rebuild_state_and_registry(&new_chain)?;
 
         for block in &old_chain[fork_point..] {
             self.verified_qc_blobs.remove(&block.index);
@@ -2334,14 +2356,15 @@ impl Blockchain {
                     let _ = store.delete_tx_index(&tx.hash);
                 }
             }
-            let mut current_state = if fork_point > 0 {
-                Blockchain::rebuild_state(&self.chain[..fork_point])?
+            let (mut current_state, mut current_registry) = if fork_point > 0 {
+                self.rebuild_state_and_registry(&self.chain[..fork_point])?
             } else {
-                AccountState::new()
+                (AccountState::new(), ConsensusDomainRegistry::new())
             };
             for block in &self.chain[fork_point..] {
+                let settled_domains = self.replay_settlement_to_watermarks(&mut current_state, &mut current_registry, &block.settlement_watermarks)?;
                 current_state = Self::apply_block_effects(&current_state, block)?;
-                self.commit_block_durable(block, &current_state, Vec::new()).unwrap();
+                self.commit_block_durable(block, &current_state, settled_domains).unwrap();
             }
             if let Some(last) = self.chain.last() {
                 let _ = store.save_last_hash(&last.hash);
@@ -2358,7 +2381,7 @@ impl Blockchain {
             .and_then(|store| store.get_state_root(height).unwrap_or(None))
     }
 
-    fn rebuild_state(chain: &[Block]) -> Result<AccountState, String> {
+    pub fn rebuild_state_and_registry(&self, chain: &[Block]) -> Result<(AccountState, ConsensusDomainRegistry), String> {
         let chain_id = chain
             .first()
             .map(|block| block.chain_id)
@@ -2367,12 +2390,18 @@ impl Blockchain {
             .map(GenesisConfig::for_network)
             .unwrap_or_else(|| GenesisConfig::new(chain_id));
         let mut state = genesis_config.build_state();
+        let mut domain_registry = self.domain_registry.clone();
+        
+        for domain in domain_registry.iter_mut() {
+            domain.last_settled_height = 0;
+        }
 
         for block in chain.iter().skip(1) {
+            let _ = self.replay_settlement_to_watermarks(&mut state, &mut domain_registry, &block.settlement_watermarks)?;
             state = Self::apply_block_effects(&state, block)
                 .map_err(|e| format!("Failed to rebuild state at block {}: {}", block.index, e))?;
         }
-        Ok(state)
+        Ok((state, domain_registry))
     }
     pub fn print_info(&self) {
         info!("Blockchain Info");
@@ -2388,7 +2417,7 @@ impl Blockchain {
             return None;
         }
         let block = &self.chain[height as usize];
-        let state = Self::rebuild_state(&self.chain[..=height as usize]).ok()?;
+        let (state, _) = self.rebuild_state_and_registry(&self.chain[..=height as usize]).ok()?;
         let finalized_height = self.finalized_height.min(height);
         let finalized_hash = self
             .chain
