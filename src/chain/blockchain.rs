@@ -697,12 +697,8 @@ impl Blockchain {
             }
         }
 
-        if commitment.domain_height == domain.last_committed_height + 1 {
-            self.validate_commitment_state_updates(&commitment)?;
-        }
-
         self.domain_commitment_registry.insert(commitment.clone())?;
-        let updated_domains = self.apply_pending_commitments(commitment.domain_id)?;
+        let updated_domains = self.advance_domain_commitment_sequence(commitment.domain_id)?;
 
         if let Some(store) = &self.storage {
             store
@@ -718,22 +714,15 @@ impl Blockchain {
         Ok(())
     }
 
-    fn validate_commitment_state_updates(
-        &self,
-        commitment: &DomainCommitment,
-    ) -> Result<(), String> {
-        for (addr, new_nonce) in &commitment.state_updates {
-            if *new_nonce <= self.state.get_nonce(addr) {
-                return Err(format!(
-                    "Commitment nonce invariant violation for domain {} height {}",
-                    commitment.domain_id, commitment.domain_height
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_pending_commitments(
+    /// Advances a single domain's own recorded/equivocation-checked sequence
+    /// (`last_committed_height`/`last_committed_hash`) as far as the registry
+    /// allows. This does NOT touch global account state: applying a
+    /// commitment's `state_updates` is deferred to
+    /// `settle_pending_domain_commitments`, which processes every domain in a
+    /// fixed order so that cross-domain conflicts (e.g. two domains racing to
+    /// bump the same account's nonce) resolve identically on every node,
+    /// regardless of the order commitments actually arrived over the network.
+    fn advance_domain_commitment_sequence(
         &mut self,
         domain_id: DomainId,
     ) -> Result<Vec<ConsensusDomain>, String> {
@@ -769,13 +758,6 @@ impl Blockchain {
                     ));
                 }
 
-                self.validate_commitment_state_updates(&com)?;
-
-                for (addr, new_nonce) in &com.state_updates {
-                    let account = self.state.get_or_create(addr);
-                    account.nonce = *new_nonce;
-                }
-
                 let d_mut = self
                     .domain_registry
                     .get_mut(domain_id)
@@ -789,6 +771,74 @@ impl Blockchain {
             }
         }
         Ok(updated_domains)
+    }
+
+    /// Applies every domain's recorded-but-not-yet-settled `state_updates` to
+    /// global account state, processing domains in a fixed ascending
+    /// domain-id order (independent of arrival order). If two domains race to
+    /// update the same account, the lowest-domain-id commitment always wins
+    /// deterministically on every node: the losing commitment stays validly
+    /// recorded in its own domain's history, but the specific stale account
+    /// update is skipped rather than applied.
+    ///
+    /// Called during block production so settlement is anchored to the
+    /// network's already-agreed-upon block ordering.
+    pub fn settle_pending_domain_commitments(&mut self) -> Result<Vec<ConsensusDomain>, String> {
+        let mut settled_domains = Vec::new();
+        for domain in self.domain_registry.domains() {
+            let domain_id = domain.id;
+            loop {
+                let last_settled = self
+                    .domain_registry
+                    .get(domain_id)
+                    .ok_or_else(|| format!("Domain {} not found", domain_id))?
+                    .last_settled_height;
+                let last_committed = self
+                    .domain_registry
+                    .get(domain_id)
+                    .ok_or_else(|| format!("Domain {} not found", domain_id))?
+                    .last_committed_height;
+                let next_height = last_settled + 1;
+                if next_height > last_committed {
+                    break;
+                }
+
+                let com = self
+                    .domain_commitment_registry
+                    .find_by_height(domain_id, next_height)
+                    .ok_or_else(|| {
+                        format!(
+                            "Domain {} committed height {} missing from registry",
+                            domain_id, next_height
+                        )
+                    })?;
+
+                for (addr, new_nonce) in &com.state_updates {
+                    if *new_nonce <= self.state.get_nonce(addr) {
+                        tracing::warn!(
+                            "Skipping stale/conflicting state update from domain {} height {} for {}: new_nonce {} <= current nonce",
+                            domain_id, next_height, addr, new_nonce
+                        );
+                        continue;
+                    }
+                    let account = self.state.get_or_create(addr);
+                    account.nonce = *new_nonce;
+                }
+
+                let d_mut = self
+                    .domain_registry
+                    .get_mut(domain_id)
+                    .ok_or_else(|| format!("Domain {} not found", domain_id))?;
+                d_mut.last_settled_height = next_height;
+                settled_domains.push(d_mut.clone());
+            }
+        }
+        if let Some(store) = &self.storage {
+            for domain in &settled_domains {
+                let _ = store.save_consensus_domain(domain);
+            }
+        }
+        Ok(settled_domains)
     }
 
     pub fn submit_verified_domain_commitment(
@@ -1737,6 +1787,10 @@ impl Blockchain {
 
     pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
         let round_start = std::time::Instant::now();
+        if let Err(e) = self.settle_pending_domain_commitments() {
+            tracing::error!("Failed to settle pending domain commitments: {}", e);
+            return None;
+        }
         let index = self.chain.len() as u64;
         let previous_hash = self
             .chain

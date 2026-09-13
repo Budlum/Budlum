@@ -191,29 +191,45 @@ mod byzantine_settlement_tests {
             DomainCommitment::from_block(&pos, &b_pos, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pos.state_updates.insert(alice, 1); // Also claims consuming nonce 0 -> 1
 
+        // Both commitments are independently valid on their own domain's chain,
+        // so both are recorded — settlement (not submission) is what arbitrates
+        // the cross-domain conflict, deterministically, by domain id order.
         let pow_res = node.submit_domain_commitment(com_pow);
         assert!(
             pow_res.is_ok(),
             "First commitment should be accepted: {:?}",
             pow_res.err()
         );
-        assert_eq!(node.state.get_nonce(&alice), 1);
 
         let res2 = node.submit_domain_commitment(com_pos);
         assert!(
-            res2.is_err(),
-            "Second commitment for same nonce must be rejected before registry insert"
+            res2.is_ok(),
+            "Second commitment is also validly recorded on its own domain's chain: {:?}",
+            res2.err()
         );
-        assert_eq!(
-            node.state.get_nonce(&alice),
-            1,
-            "Nonce must not be double-spent"
-        );
+
+        node.settle_pending_domain_commitments().unwrap();
 
         assert_eq!(
             node.state.get_nonce(&alice),
             1,
-            "Nonce should remain at 1 after rejected double-spend"
+            "Nonce must not be double-spent regardless of which domain's claim settles"
+        );
+        assert_eq!(
+            node.domain_registry
+                .get(pow.id)
+                .unwrap()
+                .last_committed_height,
+            1,
+            "PoW's commitment stays validly recorded on its own domain history"
+        );
+        assert_eq!(
+            node.domain_registry
+                .get(pos.id)
+                .unwrap()
+                .last_committed_height,
+            1,
+            "PoS's commitment also stays validly recorded on its own domain history"
         );
     }
 
@@ -253,19 +269,59 @@ mod byzantine_settlement_tests {
         let com_pow_b = com_pow.clone();
         let com_pos_b = com_pos.clone();
 
+        // Node A receives PoW first, then PoS. Node B receives them in the
+        // opposite order. Both commitments are independently valid on their
+        // own domain, so submission always succeeds on both nodes regardless
+        // of arrival order — only settlement (fixed domain-id order) decides
+        // which claim actually lands in global account state.
         assert!(node_a.submit_domain_commitment(com_pow).is_ok());
-        let res_a = node_a.submit_domain_commitment(com_pos);
-        assert!(res_a.is_err(), "Conflicting nonce claim must be rejected");
-        assert_eq!(node_a.state.get_nonce(&alice_a), 1);
+        assert!(node_a.submit_domain_commitment(com_pos).is_ok());
+        node_a.settle_pending_domain_commitments().unwrap();
 
         assert!(node_b.submit_domain_commitment(com_pos_b).is_ok());
-        let res_b = node_b.submit_domain_commitment(com_pow_b);
-        assert!(res_b.is_err(), "Conflicting nonce claim must be rejected");
-        assert_eq!(node_b.state.get_nonce(&alice_b), 1);
+        assert!(node_b.submit_domain_commitment(com_pow_b).is_ok());
+        node_b.settle_pending_domain_commitments().unwrap();
 
+        // The old bug: whichever commitment arrived first got applied to
+        // state immediately and the loser was rejected outright, so node_a
+        // and node_b ended up with different accepted-commitment sets (and
+        // therefore different domain_commitment_root / global header hashes)
+        // even though their nonces happened to coincide. Assert the roots
+        // themselves converge, not just the nonce.
         assert_eq!(
             node_a.state.get_nonce(&alice_a),
-            node_b.state.get_nonce(&alice_b)
+            node_b.state.get_nonce(&alice_b),
+            "Nonces must converge"
+        );
+        assert_eq!(
+            node_a.domain_commitment_registry.root(),
+            node_b.domain_commitment_registry.root(),
+            "Both domains' commitments must be recorded identically on every node, \
+             regardless of network arrival order"
+        );
+        assert_eq!(
+            node_a
+                .domain_registry
+                .get(pow_a.id)
+                .unwrap()
+                .last_committed_height,
+            node_b
+                .domain_registry
+                .get(pow_a.id)
+                .unwrap()
+                .last_committed_height,
+        );
+        assert_eq!(
+            node_a
+                .domain_registry
+                .get(pos_a.id)
+                .unwrap()
+                .last_committed_height,
+            node_b
+                .domain_registry
+                .get(pos_a.id)
+                .unwrap()
+                .last_committed_height,
         );
     }
 
@@ -301,6 +357,7 @@ mod byzantine_settlement_tests {
 
         assert!(node.submit_domain_commitment(com_pow).is_ok());
         assert!(node.submit_domain_commitment(com_pos).is_ok());
+        node.settle_pending_domain_commitments().unwrap();
 
         assert_eq!(node.state.get_nonce(&alice), 1);
         assert_eq!(node.state.get_nonce(&bob), 1);
@@ -446,6 +503,7 @@ mod byzantine_settlement_tests {
                 DomainCommitment::from_block(&pow, &block, [0u8; 32], [0u8; 32], 1).unwrap();
             com.state_updates.insert(alice, 1);
             node.submit_domain_commitment(com).unwrap();
+            node.settle_pending_domain_commitments().unwrap();
 
             assert_eq!(node.state.get_nonce(&alice), 1);
         }
@@ -522,6 +580,8 @@ mod byzantine_settlement_tests {
 
         node_a.submit_domain_commitment(com1.clone()).unwrap();
         node_b.submit_domain_commitment(com2.clone()).unwrap();
+        node_a.settle_pending_domain_commitments().unwrap();
+        node_b.settle_pending_domain_commitments().unwrap();
 
         assert_ne!(
             node_a.state.get_nonce(&alice),
@@ -530,6 +590,8 @@ mod byzantine_settlement_tests {
 
         node_a.submit_domain_commitment(com2).unwrap();
         node_b.submit_domain_commitment(com1).unwrap();
+        node_a.settle_pending_domain_commitments().unwrap();
+        node_b.settle_pending_domain_commitments().unwrap();
 
         assert_eq!(node_a.state.get_nonce(&alice), 1);
         assert_eq!(node_a.state.get_nonce(&bob), 1);
@@ -567,6 +629,7 @@ mod byzantine_settlement_tests {
             res.is_err(),
             "Equivocation (same height, different hash) must be rejected"
         );
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 1);
         assert_eq!(
             node.domain_registry.get(1).unwrap().status,
@@ -592,6 +655,7 @@ mod byzantine_settlement_tests {
         }
         assert_eq!(accepted, 20);
         assert_eq!(rejected, 0);
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 1);
     }
 
@@ -606,9 +670,11 @@ mod byzantine_settlement_tests {
         assert!(node.submit_domain_commitment(c1.clone()).is_ok());
         assert!(node.submit_domain_commitment(c2).is_ok());
         assert!(node.submit_domain_commitment(c3).is_ok());
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 3);
         let replay = node.submit_domain_commitment(c1);
         assert!(replay.is_ok(), "Exact duplicate should be idempotent (Ok)");
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 3);
     }
 
@@ -636,8 +702,15 @@ mod byzantine_settlement_tests {
         for com in order_c {
             let _ = nodes[2].submit_domain_commitment(com);
         }
+        for node in nodes.iter_mut() {
+            node.settle_pending_domain_commitments().unwrap();
+        }
         for acc in &accounts {
             let expected = nodes[0].state.get_nonce(acc);
+            assert_ne!(
+                expected, 0,
+                "Sanity check: settlement must have actually run"
+            );
             for node in &nodes[1..] {
                 assert_eq!(expected, node.state.get_nonce(acc));
             }
@@ -701,15 +774,16 @@ mod byzantine_settlement_tests {
         let com_pos = make_commitment_for_account(&nodes[0], 2, alice, 1, 1);
         let _ = nodes[0].submit_domain_commitment(com_pow.clone());
         let _ = nodes[1].submit_domain_commitment(com_pos.clone());
+        for node in nodes.iter_mut() {
+            node.settle_pending_domain_commitments().unwrap();
+        }
         assert_eq!(nodes[0].state.get_nonce(&alice), 1);
         assert_eq!(nodes[1].state.get_nonce(&alice), 1);
         assert_eq!(nodes[2].state.get_nonce(&alice), 0);
         for node in nodes.iter_mut() {
             let _ = node.submit_domain_commitment(com_pow.clone());
             let _ = node.submit_domain_commitment(com_pos.clone());
-        }
-        for node in &nodes {
-            assert_eq!(node.state.get_nonce(&alice), 1);
+            node.settle_pending_domain_commitments().unwrap();
         }
         for node in &nodes {
             assert_eq!(node.state.get_nonce(&alice), 1);
@@ -807,18 +881,22 @@ mod byzantine_settlement_tests {
 
         let r10 = node.submit_domain_commitment(c10);
         assert!(r10.is_ok(), "height 10 should be buffered in registry");
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 0);
 
         for i in 1..8 {
             let ci = make_commitment_for_account(&node, 1, alice, i, i);
             node.submit_domain_commitment(ci).unwrap();
         }
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 7);
 
         node.submit_domain_commitment(c8).unwrap();
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 8);
 
         node.submit_domain_commitment(c9).unwrap();
+        node.settle_pending_domain_commitments().unwrap();
         assert_eq!(node.state.get_nonce(&alice), 10);
     }
 

@@ -252,5 +252,6 @@ pub fn default_domain(
         tx_root_scheme: RootScheme::BudlumBlockV2,
         last_committed_height: 0,
         last_committed_hash: [0u8; 32],
+        last_settled_height: 0,
     }
 }

@@ -92,6 +92,14 @@ pub struct ConsensusDomain {
     pub tx_root_scheme: RootScheme,
     pub last_committed_height: u64,
     pub last_committed_hash: Hash32,
+    /// How far this domain's `state_updates` have actually been applied to
+    /// the global account state. Distinct from `last_committed_height`
+    /// (which only tracks that a commitment was recorded and sequence/
+    /// equivocation-checked): settlement is deferred to `settle_pending_domain_commitments`
+    /// so that cross-domain conflicts are resolved in a fixed, domain-id order
+    /// rather than by network arrival order.
+    #[serde(default)]
+    pub last_settled_height: u64,
 }
 
 impl ConsensusDomain {
