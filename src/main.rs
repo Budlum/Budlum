@@ -486,7 +486,11 @@ async fn main() {
                 .clone()
                 .unwrap_or_else(|| "./data/snapshots".to_string()),
         )
+        .with_archive_mode(config.archive_mode)
     });
+    if config.archive_mode && !config.features_pruning {
+        println!("Archive mode requested but pruning feature is disabled; node already keeps full history.");
+    }
 
     let metrics = Arc::new(budlum_core::core::metrics::Metrics::new());
 

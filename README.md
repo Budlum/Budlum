@@ -3,7 +3,7 @@
 > **A controlled public-devnet candidate for Layer-1 blockchain research: modular, deterministic, and multi-consensus native.**
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/rade/budlum-core)
-[![Test Coverage](https://img.shields.io/badge/tests-332-blue)](https://github.com/rade/budlum-core)
+[![Test Coverage](https://img.shields.io/badge/tests-342-blue)](https://github.com/rade/budlum-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust Version](https://img.shields.io/badge/rust-1.94.0-orange.svg)](https://www.rust-lang.org/)
 
@@ -112,6 +112,7 @@ graph TD
 - **Trusted Proxy**: Only configured proxy IPs may set `X-Forwarded-For` for client identification.
 - **Per-IP Rate Limiting**: Independent token buckets per client IP, 60-second sliding window.
 - **Health Endpoints**: `bud_health` (status/height/peers) and `bud_nodeInfo` (chainId/peerId/rpcMode).
+- **Operator-Only Admin Methods**: `bud_adminBanPeer`/`bud_adminUnbanPeer`/`bud_adminListBannedPeers` are rejected on the public listener and only work on the operator listener.
 - **Body/Connection Limits**: Public 10MB/500 conn, Operator 50MB/10 conn.
 
 ### 🌐 P2P Hardening (v0.3)
@@ -125,6 +126,7 @@ graph TD
 - **Replay Equivalence**: `AccountState::from_snapshot_v2()` preserves all consensus state; state root matches original.
 - **Chunk-Session Binding**: `session_id` in `SnapshotChunk` prevents cross-peer chunk mixing.
 - **V2-First Restore**: Startup tries V2 snapshot, falls back to V1.
+- **Archive Mode**: `--archive-mode` / `features.archive_mode` disables pruning entirely so archive nodes keep full block history while still taking snapshots.
 
 ### 📊 Observability (v0.3)
 - **Prometheus**: Live collectors for chain height, finalized height, blocks produced, transactions, reorgs, mempool size/evictions/cleanups, P2P messages/peers.
@@ -136,7 +138,7 @@ graph TD
 
 ## 🧪 Verification & Test Coverage
 
-- **Total Tests**: `332` (All passing ✅)
+- **Total Tests**: `342` (All passing ✅)
 - **Byzantine Chaos Matrix**: 18 scenarios covering network partitions, duplication, out-of-order delivery, and domain equivocation.
 - **BLS Finality Tests**: 12 tests for sign/verify, aggregator flow, byzantine equivocation, certificate tampering, replay equivalence.
 - **RPC Security Tests**: Auth, CORS, IP filtering, per-IP rate limiting, trusted proxy, operator defaults.
@@ -159,7 +161,7 @@ cd fuzz && cargo fuzz run block_deserialize
 
 ## 🔒 Production Hardening Status
 
-**v0.3-dev** closes 5 of 7 Mainnet blockers. Remaining work: external security audit, archive-node policy, migration framework, and production runbooks.
+**v0.3-dev** closes 5 of 7 Mainnet blockers. Remaining work: external security audit, scheduled backup restore drills, and production runbooks. A `ConsensusStateV2` migration executor now exists (`Storage::run_migrations`), though no real migration steps are registered yet since the schema has never changed.
 
 Read the book's [**Production Hardening Status**](docs/en/book/ch12_production_hardening.md) for the full implementation matrix.
 

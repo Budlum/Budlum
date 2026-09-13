@@ -205,6 +205,10 @@ pub struct NodeConfig {
 
     #[arg(long)]
     pub features_pruning: bool,
+
+    /// Archive node: never prune block history, even if pruning is enabled.
+    #[arg(long)]
+    pub archive_mode: bool,
 }
 
 impl Default for NodeConfig {
@@ -261,6 +265,7 @@ impl Default for NodeConfig {
             features_governance: false,
             features_zkvm_contracts: false,
             features_pruning: false,
+            archive_mode: false,
         }
     }
 }
@@ -372,6 +377,7 @@ pub struct FeaturesSection {
     pub governance: Option<bool>,
     pub zkvm_contracts: Option<bool>,
     pub pruning: Option<bool>,
+    pub archive_mode: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, Default, Clone)]
@@ -627,6 +633,9 @@ impl NodeConfig {
             }
             if let Some(pruning) = features.pruning {
                 self.features_pruning = pruning;
+            }
+            if let Some(archive) = features.archive_mode {
+                self.archive_mode = archive;
             }
         }
 

@@ -174,4 +174,19 @@ pub trait BudlumApi {
 
     #[method(name = "bud_nodeInfo")]
     async fn node_info(&self) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    /// Operator-only: ban a peer by its libp2p PeerId. Rejected on the public listener.
+    #[method(name = "bud_adminBanPeer")]
+    async fn admin_ban_peer(&self, peer_id: String) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    /// Operator-only: lift a ban on a peer by its libp2p PeerId. Rejected on the public listener.
+    #[method(name = "bud_adminUnbanPeer")]
+    async fn admin_unban_peer(
+        &self,
+        peer_id: String,
+    ) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    /// Operator-only: list currently banned peer IDs. Rejected on the public listener.
+    #[method(name = "bud_adminListBannedPeers")]
+    async fn admin_list_banned_peers(&self) -> Result<serde_json::Value, ErrorObjectOwned>;
 }

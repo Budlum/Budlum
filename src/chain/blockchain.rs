@@ -1242,9 +1242,17 @@ impl Blockchain {
         }
         Ok(())
     }
+    fn get_tx_block_height_timed(&self, store: &Storage, hash: &str) -> std::io::Result<Option<u64>> {
+        let read_start = std::time::Instant::now();
+        let result = store.get_tx_block_height(hash);
+        if let Some(ref m) = self.metrics {
+            m.storage_read_seconds.observe(read_start.elapsed().as_secs_f64());
+        }
+        result
+    }
     pub fn get_transaction_by_hash(&self, hash: &str) -> Option<Transaction> {
         if let Some(ref store) = self.storage {
-            if let Ok(Some(height)) = store.get_tx_block_height(hash) {
+            if let Ok(Some(height)) = self.get_tx_block_height_timed(store, hash) {
                 if let Some(block) = self.chain.get(height as usize) {
                     if let Some(tx) = block.transactions.iter().find(|t| t.hash == hash) {
                         return Some(tx.clone());
@@ -1261,7 +1269,7 @@ impl Blockchain {
     }
     pub fn get_transaction_receipt(&self, hash: &str) -> Option<serde_json::Value> {
         if let Some(ref store) = self.storage {
-            if let Ok(Some(height)) = store.get_tx_block_height(hash) {
+            if let Ok(Some(height)) = self.get_tx_block_height_timed(store, hash) {
                 return Some(serde_json::json!({
                     "transactionHash": hash,
                     "blockNumber": format!("0x{:x}", height),
@@ -1693,9 +1701,12 @@ impl Blockchain {
                 accounts: accounts_to_save,
             };
 
-            store
-                .commit_durable_batch(&batch)
-                .map_err(|e| format!("Failed to commit durable batch: {}", e))?;
+            let write_start = std::time::Instant::now();
+            let result = store.commit_durable_batch(&batch);
+            if let Some(ref m) = self.metrics {
+                m.storage_write_seconds.observe(write_start.elapsed().as_secs_f64());
+            }
+            result.map_err(|e| format!("Failed to commit durable batch: {}", e))?;
         }
         Ok(())
     }
@@ -1716,6 +1727,7 @@ impl Blockchain {
     }
 
     pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
+        let round_start = std::time::Instant::now();
         let index = self.chain.len() as u64;
         let previous_hash = self
             .chain
@@ -1799,6 +1811,9 @@ impl Blockchain {
 
         self.mempool.set_min_fee(self.state.base_fee);
         self.emit_chain_metrics();
+        if let Some(ref m) = self.metrics {
+            m.consensus_round_seconds.observe(round_start.elapsed().as_secs_f64());
+        }
         Some(block)
     }
     pub fn mine_pending_transactions(&mut self, miner_address: Address) {

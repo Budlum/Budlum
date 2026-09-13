@@ -106,6 +106,7 @@ pub struct PruningManager {
     pub min_blocks_to_keep: u64,
     pub snapshot_interval: u64,
     pub snapshot_dir: String,
+    pub archive_mode: bool,
 }
 impl PruningManager {
     pub fn new(min_blocks: u64, snapshot_interval: u64, snapshot_dir: String) -> Self {
@@ -113,7 +114,14 @@ impl PruningManager {
             min_blocks_to_keep: min_blocks,
             snapshot_interval,
             snapshot_dir,
+            archive_mode: false,
         }
+    }
+    /// Archive nodes keep full block history: snapshots still work normally,
+    /// but `get_prunable_blocks` never returns anything to delete.
+    pub fn with_archive_mode(mut self, archive_mode: bool) -> Self {
+        self.archive_mode = archive_mode;
+        self
     }
     pub fn should_create_snapshot(&self, height: u64) -> bool {
         height > 0 && height.is_multiple_of(self.snapshot_interval)
@@ -124,6 +132,9 @@ impl PruningManager {
         latest_snapshot_height: u64,
         finalized_height: u64,
     ) -> Vec<u64> {
+        if self.archive_mode {
+            return vec![];
+        }
         if chain_length <= self.min_blocks_to_keep {
             return vec![];
         }
@@ -466,6 +477,24 @@ mod tests {
 
         let prunable = manager.get_prunable_blocks(200, 50, 50);
         assert_eq!(prunable.len(), 49);
+    }
+    #[test]
+    fn test_archive_mode_never_prunes() {
+        let manager =
+            PruningManager::new(100, 1000, "./snapshots".to_string()).with_archive_mode(true);
+
+        // Same inputs that produced 49 prunable blocks without archive mode.
+        let prunable = manager.get_prunable_blocks(200, 50, 50);
+        assert!(prunable.is_empty());
+
+        // Even a very long chain with everything finalized/snapshotted stays untouched.
+        let prunable = manager.get_prunable_blocks(1_000_000, 999_999, 999_999);
+        assert!(prunable.is_empty());
+    }
+    #[test]
+    fn test_archive_mode_defaults_to_false() {
+        let manager = PruningManager::new(100, 1000, "./snapshots".to_string());
+        assert!(!manager.archive_mode);
     }
     #[test]
     fn test_snapshot_interval() {

@@ -23,6 +23,9 @@ fn decode<T: DeserializeOwned>(value: &[u8]) -> std::io::Result<T> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
 }
 
+/// A single schema migration step: transforms the on-disk data in place.
+type MigrationFn = fn(&Db) -> std::io::Result<()>;
+
 #[derive(Clone, Debug)]
 pub struct Storage {
     db: Db,
@@ -36,17 +39,66 @@ impl Storage {
         Ok(storage)
     }
 
+    /// Staged migrations, ordered by ascending `to_version`. Each entry transforms
+    /// the on-disk data from `to_version - 1` (or wherever it currently sits) to
+    /// `to_version`. To ship a new schema version: bump `CURRENT_SCHEMA_VERSION`
+    /// in `apply_migrations` and push a `(N, migrate_fn)` entry here — the
+    /// executor below applies registered steps in order and stamps the version
+    /// after each one, so a crash mid-migration resumes at the right step
+    /// instead of silently skipping data transformation.
+    fn migrations() -> Vec<(u64, MigrationFn)> {
+        vec![
+            // (2, migrate_v1_to_v2),
+        ]
+    }
+
+    /// Applies registered migration steps from `current_version` up to
+    /// `target_version`, in order. Refuses to open a database whose stored
+    /// version is newer than what this binary supports (downgrade protection).
+    /// If a step fails, the schema version marker stays at the last
+    /// successfully completed step so a retry resumes correctly.
+    fn run_migrations(
+        db: &Db,
+        current_version: u64,
+        target_version: u64,
+        steps: &[(u64, MigrationFn)],
+    ) -> std::io::Result<()> {
+        if current_version > target_version {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Database schema version {} is newer than the version this binary supports ({}); refusing to open with an older binary",
+                    current_version, target_version
+                ),
+            ));
+        }
+        let mut current = current_version;
+        for (to_version, migrate) in steps {
+            if *to_version <= current || *to_version > target_version {
+                continue;
+            }
+            info!(
+                "Applying storage migration: schema v{} -> v{}",
+                current, to_version
+            );
+            migrate(db)?;
+            db.insert(b"SCHEMA_VERSION", to_version.to_string().as_bytes())?;
+            db.flush()?;
+            current = *to_version;
+        }
+        if current < target_version {
+            // No migration registered for the remaining gap (e.g. a brand-new,
+            // empty database) — just stamp the target version.
+            db.insert(b"SCHEMA_VERSION", target_version.to_string().as_bytes())?;
+            db.flush()?;
+        }
+        Ok(())
+    }
+
     pub fn apply_migrations(&self) -> std::io::Result<()> {
         const CURRENT_SCHEMA_VERSION: u64 = 1;
         let current = self.schema_version()?;
-        if current < CURRENT_SCHEMA_VERSION {
-            self.db.insert(
-                b"SCHEMA_VERSION",
-                CURRENT_SCHEMA_VERSION.to_string().as_bytes(),
-            )?;
-            self.db.flush()?;
-        }
-        Ok(())
+        Self::run_migrations(&self.db, current, CURRENT_SCHEMA_VERSION, &Self::migrations())
     }
 
     pub fn schema_version(&self) -> std::io::Result<u64> {
@@ -1025,5 +1077,109 @@ mod tests {
         assert!(storage2.get_block_by_height(2).unwrap().is_none());
         assert_eq!(storage2.get_canonical_height().unwrap(), 1);
         assert_eq!(storage2.get_last_hash().unwrap().unwrap(), block.hash);
+    }
+
+    fn migration_marker_fn(name: &'static str) -> MigrationFn {
+        // sled::Db doesn't let us close over `name`, so route through a
+        // per-name key written directly instead of a closure (fn pointers only).
+        match name {
+            "mark_a" => |db: &Db| -> std::io::Result<()> {
+                db.insert(b"MIGRATION_MARK_A", b"applied")?;
+                Ok(())
+            },
+            "mark_b" => |db: &Db| -> std::io::Result<()> {
+                db.insert(b"MIGRATION_MARK_B", b"applied")?;
+                Ok(())
+            },
+            "fails" => |_db: &Db| -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "simulated migration failure",
+                ))
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn migrations_apply_in_order_and_stamp_each_step() {
+        let dir = tempdir().unwrap();
+        let db: Db = sled::open(dir.path()).unwrap();
+
+        let steps: Vec<(u64, MigrationFn)> = vec![
+            (2, migration_marker_fn("mark_a")),
+            (3, migration_marker_fn("mark_b")),
+        ];
+
+        Storage::run_migrations(&db, 1, 3, &steps).unwrap();
+
+        assert_eq!(db.get(b"MIGRATION_MARK_A").unwrap().unwrap(), b"applied");
+        assert_eq!(db.get(b"MIGRATION_MARK_B").unwrap().unwrap(), b"applied");
+        let version = from_utf8(&db.get(b"SCHEMA_VERSION").unwrap().unwrap())
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert_eq!(version, 3);
+    }
+
+    #[test]
+    fn migrations_skip_steps_already_applied() {
+        let dir = tempdir().unwrap();
+        let db: Db = sled::open(dir.path()).unwrap();
+
+        // Already at version 2 — the (2, ...) step must not re-run.
+        let steps: Vec<(u64, MigrationFn)> =
+            vec![(2, migration_marker_fn("mark_a")), (3, migration_marker_fn("mark_b"))];
+
+        Storage::run_migrations(&db, 2, 3, &steps).unwrap();
+
+        assert!(db.get(b"MIGRATION_MARK_A").unwrap().is_none());
+        assert_eq!(db.get(b"MIGRATION_MARK_B").unwrap().unwrap(), b"applied");
+    }
+
+    #[test]
+    fn migration_failure_leaves_version_at_last_successful_step() {
+        let dir = tempdir().unwrap();
+        let db: Db = sled::open(dir.path()).unwrap();
+
+        let steps: Vec<(u64, MigrationFn)> = vec![
+            (2, migration_marker_fn("mark_a")),
+            (3, migration_marker_fn("fails")),
+        ];
+
+        let result = Storage::run_migrations(&db, 1, 3, &steps);
+        assert!(result.is_err());
+
+        // Step to v2 succeeded and was stamped; the failing step to v3 was not.
+        assert_eq!(db.get(b"MIGRATION_MARK_A").unwrap().unwrap(), b"applied");
+        let version = from_utf8(&db.get(b"SCHEMA_VERSION").unwrap().unwrap())
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn opening_a_newer_schema_with_older_binary_is_rejected() {
+        let dir = tempdir().unwrap();
+        let db: Db = sled::open(dir.path()).unwrap();
+
+        // Database was written by a future binary at schema v5; ours only supports v3.
+        let result = Storage::run_migrations(&db, 5, 3, &[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fresh_database_is_stamped_to_target_version_with_no_registered_migrations() {
+        let dir = tempdir().unwrap();
+        let db: Db = sled::open(dir.path()).unwrap();
+
+        Storage::run_migrations(&db, 0, 1, &[]).unwrap();
+
+        let version = from_utf8(&db.get(b"SCHEMA_VERSION").unwrap().unwrap())
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert_eq!(version, 1);
     }
 }

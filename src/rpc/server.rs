@@ -9,8 +9,10 @@ use hyper::header::{HeaderValue, AUTHORIZATION};
 use hyper::StatusCode;
 use jsonrpsee::server::{HttpBody, HttpRequest, HttpResponse};
 use jsonrpsee::types::error::ErrorObjectOwned;
+use libp2p::PeerId;
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -225,6 +227,17 @@ impl RpcServer {
         info!("RPC Server ({}) started on {}", mode_label, addr);
         let handle = server.start(self.into_rpc());
         tokio::spawn(handle.stopped());
+        Ok(())
+    }
+
+    fn require_operator(&self) -> Result<(), ErrorObjectOwned> {
+        if self.mode != RpcMode::Operator {
+            return Err(ErrorObjectOwned::owned(
+                -32601,
+                "This method is only available on the operator RPC listener",
+                None::<()>,
+            ));
+        }
         Ok(())
     }
 
@@ -967,6 +980,40 @@ impl BudlumApiServer for RpcServer {
             "rpcMode": match self.mode { RpcMode::Public => "public", RpcMode::Operator => "operator" },
         }))
     }
+
+    async fn admin_ban_peer(&self, peer_id: String) -> Result<serde_json::Value, ErrorObjectOwned> {
+        self.require_operator()?;
+        let parsed = PeerId::from_str(&peer_id).map_err(|e| {
+            ErrorObjectOwned::owned(-32602, format!("Invalid peer id: {}", e), None::<()>)
+        })?;
+        self.node
+            .admin_ban_peer(&parsed)
+            .map_err(|e| ErrorObjectOwned::owned(-32000, e, None::<()>))?;
+        Ok(serde_json::json!({ "banned": peer_id }))
+    }
+
+    async fn admin_unban_peer(
+        &self,
+        peer_id: String,
+    ) -> Result<serde_json::Value, ErrorObjectOwned> {
+        self.require_operator()?;
+        let parsed = PeerId::from_str(&peer_id).map_err(|e| {
+            ErrorObjectOwned::owned(-32602, format!("Invalid peer id: {}", e), None::<()>)
+        })?;
+        self.node
+            .admin_unban_peer(&parsed)
+            .map_err(|e| ErrorObjectOwned::owned(-32000, e, None::<()>))?;
+        Ok(serde_json::json!({ "unbanned": peer_id }))
+    }
+
+    async fn admin_list_banned_peers(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
+        self.require_operator()?;
+        let banned = self
+            .node
+            .admin_list_banned_peers()
+            .map_err(|e| ErrorObjectOwned::owned(-32000, e, None::<()>))?;
+        Ok(serde_json::json!({ "bannedPeers": banned }))
+    }
 }
 
 #[cfg(test)]
@@ -1117,5 +1164,81 @@ mod security_tests {
         assert!(config.allowed_ips.contains(&"127.0.0.1".to_string()));
         assert!(config.allowed_ips.contains(&"::1".to_string()));
         assert!(config.max_connections.is_some());
+    }
+}
+
+#[cfg(test)]
+mod admin_rpc_tests {
+    use super::*;
+    use crate::chain::blockchain::Blockchain;
+    use crate::chain::chain_actor::ChainActor;
+    use crate::consensus::pow::PoWEngine;
+    use crate::network::node::Node;
+    use std::sync::Arc;
+
+    async fn build_servers() -> (RpcServer, RpcServer) {
+        let consensus = Arc::new(PoWEngine::new(0));
+        let blockchain = Blockchain::new(consensus, None, 1337, None);
+        let (chain_actor, chain_handle) = ChainActor::new(blockchain);
+        tokio::spawn(async move {
+            chain_actor.run().await;
+        });
+        let node = Node::new(chain_handle.clone()).unwrap();
+        let node_client = node.get_client();
+
+        let public = RpcServer::with_security_and_mode(
+            chain_handle.clone(),
+            node_client.clone(),
+            RpcSecurityConfig::default(),
+            RpcMode::Public,
+        );
+        let operator = RpcServer::with_security_and_mode(
+            chain_handle,
+            node_client,
+            RpcSecurityConfig::operator_default(),
+            RpcMode::Operator,
+        );
+        (public, operator)
+    }
+
+    #[tokio::test]
+    async fn admin_methods_rejected_on_public_listener() {
+        let (public, _operator) = build_servers().await;
+        let fake_peer = PeerId::from(libp2p::identity::Keypair::generate_ed25519().public())
+            .to_string();
+
+        assert!(public.admin_ban_peer(fake_peer.clone()).await.is_err());
+        assert!(public.admin_unban_peer(fake_peer).await.is_err());
+        assert!(public.admin_list_banned_peers().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn admin_ban_and_unban_roundtrip_on_operator_listener() {
+        let (_public, operator) = build_servers().await;
+        let fake_peer = PeerId::from(libp2p::identity::Keypair::generate_ed25519().public())
+            .to_string();
+
+        let banned = operator.admin_list_banned_peers().await.unwrap();
+        assert_eq!(banned["bannedPeers"].as_array().unwrap().len(), 0);
+
+        operator.admin_ban_peer(fake_peer.clone()).await.unwrap();
+        let banned = operator.admin_list_banned_peers().await.unwrap();
+        assert_eq!(
+            banned["bannedPeers"].as_array().unwrap(),
+            &vec![serde_json::Value::String(fake_peer.clone())]
+        );
+
+        operator.admin_unban_peer(fake_peer).await.unwrap();
+        let banned = operator.admin_list_banned_peers().await.unwrap();
+        assert_eq!(banned["bannedPeers"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn admin_ban_peer_rejects_invalid_peer_id() {
+        let (_public, operator) = build_servers().await;
+        assert!(operator
+            .admin_ban_peer("not-a-valid-peer-id".to_string())
+            .await
+            .is_err());
     }
 }

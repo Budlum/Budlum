@@ -43,6 +43,7 @@ pub struct NodeClient {
     pub peer_id: PeerId,
     pub peer_count: Arc<AtomicUsize>,
     sync_state: Arc<AtomicUsize>,
+    peer_manager: Arc<Mutex<PeerManager>>,
 }
 impl NodeClient {
     pub async fn subscribe(&self, topic: String) {
@@ -95,6 +96,29 @@ impl NodeClient {
             "blocks".into(),
             NetworkMessage::SlashingEvidence(evidence),
         ));
+    }
+    pub fn admin_ban_peer(&self, peer_id: &PeerId) -> Result<(), String> {
+        let mut pm = self
+            .peer_manager
+            .lock()
+            .map_err(|_| "Peer manager lock poisoned".to_string())?;
+        pm.ban_peer(peer_id);
+        Ok(())
+    }
+    pub fn admin_unban_peer(&self, peer_id: &PeerId) -> Result<(), String> {
+        let mut pm = self
+            .peer_manager
+            .lock()
+            .map_err(|_| "Peer manager lock poisoned".to_string())?;
+        pm.unban_peer(peer_id);
+        Ok(())
+    }
+    pub fn admin_list_banned_peers(&self) -> Result<Vec<String>, String> {
+        let pm = self
+            .peer_manager
+            .lock()
+            .map_err(|_| "Peer manager lock poisoned".to_string())?;
+        Ok(pm.get_banned_peers().iter().map(|p| p.to_string()).collect())
     }
 }
 #[tokio::test]
@@ -347,6 +371,7 @@ impl Node {
             peer_id: self.peer_id,
             peer_count: self.peer_count.clone(),
             sync_state: self.sync_state.clone(),
+            peer_manager: self.peer_manager.clone(),
         }
     }
     pub fn listen(&mut self, port: u16) -> Result<(), Box<dyn Error>> {
@@ -764,6 +789,15 @@ impl Node {
                                             continue;
                                         }
                                         info!("BLOCK: #{} Hash: {}...", block.index, &block.hash[..8.min(block.hash.len())]);
+                                        if let Some(ref m) = self.metrics {
+                                            let now_ms = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map(|d| d.as_millis())
+                                                .unwrap_or(block.timestamp);
+                                            let latency_secs =
+                                                now_ms.saturating_sub(block.timestamp) as f64 / 1000.0;
+                                            m.block_propagation_seconds.observe(latency_secs);
+                                        }
                                         let our_height = self.chain.get_height().await;
                                         if block.index == our_height + 1 {
                                             match self.chain.validate_and_add_block(block.clone()).await {

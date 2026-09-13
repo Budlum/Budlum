@@ -88,6 +88,9 @@ The node exposes a standard JSON-RPC 2.0 interface via **two separate listeners*
 | `bud_syncing` | Returns true if the node is currently syncing. |
 | `bud_health` | Health status: `status`, `blockHeight`, `peerCount`, `syncing`. |
 | `bud_nodeInfo` | Node identity: `chainId`, `peerId`, `validatorSetHash`, `rpcMode`. |
+| `bud_adminBanPeer` | **Operator-only.** Ban a peer by libp2p PeerId. Rejected with an error on the public listener. |
+| `bud_adminUnbanPeer` | **Operator-only.** Lift a ban on a peer by libp2p PeerId. Rejected with an error on the public listener. |
+| `bud_adminListBannedPeers` | **Operator-only.** List currently banned peer IDs. Rejected with an error on the public listener. |
 
 ---
 
