@@ -56,7 +56,13 @@ async fn main() {
                 }
                 "--chain-id" | "-c" => {
                     if i + 1 < args.len() {
-                        chain_id = args[i + 1].parse().expect("Invalid chain-id");
+                        chain_id = match args[i + 1].parse() {
+                            Ok(v) => v,
+                            Err(_) => {
+                                eprintln!("Error: Invalid chain-id '{}'", args[i + 1]);
+                                std::process::exit(1);
+                            }
+                        };
                         i += 2;
                     } else {
                         eprintln!("Error: Missing value for --chain-id");
@@ -86,10 +92,20 @@ async fn main() {
                         for item in allocs_str.split(',') {
                             let parts: Vec<&str> = item.split(':').collect();
                             if parts.len() == 2 {
-                                let addr = Address::from_hex(parts[0].trim())
-                                    .expect("Invalid allocation address");
-                                let amount: u64 =
-                                    parts[1].trim().parse().expect("Invalid allocation amount");
+                                let addr = match Address::from_hex(parts[0].trim()) {
+                                    Ok(a) => a,
+                                    Err(_) => {
+                                        eprintln!("Error: Invalid allocation address '{}'", parts[0]);
+                                        std::process::exit(1);
+                                    }
+                                };
+                                let amount: u64 = match parts[1].trim().parse() {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        eprintln!("Error: Invalid allocation amount '{}'", parts[1]);
+                                        std::process::exit(1);
+                                    }
+                                };
                                 allocations.push((addr, amount));
                             } else {
                                 eprintln!("Error: Invalid allocation format '{}' (expected address:amount)", item);
@@ -104,7 +120,13 @@ async fn main() {
                 }
                 "--block-reward" => {
                     if i + 1 < args.len() {
-                        block_reward = args[i + 1].parse().expect("Invalid block-reward");
+                        block_reward = match args[i + 1].parse() {
+                            Ok(v) => v,
+                            Err(_) => {
+                                eprintln!("Error: Invalid block-reward '{}'", args[i + 1]);
+                                std::process::exit(1);
+                            }
+                        };
                         i += 2;
                     } else {
                         eprintln!("Error: Missing value for --block-reward");
@@ -113,7 +135,13 @@ async fn main() {
                 }
                 "--base-fee" => {
                     if i + 1 < args.len() {
-                        base_fee = args[i + 1].parse().expect("Invalid base-fee");
+                        base_fee = match args[i + 1].parse() {
+                            Ok(v) => v,
+                            Err(_) => {
+                                eprintln!("Error: Invalid base-fee '{}'", args[i + 1]);
+                                std::process::exit(1);
+                            }
+                        };
                         i += 2;
                     } else {
                         eprintln!("Error: Missing value for --base-fee");
@@ -154,11 +182,18 @@ async fn main() {
                 );
                 std::process::exit(1);
             });
-            let dev_key = KeyPair::generate().unwrap();
+            let dev_key = match KeyPair::generate() {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("Error: Failed to generate dev keypair: {}", e);
+                    std::process::exit(1);
+                }
+            };
             let dev_addr = Address::from(dev_key.public_key_bytes());
-            dev_key
-                .save(&key_output)
-                .expect("Failed to save generated dev key");
+            if let Err(e) = dev_key.save(&key_output) {
+                eprintln!("Error: Failed to save generated dev key: {}", e);
+                std::process::exit(1);
+            }
             allocations.push((dev_addr, 1_000_000_000));
             validators.push(dev_addr);
             println!("No allocations/validators provided. Generated default devnet keypair:");
@@ -187,9 +222,17 @@ async fn main() {
             timestamp: 0,
         };
 
-        let data = serde_json::to_string_pretty(&genesis_config)
-            .expect("Failed to serialize genesis config");
-        std::fs::write(&output_path, data).expect("Failed to write genesis file");
+        let data = match serde_json::to_string_pretty(&genesis_config) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Error: Failed to serialize genesis config: {}", e);
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = std::fs::write(&output_path, data) {
+            eprintln!("Error: Failed to write genesis file '{}': {}", output_path, e);
+            std::process::exit(1);
+        }
         println!(
             "Genesis configuration file built and saved to: {}",
             output_path
@@ -202,12 +245,18 @@ async fn main() {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+        eprintln!("Error: Failed to set default tracing subscriber: {}", e);
+        std::process::exit(1);
+    }
 
     if let Some(ref path) = config.gen_key {
         match budlum_core::crypto::primitives::ValidatorKeys::generate() {
             Ok(keys) => {
-                keys.save(path).expect("Failed to save key");
+                if let Err(e) = keys.save(path) {
+                    eprintln!("Error: Failed to save key to '{}': {}", path, e);
+                    std::process::exit(1);
+                }
                 println!("Validator key generated and saved to: {}", path);
                 println!(
                     "Address: {}",
@@ -220,7 +269,13 @@ async fn main() {
     }
 
     if config.check_db {
-        let storage = Storage::new(&config.db_path).expect("Failed to open DB");
+        let storage = match Storage::new(&config.db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: Failed to open DB at '{}': {}", config.db_path, e);
+                std::process::exit(1);
+            }
+        };
         println!(
             "🔍 Starting Database Integrity Audit on: {}",
             config.db_path
@@ -254,7 +309,13 @@ async fn main() {
     }
 
     if config.repair_db {
-        let storage = Storage::new(&config.db_path).expect("Failed to open DB");
+        let storage = match Storage::new(&config.db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: Failed to open DB at '{}': {}", config.db_path, e);
+                std::process::exit(1);
+            }
+        };
         println!("🔧 Starting manual Database Repair on: {}", config.db_path);
         if let Err(e) = storage.repair_index() {
             eprintln!("Repair failed: {}", e);
@@ -524,8 +585,14 @@ async fn main() {
     let identity_key =
         budlum_core::network::node::load_or_generate_identity_key(config.p2p_identity_file.as_deref());
 
-    let mut node = Node::with_key(chain.clone(), identity_key, true)
-        .unwrap()
+    let node = match Node::with_key(chain.clone(), identity_key, true) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("Error: Failed to initialize P2P node: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let mut node = node
         .with_identity(config.p2p_identity_file.clone())
         .with_dns_seeds(config.dns_seeds.clone())
         .with_banned_peer_db(config.banned_peer_db.clone())
