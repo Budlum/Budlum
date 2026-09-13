@@ -3,14 +3,14 @@
 > **A controlled public-devnet candidate for Layer-1 blockchain research: modular, deterministic, and multi-consensus native.**
 
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/rade/budlum-core)
-[![Test Coverage](https://img.shields.io/badge/tests-342-blue)](https://github.com/rade/budlum-core)
+[![Test Coverage](https://img.shields.io/badge/tests-346-blue)](https://github.com/rade/budlum-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust Version](https://img.shields.io/badge/rust-1.94.0-orange.svg)](https://www.rust-lang.org/)
 
 ---
 
 > [!CAUTION]
-> **Controlled Public Devnet Candidate (v0.3-dev)**
+> **Controlled Public Devnet Candidate (v0.4-dev)**
 >
 > Budlum Core is suitable for controlled public devnet experiments with clear risk disclaimers. It is **NOT** audited mainnet software, has not completed professional security review, and should **NOT** be used for financial transactions or production applications carrying real value.
 
@@ -29,8 +29,10 @@ Most blockchain frameworks are optimized for a single consensus worldview. Budlu
 
 ### Why Budlum?
 - 🔁 **Heterogeneous Settlement**: Infrastructure for running parallel consensus domains (PoW, PoS, BFT) on a unified settlement layer.
+- 🎯 **Deterministic Cross-Domain Ordering**: Commitments from independently finalized domains are settled in a fixed domain-id order, not network arrival order — two nodes that received the same commitments in a different sequence converge to bit-identical global state.
+- 🔐 **Real Finality Verification**: PoW commitments require an independently-verified proof-of-work header chain; PoA/BFT/PoS commitments require a genuine BLS aggregate-signature quorum over a domain's registered validator set — none of it is a self-reported claim.
 - 🌉 **Verified Trustless Interop**: Experimental bridge flow where lock, mint, burn, and unlock are tied to committed domain events and Merkle proofs.
-- 🧠 **Deterministic Execution**: Research into replay-safe state transitions and consistent global headers.
+- 🧠 **Tamper-Evident State Transitions**: A domain's `state_updates` are bound to its `state_root` via Merkle root, so an already-finality-proven commitment can't have its account updates swapped out independently.
 - 🧩 **Modular Core**: Decoupled consensus, networking, and execution layers for rapid prototyping.
 - 🌐 **P2P Native**: Built on `libp2p` with GossipSub, persistent identity, DNS seed resolution, and durable peer banning.
 - 🛡️ **BLS Finality**: Two-phase BLS-signed prevote/precommit protocol with aggregated signature verification and auto-precommit.
@@ -83,13 +85,19 @@ graph TD
 
 ---
 
-## 🧩 Devnet Candidate Features (v0.3)
+## 🧩 Devnet Candidate Features (v0.4)
+
+### 🎯 Deterministic Multi-Domain Settlement (v0.4)
+- **Arrival-Order Independence**: Domain commitments are recorded into their own domain's history immediately (equivocation-checked, per-domain sequential), but applying their `state_updates` to global account state is deferred to `settle_pending_domain_commitments`, which processes every registered domain in fixed ascending `domain_id` order — not the order commitments happened to arrive over the network.
+- **Deterministic Conflict Resolution**: If two domains race to update the same account, the lowest-`domain_id` commitment always wins on every node; the "losing" commitment stays validly recorded in its own domain's history, only its specific stale update is skipped.
+- **Settlement Anchored to Block Production**: Settlement runs at the start of `produce_block()`, tying it to the network's already-agreed-upon block ordering rather than to whenever a commitment happens to arrive.
 
 ### 🌍 Multi-Consensus Settlement (Model B)
 - **Verified-Only Commitments**: RPC paths reject raw domain commitments; settlement updates must arrive as `VerifiedDomainCommitment` with a matching finality proof hash.
-- **Adapter Hardening**: PoW requires confirmation depth; PoS binds finality certificate, validator snapshot, and registered validator-set hash.
+- **Real PoW Verification**: `FinalityProof::PoW` carries an actual mined header chain (`PoWHeaderProof`); each header must independently satisfy its own claimed difficulty target, meet the domain's registered `min_pow_target` floor, and link to the previous header — confirmation depth is computed from real headers, not a submitted number.
+- **Real PoA/BFT/PoS Quorum**: All three reuse the same BLS aggregate-signature verification — a genuine quorum of a domain's *registered* validator set must sign, not a self-reported signer count. Domains using quorum-signed finality must register a real, non-zero `validator_set_hash` at registration time; there is no bypass.
+- **State-Root-Bound Updates**: A commitment's `state_updates` must hash into its own `state_root` (`compute_state_updates_root`) — since `state_root` is already covered by the domain's finality proof, this means `state_updates` can't be swapped out independently of an already-finalized commitment.
 - **Parent-Linked Domain History**: Rejects commitments whose `parent_domain_block_hash` does not link to the last committed domain block.
-- **Strict Nonce Invariant**: Stale or equal nonce updates are rejected before durable insertion.
 - **Byzantine Resilience**: Global state convergence verified via an 18-test "Chaos Matrix" under simulated partitions and delays.
 - **Equivocation Immunity**: Protocol-level detection and global freezing of conflicting domains; duplicate commitments remain idempotent.
 - **Atomic Settlement Persistence**: Commitment insertions and domain height/hash updates persisted in one storage batch.
@@ -121,6 +129,11 @@ graph TD
 - **mDNS Policy**: Per-network (`mainnet`/`testnet` off, `devnet` on).
 - **DNS Seed Resolution**: `resolve_dns_seeds()` resolves hostnames to multiaddrs at startup.
 
+### 🌐 Global Settlement Headers (v0.4)
+- **Real Account State Commitment**: `GlobalBlockHeader.global_state_root` now commits to Budlum's own real account state (balances/nonces), not just domain/bridge/message roots — two nodes can no longer seal identical-looking headers while their underlying account state has actually diverged.
+- **Honest Finalization Flag**: `global_state_finalized` reports whether `global_state_root` came from a height already covered by a BLS finality certificate on Budlum's own chain, or from the current unfinalized tip (e.g. a plain PoW devnet with no validator committee) — the header no longer silently implies finality it doesn't have.
+- **Known limitation**: `seal_global_header` itself is still a local call, not gated behind a dedicated settlement-level consensus round requiring every seal to carry a fresh quorum certificate — see Research Roadmap.
+
 ### 💾 Snapshot V2 (v0.3)
 - **Canonical V2 Format**: `StateSnapshotV2` with full consensus metadata (epoch, base_fee, block_reward, unbonding_queue, cross-domain roots, finality certs).
 - **Replay Equivalence**: `AccountState::from_snapshot_v2()` preserves all consensus state; state root matches original.
@@ -138,7 +151,9 @@ graph TD
 
 ## 🧪 Verification & Test Coverage
 
-- **Total Tests**: `342` (All passing ✅)
+- **Total Tests**: `346` (All passing ✅)
+- **Deterministic Settlement Tests**: Cross-domain conflict resolution proven order-independent by comparing `domain_commitment_registry` roots (not just resulting nonces) across nodes that received the same commitments in opposite order.
+- **Real Finality Verification Tests**: Mined PoW header chains (valid/forged/under-target), BLS quorum certs at and below threshold, and validator-set binding — via a shared `finality_proof_support` test helper used across 8 test files.
 - **Byzantine Chaos Matrix**: 18 scenarios covering network partitions, duplication, out-of-order delivery, and domain equivocation.
 - **BLS Finality Tests**: 12 tests for sign/verify, aggregator flow, byzantine equivocation, certificate tampering, replay equivalence.
 - **RPC Security Tests**: Auth, CORS, IP filtering, per-IP rate limiting, trusted proxy, operator defaults.
@@ -161,7 +176,9 @@ cd fuzz && cargo fuzz run block_deserialize
 
 ## 🔒 Production Hardening Status
 
-**v0.3-dev** closes 5 of 7 Mainnet blockers. Remaining work: external security audit, scheduled backup restore drills, and production runbooks. A `ConsensusStateV2` migration executor now exists (`Storage::run_migrations`), though no real migration steps are registered yet since the schema has never changed.
+**v0.4-dev** closes 5 of 7 Mainnet blockers. Remaining work: external security audit, scheduled backup restore drills, and production runbooks. A `ConsensusStateV2` migration executor now exists (`Storage::run_migrations`), though no real migration steps are registered yet since the schema has never changed.
+
+v0.4-dev also closes a set of protocol-correctness findings from an independent architecture review: cross-domain settlement is now deterministic regardless of network arrival order, PoW/PoA/BFT finality is cryptographically verified rather than trusted from self-reported numbers, the validator-set zero-hash bypass is closed, and `state_updates` can no longer be tampered with independently of an already-finality-proven commitment. A dedicated settlement-level BFT round and a real ZK finality adapter remain open — see the Research Roadmap.
 
 Read the book's [**Production Hardening Status**](docs/en/book/ch12_production_hardening.md) for the full implementation matrix.
 
@@ -228,6 +245,14 @@ See the [**Protocol Specification**](SPECIFICATION.md) for the full API referenc
 - [x] **Snapshot V2**: Canonical V2 restore, replay equivalence, chunk-session binding.
 - [x] **Observability**: Prometheus live collectors, Metrics wiring.
 - [x] **Deployment**: Docker image, docker-compose, systemd unit, fuzz targets.
+- [x] **Deterministic Cross-Domain Settlement**: Fixed domain-id ordering replaces arrival-order-dependent conflict resolution; proven order-independent via commitment-registry-root comparison, not just nonce equality.
+- [x] **Real PoW/PoA/BFT Finality Verification**: Mined header-chain verification for PoW; real BLS aggregate-signature quorum (reusing the PoS mechanism) for PoA/BFT, replacing self-reported confirmation/signer counts.
+- [x] **Validator-Set Binding**: PoS/PoA/BFT domains must register a real, non-zero `validator_set_hash`; the zero-hash bypass that let any attacker-generated key set pass finality is closed.
+- [x] **State-Root-Bound Transitions**: `state_updates` cryptographically tied to `state_root` via Merkle root, closing the gap where a commitment's account updates were disconnected from its (already finality-proven) state root.
+- [x] **Global State Commitment**: `GlobalBlockHeader` now includes a real account-state root and an honest BLS-finalization flag.
+- [ ] **Settlement-Level BFT Round**: Require every `seal_global_header` to carry a fresh quorum certificate instead of being a local call — closes the remaining gap between "the header is well-formed" and "a quorum of validators actually agreed to seal it."
+- [ ] **Real ZK Finality Adapter**: `ZkFinalityAdapter` currently only checks that three hashes are non-zero — an actual finality-proving circuit (proving a foreign domain's consensus quorum, not just VM execution) doesn't exist yet.
+- [ ] **PoW Foreign-Chain Light Client**: The new PoW header verification checks a Budlum-defined header format's own proof-of-work; it does not sync or validate an actual external chain's real header history (e.g. Bitcoin-compatible headers).
 - [ ] **ZKVM Optimizations**: Improving STARK proof generation performance.
 - [ ] **Formal Verification**: Researching TLA+ models for settlement convergence.
 - [ ] **External Audit**: Professional security review.

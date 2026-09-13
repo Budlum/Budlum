@@ -1,4 +1,4 @@
-# Budlum Core Specification (v0.3)
+# Budlum Core Specification (v0.4)
 
 ## 1. Multi-Consensus Settlement
 
@@ -14,6 +14,22 @@ If a domain producer signs two different commitments for the same height/slot, t
 
 ### 1.3 Atomic Persistence
 Settlement state transitions (Commitment + Domain Height Update + Hash Update) are performed in a single storage batch to prevent partial state corruption during node crashes.
+
+### 1.4 Deterministic Cross-Domain Settlement (v0.4)
+Recording a commitment into `DomainCommitmentRegistry` (sequence/equivocation checks, `last_committed_height`) is separate from applying its `state_updates` to global account state.
+
+- **Recording** happens immediately on `accept_domain_commitment` and only touches the arriving domain's own history — safe regardless of arrival order.
+- **Settlement** — actually mutating global account state — is deferred to `Blockchain::settle_pending_domain_commitments()`, called at the start of `produce_block()`. It walks every registered domain in fixed ascending `domain_id` order (the `ConsensusDomainRegistry`'s `BTreeMap` iteration order) and drains each domain's next sequentially-ready commitment.
+- **Conflict resolution**: if two domains' `state_updates` both target the same account and the settlement-time nonce check fails (`new_nonce <= current_nonce`) for one of them, that specific update is skipped — the domain's own commitment stays validly recorded, only its effect on global state is dropped. Because settlement always processes domains in the same fixed order on every node, the lowest-`domain_id` claim always wins, deterministically, regardless of which commitment reached the network first.
+- Each `ConsensusDomain` tracks `last_settled_height` (how far settlement has progressed) separately from `last_committed_height` (how far the domain's own recorded sequence has progressed).
+
+### 1.5 State-Root-Bound Transitions (v0.4)
+`DomainCommitment.state_root` is a Merkle root over `state_updates` (`compute_state_updates_root`), not the domain's raw internal block state root:
+
+- Each `(address, nonce)` entry hashes to a canonical leaf (`state_update_leaf_hash`); the root is computed the same way as `DomainEventTree`'s bridge-event Merkle tree.
+- `accept_domain_commitment` rejects any commitment where `state_root != compute_state_updates_root(state_updates)`.
+- Because `state_root` is part of `DomainCommitment::leaf_hash()`, and the commitment is already verified against the domain's real finality proof (PoW/PoS/PoA/BFT), this closes the gap where `state_updates` could be swapped independently of an already-finality-proven commitment: any change to the update set requires a different `state_root`, which requires a different finalized block.
+- Use `DomainCommitment::insert_state_update(address, nonce)` to keep `state_updates` and `state_root` in sync — mutating `state_updates` directly produces a commitment that will be rejected at acceptance time.
 
 ---
 
@@ -65,7 +81,32 @@ At each checkpoint height (`FINALITY_CHECKPOINT_INTERVAL = 10`):
 
 The gossip path: `GossipSub` → `Node` → `ChainHandle::handle_prevote/handle_precommit` → `ChainActor` → `Blockchain::finality_aggregator`.
 
-### 3.3 JSON-RPC API (`bud_`)
+### 3.3 Domain Finality Adapters (v0.4)
+
+Each `ConsensusKind` a domain registers under has a corresponding `DomainFinalityAdapter` that `verify_finality(domain, commitment, proof)` before a `VerifiedDomainCommitment` is accepted.
+
+#### 3.3.1 PoW: Real Header-Chain Verification
+`FinalityProof::PoW { headers: Vec<PoWHeaderProof> }` — a chain of headers, `headers[0]` mining the committed block, each subsequent header extending it.
+
+- `PoWHeaderProof { prev_hash, target, nonce, timestamp_ms, extra }`; `hash()` is `SHA256("BDLM_POW_HEADER_V1" || prev_hash || target || nonce || timestamp_ms || extra)`.
+- Validity requires, for every header: `hash() <= target` (real proof-of-work), and `target <= domain.min_pow_target` (the domain's registered difficulty floor — operators must set this to reflect their chain's real difficulty; the default `[0xFF; 32]` provides no real security).
+- `headers[0].extra` must equal `commitment.domain_block_hash`, binding the proof-of-work chain to this specific commitment.
+- Confirmation depth is `headers.len() - 1`, computed from real, independently-verified headers — not a submitted number.
+- This verifies a Budlum-defined header format's own proof-of-work; it does not sync or validate an external chain's actual header history (e.g. Bitcoin-compatible headers) — that remains future work.
+
+#### 3.3.2 PoA / BFT / PoS: Shared BLS Quorum Verification
+`FinalityProof::PoA` and `FinalityProof::Bft` now carry the same `{ cert: FinalityCert, validator_snapshot: ValidatorSetSnapshot }` shape as `FinalityProof::PoS`, verified by a shared `verify_quorum_cert()`:
+
+1. `cert.checkpoint_height`/`checkpoint_hash` must match the commitment.
+2. `validator_snapshot.set_hash` must match `cert.set_hash` **and** the domain's registered `validator_set_hash` — unconditionally; there is no zero-hash bypass (see 3.3.3).
+3. `cert.verify(validator_snapshot)` performs the real BLS pairing check described in 3.2.4.
+
+A self-reported `signer_count`/`validator_count` is no longer sufficient for PoA or BFT domains to reach `Finalized` — a genuine BLS aggregate signature from the domain's registered validator set is required, exactly as for PoS.
+
+#### 3.3.3 Validator-Set Registration Requirement
+`validate_consensus_domain_registration` rejects registering a PoS/PoA/BFT-kind domain with `validator_set_hash == [0u8; 32]`. Previously, a zero hash caused the binding check above to be skipped entirely, letting any attacker-generated key set produce an accepted finality certificate for that domain. Operators must register a real validator set hash.
+
+### 3.4 JSON-RPC API (`bud_`)
 
 The node exposes a standard JSON-RPC 2.0 interface via **two separate listeners** (public + operator).
 
@@ -144,3 +185,18 @@ Budlum uses a trait-based storage abstraction (`BlockchainStorage`) currently im
 
 ### 5.3 Chunk-Session Binding
 `SnapshotChunk` carries a random `session_id`. Receivers reject chunks with mismatched session IDs, preventing cross-peer chunk mixing.
+
+---
+
+## 6. Global Settlement Headers (v0.4)
+
+`GlobalBlockHeader` is Budlum's top-level settlement commitment: a hash chain of `domain_registry_root`, `domain_commitment_root`, `message_root`, `bridge_state_root`, `replay_nonce_root`, and `settlement_finality_root`, produced by `Blockchain::build_global_header()` and persisted by `seal_global_header()`.
+
+### 6.1 Real Account State Commitment
+`global_state_root` is the Merkle root of Budlum's own real account state (`AccountState::calculate_state_root()`, reused from the block that produced it), not a value derived only from domain/bridge/message data. Without it, two nodes could seal structurally-identical global headers while their underlying account state had actually diverged.
+
+### 6.2 Honest Finalization Status
+`global_state_finalized` is `true` only when `global_state_root` was taken from a chain height already covered by a BLS finality certificate (`finalized_height`) **and** a validator committee actually exists (`AccountState::get_active_validators()` is non-empty) — a chain with no registered validators can never claim BLS finality regardless of what `finalized_height` defaults to. When either condition fails, `global_state_root` reflects the current, unfinalized chain tip and `global_state_finalized` is `false`.
+
+### 6.3 Known Limitation
+`seal_global_header()` remains a local, synchronous call — it is not yet gated behind a dedicated settlement-level consensus round requiring a fresh quorum certificate per seal. `global_state_finalized` reports whether the *account state it references* is BLS-finalized; it does not mean the *act of sealing this specific global header* was itself subject to a settlement-level vote. Closing that gap is tracked as future work (see README Research Roadmap).

@@ -2,6 +2,20 @@
 
 Bu bölüm reponun güncel operasyonel gerçeklik tablosudur. Budlum Core kontrollü public-devnet adayıdır. Denetlenmiş Mainnet yazılımı değildir ve gerçek ekonomik değer taşımamalıdır.
 
+## 0. v0.4 Protokol-Doğruluğu Düzeltmeleri
+
+Settlement katmanının bağımsız bir mimari incelemesi, sadece bireysel bir hardening eksikliği değil, "deterministik settlement" iddiasının kendisini zayıflatan beş bulgu tespit etti. Beşi de v0.4'te kapatıldı:
+
+| Bulgu | Düzeltme |
+| --- | --- |
+| Cross-domain settlement sırası ağ geliş sırasına bağlıydı, iki node farklı commitment'ları kabul edip ayrışabiliyordu | `settle_pending_domain_commitments()`, tüm domain'leri blok üretimi anında sabit artan `domain_id` sırasıyla işliyor (geliş sırasına göre değil); çakışmalar her node'da aynı şekilde çözülüyor (`src/chain/blockchain.rs`) |
+| PoW/PoA/BFT finality adaptörleri kendi bildirilen confirmation/signer sayılarına güveniyordu | PoW artık gerçek bir mined header zinciri gerektiriyor (`PoWHeaderProof`); PoA/BFT artık PoS mekanizmasını yeniden kullanan gerçek bir BLS aggregate-signature quorum'u gerektiriyor (`src/domain/finality_adapter.rs`) |
+| PoS/PoA/BFT domain'leri sıfır `validator_set_hash` ile kayıt olabiliyordu, bu da herhangi bir saldırgan-üretimi key setinin finality'yi geçmesine izin veriyordu | Kayıt artık quorum-imzalı domain'ler için sıfır validator_set_hash'i reddediyor (`validate_consensus_domain_registration`) |
+| `DomainCommitment.state_updates`'in `state_root`'a hiçbir kriptografik bağı yoktu | `state_root` artık `state_updates` üzerinden bir Merkle kökü (`compute_state_updates_root`), kabul anında doğrulanıyor |
+| `GlobalBlockHeader`'da gerçek bir account-state taahhüdü yoktu, `seal_global_header` hiçbir consensus round'u olmadan finality ima ediyordu | `global_state_root` (gerçek account state) ve `global_state_finalized` (dürüst BLS-finalization bayrağı) eklendi; özel bir settlement-seviyeli BFT round'u hâlâ açık (bkz. §5) |
+
+Test sayısı: 342 → 346. Tam detay `SPECIFICATION.md` §1.4–1.5, §3.3, §6'da.
+
 ## 1. Uygulanan Korumalar
 
 | Alan | Güncel davranış |
@@ -22,7 +36,7 @@ Bu bölüm reponun güncel operasyonel gerçeklik tablosudur. Budlum Core kontro
 
 | Alan | Sınır |
 | --- | --- |
-| Finality | Prevote/Precommit struct'ları, `FinalityAggregator`, sertifika üretimi ve BLS doğrulaması uygulandı ve test edildi. Validatörlerden BLS imzalı vote üretimi bağlandı: `sign_prevote()` ve `sign_precommit()` validatörün BLS secret key'ini kullanıyor. Periyodik voting loop otomatik olarak BLS prevote imzalayıp yayınlıyor; aggregator prevote quorum'u bildirdiğinde auto-precommit tetikleniyor. Saldırgan senaryolu çok-node finality testleri mevcut. |
+| Finality | Prevote/Precommit struct'ları, `FinalityAggregator`, sertifika üretimi ve BLS doğrulaması uygulandı ve test edildi. Validatörlerden BLS imzalı vote üretimi bağlandı: `sign_prevote()` ve `sign_precommit()` validatörün BLS secret key'ini kullanıyor. Periyodik voting loop otomatik olarak BLS prevote imzalayıp yayınlıyor; aggregator prevote quorum'u bildirdiğinde auto-precommit tetikleniyor. Saldırgan senaryolu çok-node finality testleri mevcut. Domain-seviyeli finality (yukarıdaki Budlum'un kendi zincir finality'sinden ayrı) artık PoW (mined header zinciri), PoA ve BFT (BLS quorum, PoS ile aynı mekanizma) için gerçek doğrulama yapıyor — bkz. §0. `ZkFinalityAdapter` hâlâ bir stub (3 hash'in sıfır olmadığını kontrol ediyor, gerçek proof doğrulaması yok). |
 | P2P | Version ve chain ID zorlanıyor. Kalıcı kimlik, kalıcı ban'lar, mDNS politikası ve DNS seed çözümlemesi runtime'da bağlı. Validator-set hash ve desteklenen-scheme politikası beklemede. |
 | RPC | Config, public/operator listener ve trusted proxy alanlarını parse ediyor. Runtime iki ayrı sunucu başlatıyor (public + operator). `is_ip_allowed`, trusted-proxy doğrulamasını uyguluyor: yalnızca yapılandırılmış proxy IP'lerinden gelen istekler `X-Forwarded-For` kullanabiliyor. `is_per_ip_rate_limited`, IP başına sliding-window kota uyguluyor (`src/rpc/server.rs`). Health ve node-info endpoint'leri canlı. `bud_adminBanPeer`/`bud_adminUnbanPeer`/`bud_adminListBannedPeers` yalnızca operator listener'da çalışıyor; `require_operator()` bunları public listener'da reddediyor. |
 | Metrics | Prometheus tanımları ve endpoint mevcut. Canlı collector'lar bağlı: `budlum_chain_height`, `budlum_finalized_height`, `budlum_finality_lag`, `budlum_blocks_produced`, `budlum_transactions_processed`, `budlum_reorgs_total`, `budlum_mempool_size`, `budlum_mempool_evictions`, `budlum_mempool_expired_cleanups`, `budlum_p2p_messages_received`, `budlum_p2p_peers_connected`. Histogram'lar da artık gerçekten besleniyor: `block_propagation_seconds` (gossip ile blok alındığında, `src/network/node.rs`), `consensus_round_seconds` (her `produce_block()` çağrısında, `src/chain/blockchain.rs`), `storage_write_seconds` (her durable commit batch'te), `storage_read_seconds` (`get_transaction_by_hash`/`get_transaction_receipt` içindeki `get_tx_block_height` sorgusunda). |
@@ -52,10 +66,13 @@ nix develop --command cargo build --release --locked
 git diff --check
 ```
 
-Güncel durum: **342 test.** `cargo clippy -D warnings`, CI'ın pinlediği Rust 1.94.0 toolchain'inde geçiyor; daha yeni bir yerel toolchain'de clippy'nin kendisi geliştiği için yeni uyarılar çıkabilir. Kritik adapter'lar tamamlanmadığı sürece Mainnet profili bilinçli olarak fail-closed davranır.
+Güncel durum: **346 test.** `cargo clippy -D warnings`, CI'ın pinlediği Rust 1.94.0 toolchain'inde geçiyor; daha yeni bir yerel toolchain'de clippy'nin kendisi geliştiği için yeni uyarılar çıkabilir. Kritik adapter'lar tamamlanmadığı sürece Mainnet profili bilinçli olarak fail-closed davranır.
 
 ## 5. Mainnet v1 İçin Kalanlar
 
 - Dış güvenlik denetimi
 - Zamanlanmış backup restore tatbikatları (archive-node politikasının kendisi artık `archive_mode` ile uygulanmış durumda)
 - Production runbook'ları ve incident response prosedürleri
+- Her seal işleminin taze bir quorum sertifikası taşımasını zorunlu kılan settlement-seviyeli bir BFT round'u (`seal_global_header` şu an sadece iyi biçimlendirilmiş bir header istiyor — bkz. §0)
+- Gerçek bir `ZkFinalityAdapter` (sıfır-olmayan hash kontrolü değil, gerçek bir finality-proving devresi)
+- Gerçek bir foreign-chain PoW light client'ı (v0.4'teki header doğrulaması Budlum'un tanımladığı bir formatı kontrol ediyor, gerçek bir foreign chain'in header geçmişini değil)

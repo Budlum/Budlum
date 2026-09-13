@@ -2,6 +2,20 @@
 
 This chapter is the operational truth table for the current repository. Budlum Core is a controlled public-devnet candidate. It is not audited Mainnet software and must not carry real economic value.
 
+## 0. v0.4 Protocol-Correctness Fixes
+
+An independent architecture review of the settlement layer identified five findings that undermined the "deterministic settlement" claim itself, not just individual hardening gaps. All five are closed in v0.4:
+
+| Finding | Fix |
+| --- | --- |
+| Cross-domain settlement order depended on network arrival order, so two nodes could accept different commitments and diverge | `settle_pending_domain_commitments()` processes every domain in fixed ascending `domain_id` order at block-production time, not per-arrival; conflicts resolve identically on every node (`src/chain/blockchain.rs`) |
+| PoW/PoA/BFT finality adapters trusted self-reported confirmation/signer counts | PoW now requires a real mined header chain (`PoWHeaderProof`); PoA/BFT now require a genuine BLS aggregate-signature quorum, reusing the PoS mechanism (`src/domain/finality_adapter.rs`) |
+| PoS/PoA/BFT domains could register with a zero `validator_set_hash`, letting any attacker-generated key set pass finality | Registration now rejects a zero validator_set_hash for quorum-signed domains (`validate_consensus_domain_registration`) |
+| `DomainCommitment.state_updates` had no cryptographic link to `state_root` | `state_root` is now a Merkle root over `state_updates` (`compute_state_updates_root`), verified at acceptance time |
+| `GlobalBlockHeader` had no real account-state commitment, and `seal_global_header` implied finality without any consensus round | Added `global_state_root` (real account state) and `global_state_finalized` (honest BLS-finalization flag); a dedicated settlement-level BFT round remains open (see §5) |
+
+Test count: 342 → 346. Full detail in `SPECIFICATION.md` §1.4–1.5, §3.3, §6.
+
 ## 1. Implemented Protections
 
 | Area | Current behavior |
@@ -22,7 +36,7 @@ This chapter is the operational truth table for the current repository. Budlum C
 
 | Area | Boundary |
 | --- | --- |
-| Finality | Prevote/Precommit structs, `FinalityAggregator`, certificate production and BLS verification are all implemented and tested. BLS-signed vote production from validators is wired: `sign_prevote()` and `sign_precommit()` use the validator's BLS secret key. The periodic voting loop auto-signs and broadcasts BLS prevotes; auto-precommit fires when the aggregator reports prevote quorum reached. Adversarial multi-node finality tests are implemented. |
+| Finality | Prevote/Precommit structs, `FinalityAggregator`, certificate production and BLS verification are all implemented and tested. BLS-signed vote production from validators is wired: `sign_prevote()` and `sign_precommit()` use the validator's BLS secret key. The periodic voting loop auto-signs and broadcasts BLS prevotes; auto-precommit fires when the aggregator reports prevote quorum reached. Adversarial multi-node finality tests are implemented. Domain-level finality (separate from Budlum's own chain finality above) now performs real verification for PoW (mined header chains), PoA, and BFT (BLS quorum, same mechanism as PoS) — see §0. `ZkFinalityAdapter` remains a stub (checks 3 hashes are non-zero, no real proof verification). |
 | P2P | Version and chain ID are enforced. Persistent identity, durable bans, mDNS policy, and DNS seed resolution are wired at runtime. Validator-set hash and supported-scheme policy remain pending. |
 | RPC | Config parses public/operator listeners and trusted proxies. Runtime starts two separate servers (public + operator). `is_ip_allowed` enforces trusted-proxy validation: only requests from configured proxy IPs may use `X-Forwarded-For`. Header-derived client IPs are constrained to trusted proxies. Health and node-info endpoints are live. `is_per_ip_rate_limited` enforces a per-IP sliding-window quota (`src/rpc/server.rs`). `bud_adminBanPeer`/`bud_adminUnbanPeer`/`bud_adminListBannedPeers` are operator-only: `require_operator()` rejects them on the public listener. |
 | Metrics | Prometheus descriptors and endpoint exist. Live collectors are wired: `budlum_chain_height`, `budlum_finalized_height`, `budlum_finality_lag`, `budlum_blocks_produced`, `budlum_transactions_processed`, `budlum_reorgs_total`, `budlum_mempool_size`, `budlum_mempool_evictions`, `budlum_mempool_expired_cleanups`, `budlum_p2p_messages_received`, `budlum_p2p_peers_connected`. Histograms are now observed too: `block_propagation_seconds` (on gossip block receipt, `src/network/node.rs`), `consensus_round_seconds` (per `produce_block()` call, `src/chain/blockchain.rs`), `storage_write_seconds` (per durable commit batch), `storage_read_seconds` (per `get_tx_block_height` lookup from `get_transaction_by_hash`/`get_transaction_receipt`). |
@@ -52,10 +66,13 @@ nix develop --command cargo build --release --locked
 git diff --check
 ```
 
-Current: **342 tests.** `cargo clippy -D warnings` passes on the CI-pinned Rust 1.94.0 toolchain; a newer local toolchain may surface new lints as clippy itself evolves.
+Current: **346 tests.** `cargo clippy -D warnings` passes on the CI-pinned Rust 1.94.0 toolchain; a newer local toolchain may surface new lints as clippy itself evolves.
 
 ## 5. What Remains for Mainnet v1
 
 - External security audit
 - Scheduled backup restore drills (archive-node policy itself is now implemented via `archive_mode`)
 - Production runbooks and incident response procedures
+- A settlement-level BFT round so `seal_global_header` requires a fresh quorum certificate per seal, not just a well-formed header (see §0)
+- A real `ZkFinalityAdapter` (an actual finality-proving circuit, not a non-zero-hash check)
+- A genuine external-chain PoW light client (the v0.4 header verification checks a Budlum-defined header format, not a real foreign chain's header history)
