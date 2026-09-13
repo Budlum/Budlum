@@ -35,7 +35,8 @@ mod distributed_settlement_tests {
             let mut blockchain = Blockchain::new(consensus, Some((*storage).clone()), 1337, None);
 
             let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
-            let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+            let mut pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+            pos.validator_set_hash = [0xABu8; 32];
             let _ = blockchain.register_consensus_domain(pow);
             let _ = blockchain.register_consensus_domain(pos);
 
@@ -272,14 +273,10 @@ mod distributed_settlement_tests {
 
         let mut b2 = Block::new(1, "h2".into(), vec![]);
         b2.hash = "h2".repeat(32);
-        let mut com_pos = DomainCommitment::from_block(
-            &default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0),
-            &b2,
-            [0u8; 32],
-            [0u8; 32],
-            1,
-        )
-        .unwrap();
+        let mut pos_ref_domain = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+        pos_ref_domain.validator_set_hash = [0xABu8; 32];
+        let mut com_pos =
+            DomainCommitment::from_block(&pos_ref_domain, &b2, [0u8; 32], [0u8; 32], 1).unwrap();
         com_pos.state_updates.insert(alice, 2);
 
         n1.chain_handle

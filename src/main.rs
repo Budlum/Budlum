@@ -522,13 +522,23 @@ async fn main() {
         ConsensusType::PoA => (ConsensusKind::PoA, "poa-authority-quorum", 0u64),
     };
 
-    let domain_def = default_domain(
+    let mut domain_def = default_domain(
         domain_id,
         domain_kind.clone(),
         chain_id,
         adapter_name,
         min_conf,
     );
+    if matches!(domain_kind, ConsensusKind::PoS | ConsensusKind::PoA) {
+        // Quorum-signed domains must commit to a real validator set at
+        // registration time; a zero validator_set_hash would let any
+        // attacker-generated key set produce an accepted finality proof.
+        if let Ok(decoded) = hex::decode(blockchain.get_validator_set_hash()) {
+            if let Ok(hash) = <[u8; 32]>::try_from(decoded) {
+                domain_def.validator_set_hash = hash;
+            }
+        }
+    }
     if blockchain.domain_registry.get(domain_id).is_none() {
         if let Err(e) = blockchain.register_consensus_domain(domain_def) {
             println!("Domain kaydi basarisiz: {}", e);

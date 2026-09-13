@@ -18,8 +18,10 @@ mod byzantine_settlement_tests {
             let mut node = Blockchain::new(consensus, None, 1337, None);
 
             let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
-            let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
-            let poa = default_domain(3, ConsensusKind::PoA, 1339, "poa-authority-quorum", 0);
+            let mut pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+            pos.validator_set_hash = [0xABu8; 32];
+            let mut poa = default_domain(3, ConsensusKind::PoA, 1339, "poa-authority-quorum", 0);
+            poa.validator_set_hash = [0xABu8; 32];
 
             node.register_consensus_domain(pow).unwrap();
             node.register_consensus_domain(pos).unwrap();
@@ -174,7 +176,8 @@ mod byzantine_settlement_tests {
         let mut node = Blockchain::new(consensus, None, 1337, None);
 
         let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
-        let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+        let mut pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+        pos.validator_set_hash = [0xABu8; 32];
         node.register_consensus_domain(pow.clone()).unwrap();
         node.register_consensus_domain(pos.clone()).unwrap();
 
@@ -248,7 +251,8 @@ mod byzantine_settlement_tests {
             let consensus = std::sync::Arc::new(crate::consensus::pow::PoWEngine::new(0));
             let mut node = Blockchain::new(consensus, None, 1337, None);
             let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
-            let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+            let mut pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+            pos.validator_set_hash = [0xABu8; 32];
             node.register_consensus_domain(pow.clone()).unwrap();
             node.register_consensus_domain(pos.clone()).unwrap();
             let alice = Address::from([0xA1u8; 32]);
@@ -339,7 +343,8 @@ mod byzantine_settlement_tests {
         let consensus = std::sync::Arc::new(crate::consensus::pow::PoWEngine::new(0));
         let mut node = Blockchain::new(consensus, None, 1337, None);
         let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
-        let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+        let mut pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+        pos.validator_set_hash = [0xABu8; 32];
         node.register_consensus_domain(pow.clone()).unwrap();
         node.register_consensus_domain(pos.clone()).unwrap();
 
@@ -563,7 +568,8 @@ mod byzantine_settlement_tests {
             let consensus = Arc::new(crate::consensus::pow::PoWEngine::new(0));
             let mut node = Blockchain::new(consensus, None, 1337, None);
             let pow = default_domain(1, ConsensusKind::PoW, 1337, "pow-confirmation-depth", 0);
-            let pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+            let mut pos = default_domain(2, ConsensusKind::PoS, 1338, "pos-qc-finality", 0);
+            pos.validator_set_hash = [0xABu8; 32];
             node.register_consensus_domain(pow.clone()).unwrap();
             node.register_consensus_domain(pos.clone()).unwrap();
             (node, pow, pos)
@@ -921,7 +927,13 @@ mod byzantine_settlement_tests {
                 _ => (ConsensusKind::PoW, "pow-confirmation-depth"),
             };
 
-            let domain = default_domain(i as u32, kind, 1337 + i as u64, adapter, 0);
+            let mut domain = default_domain(i as u32, kind.clone(), 1337 + i as u64, adapter, 0);
+            if matches!(
+                kind,
+                ConsensusKind::PoS | ConsensusKind::PoA | ConsensusKind::Bft
+            ) {
+                domain.validator_set_hash = [0xABu8; 32];
+            }
 
             node.register_consensus_domain(domain).unwrap();
         }

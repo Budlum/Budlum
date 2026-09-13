@@ -550,6 +550,18 @@ impl Blockchain {
             return Err(format!("Domain {} has empty finality adapter", domain.id));
         }
 
+        if matches!(
+            domain.kind,
+            ConsensusKind::PoS | ConsensusKind::PoA | ConsensusKind::Bft
+        ) && domain.validator_set_hash == [0u8; 32]
+        {
+            return Err(format!(
+                "Domain {} uses quorum-signed finality (PoS/PoA/BFT) and must register a real validator_set_hash; \
+                 leaving it zero would let any attacker-generated key set produce an accepted finality certificate",
+                domain.id
+            ));
+        }
+
         Ok(())
     }
 

@@ -211,13 +211,15 @@ fn verify_quorum_cert(
         )));
     }
 
-    if let Ok(decoded_set_hash) = hex::decode(&validator_snapshot.set_hash) {
-        if decoded_set_hash.len() == 32 {
+    // Registration guarantees domain.validator_set_hash is non-zero for
+    // PoS/PoA/BFT domains (see validate_consensus_domain_registration), so
+    // this binding is always enforced — there is no bypass path left for an
+    // attacker to substitute their own throwaway validator set.
+    match hex::decode(&validator_snapshot.set_hash) {
+        Ok(decoded_set_hash) if decoded_set_hash.len() == 32 => {
             let mut snapshot_set_hash = [0u8; 32];
             snapshot_set_hash.copy_from_slice(&decoded_set_hash);
-            if domain.validator_set_hash != [0u8; 32]
-                && snapshot_set_hash != domain.validator_set_hash
-            {
+            if snapshot_set_hash != domain.validator_set_hash {
                 return Ok(FinalityStatus::Rejected(format!(
                     "{} validator snapshot does not match registered domain set",
                     adapter_label
@@ -231,6 +233,12 @@ fn verify_quorum_cert(
                     adapter_label
                 )));
             }
+        }
+        _ => {
+            return Ok(FinalityStatus::Rejected(format!(
+                "{} validator snapshot set_hash is not a valid 32-byte hex hash",
+                adapter_label
+            )));
         }
     }
 
@@ -507,19 +515,23 @@ mod tests {
 
     #[test]
     fn poa_finality_enforces_quorum_and_empty_validator_set_rejection() {
-        let domain = default_domain(2, ConsensusKind::PoA, 1337, "poa-authority-quorum", 0);
         let commitment = DomainCommitment {
             domain_height: 10,
             validator_set_hash: [0u8; 32],
             ..commitment(ConsensusKind::PoA)
         };
+        let (snapshot, keys) = crate::tests::finality_proof_support::make_validator_set(4, 100);
+        let mut domain = default_domain(2, ConsensusKind::PoA, 1337, "poa-authority-quorum", 0);
+        domain.validator_set_hash =
+            crate::tests::finality_proof_support::snapshot_domain_hash(&snapshot);
         let adapter = PoAFinalityAdapter::default();
 
-        let (full_cert, full_snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+        let full_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             commitment.domain_height,
             commitment.domain_block_hash,
-            4,
-            100,
+            &snapshot,
+            &keys,
+            &[0, 1, 2, 3],
         );
         assert_eq!(
             adapter
@@ -528,7 +540,7 @@ mod tests {
                     &commitment,
                     &FinalityProof::PoA {
                         cert: full_cert,
-                        validator_snapshot: full_snapshot,
+                        validator_snapshot: snapshot.clone(),
                     },
                 )
                 .unwrap(),
@@ -537,46 +549,45 @@ mod tests {
 
         // Only 1 of 4 validators signed: below the 2/3 quorum, real BLS
         // verification must reject it rather than trust a claimed count.
-        let (mut short_cert, short_snapshot) =
-            crate::tests::finality_proof_support::make_quorum_proof(
-                commitment.domain_height,
-                commitment.domain_block_hash,
-                4,
-                100,
-            );
-        for byte in short_cert.bitmap.iter_mut() {
-            *byte = 0;
-        }
-        short_cert.bitmap[0] = 0b0000_0001;
+        let short_cert = crate::tests::finality_proof_support::sign_quorum_cert(
+            commitment.domain_height,
+            commitment.domain_block_hash,
+            &snapshot,
+            &keys,
+            &[0],
+        );
         assert!(adapter
             .verify_finality(
                 &domain,
                 &commitment,
                 &FinalityProof::PoA {
                     cert: short_cert,
-                    validator_snapshot: short_snapshot,
+                    validator_snapshot: snapshot,
                 },
             )
             .is_err());
 
         let empty_snapshot = ValidatorSetSnapshot::new(0, vec![]);
-        assert!(adapter
-            .verify_finality(
-                &domain,
-                &commitment,
-                &FinalityProof::PoA {
-                    cert: FinalityCert {
-                        epoch: 0,
-                        checkpoint_height: commitment.domain_height,
-                        checkpoint_hash: hex::encode(commitment.domain_block_hash),
-                        agg_sig_bls: vec![],
-                        bitmap: vec![],
-                        set_hash: empty_snapshot.set_hash.clone(),
+        assert!(matches!(
+            adapter
+                .verify_finality(
+                    &domain,
+                    &commitment,
+                    &FinalityProof::PoA {
+                        cert: FinalityCert {
+                            epoch: 0,
+                            checkpoint_height: commitment.domain_height,
+                            checkpoint_hash: hex::encode(commitment.domain_block_hash),
+                            agg_sig_bls: vec![],
+                            bitmap: vec![],
+                            set_hash: empty_snapshot.set_hash.clone(),
+                        },
+                        validator_snapshot: empty_snapshot,
                     },
-                    validator_snapshot: empty_snapshot,
-                },
-            )
-            .is_err());
+                )
+                .unwrap(),
+            FinalityStatus::Rejected(_)
+        ));
     }
 
     #[test]

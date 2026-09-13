@@ -10,6 +10,17 @@ use crate::crypto::primitives::BlsKeypair;
 use crate::domain::finality_adapter::PoWHeaderProof;
 use crate::domain::types::Hash32;
 
+/// Decodes a `ValidatorSetSnapshot::set_hash` (hex string) into the raw
+/// `Hash32` a `ConsensusDomain::validator_set_hash` expects, so a test's
+/// generated snapshot can be bound to the domain at registration time
+/// instead of relying on the (removed) zero-hash bypass.
+pub fn snapshot_domain_hash(snapshot: &ValidatorSetSnapshot) -> Hash32 {
+    let decoded = hex::decode(&snapshot.set_hash).expect("set_hash must be valid hex");
+    decoded
+        .try_into()
+        .expect("set_hash must decode to 32 bytes")
+}
+
 /// Mines a single header extending `prev_hash`, satisfying `target`.
 pub fn mine_pow_header(prev_hash: Hash32, target: Hash32, extra: Hash32) -> PoWHeaderProof {
     for nonce in 0u64..1_000_000 {
@@ -42,15 +53,14 @@ pub fn mine_pow_chain(
     headers
 }
 
-/// Builds a validator set (all signing) and a valid BLS quorum certificate
-/// over `domain_block_hash` at `domain_height` — usable interchangeably as a
-/// PoS/PoA/BFT finality proof, since all three adapters verify the same way.
-pub fn make_quorum_proof(
-    domain_height: u64,
-    domain_block_hash: Hash32,
+/// Builds a validator set and keys once, so callers can produce multiple
+/// certs (e.g. a below-quorum one and a full-quorum one) over the *same*
+/// registered validator set, as `make_quorum_proof` requires the domain to
+/// be bound to one fixed `validator_set_hash` up front.
+pub fn make_validator_set(
     num_validators: usize,
     stake_each: u64,
-) -> (FinalityCert, ValidatorSetSnapshot) {
+) -> (ValidatorSetSnapshot, Vec<BlsKeypair>) {
     let mut keys = Vec::new();
     let mut entries = Vec::new();
     for i in 0..num_validators {
@@ -65,7 +75,21 @@ pub fn make_quorum_proof(
         });
         keys.push(kp);
     }
-    let snapshot = ValidatorSetSnapshot::new(1, entries);
+    (ValidatorSetSnapshot::new(1, entries), keys)
+}
+
+/// Builds a BLS quorum certificate over `domain_block_hash` at
+/// `domain_height`, signed only by the validators whose index is in
+/// `signers` (out of `snapshot`/`keys`, as returned by `make_validator_set`).
+/// Usable interchangeably as a PoS/PoA/BFT finality proof, since all three
+/// adapters verify the same way.
+pub fn sign_quorum_cert(
+    domain_height: u64,
+    domain_block_hash: Hash32,
+    snapshot: &ValidatorSetSnapshot,
+    keys: &[BlsKeypair],
+    signers: &[usize],
+) -> FinalityCert {
     let checkpoint_hash = hex::encode(domain_block_hash);
     let msg = crate::chain::finality::checkpoint_signing_message(
         snapshot.epoch,
@@ -73,24 +97,45 @@ pub fn make_quorum_proof(
         &checkpoint_hash,
     );
 
-    let mut bitmap = vec![0u8; num_validators.div_ceil(8)];
+    let mut bitmap = vec![0u8; keys.len().div_ceil(8)];
     let mut agg_sig = bls12_381::G1Projective::identity();
-    for (idx, kp) in keys.iter().enumerate() {
+    for &idx in signers {
         bitmap[idx / 8] |= 1 << (idx % 8);
-        let sig_bytes = sign_bls(&kp.secret_key, &msg);
+        let sig_bytes = sign_bls(&keys[idx].secret_key, &msg);
         let sig_array: [u8; 48] = sig_bytes.try_into().unwrap();
         let sig_affine = bls12_381::G1Affine::from_compressed(&sig_array).unwrap();
         agg_sig += bls12_381::G1Projective::from(sig_affine);
     }
 
-    let cert = FinalityCert {
+    FinalityCert {
         epoch: snapshot.epoch,
         checkpoint_height: domain_height,
         checkpoint_hash,
         agg_sig_bls: bls12_381::G1Affine::from(agg_sig).to_compressed().to_vec(),
         bitmap,
         set_hash: snapshot.set_hash.clone(),
-    };
+    }
+}
 
+/// Builds a fresh validator set (all signing) and a valid BLS quorum
+/// certificate over `domain_block_hash` at `domain_height` — usable
+/// interchangeably as a PoS/PoA/BFT finality proof, since all three adapters
+/// verify the same way. For tests that need multiple certs over the *same*
+/// validator set (e.g. a weak vs. full quorum), use `make_validator_set` +
+/// `sign_quorum_cert` instead.
+pub fn make_quorum_proof(
+    domain_height: u64,
+    domain_block_hash: Hash32,
+    num_validators: usize,
+    stake_each: u64,
+) -> (FinalityCert, ValidatorSetSnapshot) {
+    let (snapshot, keys) = make_validator_set(num_validators, stake_each);
+    let cert = sign_quorum_cert(
+        domain_height,
+        domain_block_hash,
+        &snapshot,
+        &keys,
+        &(0..num_validators).collect::<Vec<_>>(),
+    );
     (cert, snapshot)
 }

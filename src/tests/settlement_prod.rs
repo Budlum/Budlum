@@ -27,7 +27,19 @@ mod settlement_prod_tests {
             ConsensusKind::PoA => "poa-authority-quorum",
             _ => "custom",
         };
-        default_domain(id, kind, 1337 + id as u64, adapter, 0)
+        let mut d = default_domain(id, kind.clone(), 1337 + id as u64, adapter, 0);
+        // Quorum-signed domains must register a real validator_set_hash; a
+        // placeholder is fine for tests that never verify finality against
+        // it (unverified submit_domain_commitment). Tests that DO verify a
+        // real quorum cert override this with the hash of their own
+        // generated validator set.
+        if matches!(
+            kind,
+            ConsensusKind::PoS | ConsensusKind::PoA | ConsensusKind::Bft
+        ) {
+            d.validator_set_hash = [0xABu8; 32];
+        }
+        d
     }
 
     fn commitment_for(
@@ -331,40 +343,41 @@ mod settlement_prod_tests {
     #[test]
     fn verified_poa_commitment_requires_authority_quorum() {
         let mut blockchain = test_chain();
-        let poa = domain(3, ConsensusKind::PoA);
+        let (snapshot, keys) = crate::tests::finality_proof_support::make_validator_set(4, 100);
+        let mut poa = domain(3, ConsensusKind::PoA);
+        poa.validator_set_hash =
+            crate::tests::finality_proof_support::snapshot_domain_hash(&snapshot);
         blockchain.register_consensus_domain(poa.clone()).unwrap();
 
         let base_commitment = commitment_for(&poa, 3, 0, 3);
-        let (mut weak_cert, weak_snapshot) =
-            crate::tests::finality_proof_support::make_quorum_proof(
-                base_commitment.domain_height,
-                base_commitment.domain_block_hash,
-                4,
-                100,
-            );
+
         // Only 1 of 4 signed: below the required 2/3 quorum.
-        for byte in weak_cert.bitmap.iter_mut() {
-            *byte = 0;
-        }
-        weak_cert.bitmap[0] = 0b0000_0001;
+        let weak_cert = crate::tests::finality_proof_support::sign_quorum_cert(
+            base_commitment.domain_height,
+            base_commitment.domain_block_hash,
+            &snapshot,
+            &keys,
+            &[0],
+        );
         let weak_proof = FinalityProof::PoA {
             cert: weak_cert,
-            validator_snapshot: weak_snapshot,
+            validator_snapshot: snapshot.clone(),
         };
         let weak_commitment = commitment_with_proof(&poa, 3, 0, 3, &weak_proof);
         assert!(blockchain
             .submit_verified_domain_commitment(weak_commitment, weak_proof)
             .is_err());
 
-        let (full_cert, full_snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+        let full_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             base_commitment.domain_height,
             base_commitment.domain_block_hash,
-            4,
-            100,
+            &snapshot,
+            &keys,
+            &[0, 1, 2, 3],
         );
         let quorum_proof = FinalityProof::PoA {
             cert: full_cert,
-            validator_snapshot: full_snapshot,
+            validator_snapshot: snapshot,
         };
         let quorum_commitment = commitment_with_proof(&poa, 3, 0, 3, &quorum_proof);
         blockchain
@@ -767,13 +780,15 @@ mod settlement_prod_tests {
     }
 
     fn bft_domain(id: u32) -> crate::domain::ConsensusDomain {
-        default_domain(
+        let mut d = default_domain(
             id,
             ConsensusKind::Bft,
             1337 + id as u64,
             "bft-quorum-commit",
             0,
-        )
+        );
+        d.validator_set_hash = [0xABu8; 32];
+        d
     }
 
     fn zk_domain(id: u32) -> crate::domain::ConsensusDomain {
@@ -789,42 +804,41 @@ mod settlement_prod_tests {
     #[test]
     fn bft_finality_requires_two_thirds_plus_one_quorum() {
         let mut bc = test_chain();
-        let dom = bft_domain(10);
+        let (snapshot, keys) = crate::tests::finality_proof_support::make_validator_set(4, 100);
+        let mut dom = bft_domain(10);
+        dom.validator_set_hash =
+            crate::tests::finality_proof_support::snapshot_domain_hash(&snapshot);
         bc.register_consensus_domain(dom.clone()).unwrap();
 
         let mut c = commitment_for(&dom, 5, 0, 10);
         c.consensus_kind = ConsensusKind::Bft;
 
-        let (mut weak_cert, weak_snapshot) =
-            crate::tests::finality_proof_support::make_quorum_proof(
-                c.domain_height,
-                c.domain_block_hash,
-                4,
-                100,
-            );
-        for byte in weak_cert.bitmap.iter_mut() {
-            *byte = 0;
-        }
-        weak_cert.bitmap[0] = 0b0000_0001;
+        let weak_cert = crate::tests::finality_proof_support::sign_quorum_cert(
+            c.domain_height,
+            c.domain_block_hash,
+            &snapshot,
+            &keys,
+            &[0],
+        );
         let weak = FinalityProof::Bft {
             cert: weak_cert,
-            validator_snapshot: weak_snapshot,
+            validator_snapshot: snapshot.clone(),
         };
         c.finality_proof_hash = hash_finality_proof(&weak);
         assert!(bc
             .submit_verified_domain_commitment(c.clone(), weak)
             .is_err());
 
-        let (strong_cert, strong_snapshot) =
-            crate::tests::finality_proof_support::make_quorum_proof(
-                c.domain_height,
-                c.domain_block_hash,
-                4,
-                100,
-            );
+        let strong_cert = crate::tests::finality_proof_support::sign_quorum_cert(
+            c.domain_height,
+            c.domain_block_hash,
+            &snapshot,
+            &keys,
+            &[0, 1, 2, 3],
+        );
         let strong = FinalityProof::Bft {
             cert: strong_cert,
-            validator_snapshot: strong_snapshot,
+            validator_snapshot: snapshot,
         };
         c.finality_proof_hash = hash_finality_proof(&strong);
         bc.submit_verified_domain_commitment(c, strong).unwrap();
@@ -858,16 +872,20 @@ mod settlement_prod_tests {
     #[test]
     fn bft_finality_rejects_commit_hash_mismatch() {
         let mut bc = test_chain();
-        let dom = bft_domain(12);
+        let (snapshot, keys) = crate::tests::finality_proof_support::make_validator_set(4, 100);
+        let mut dom = bft_domain(12);
+        dom.validator_set_hash =
+            crate::tests::finality_proof_support::snapshot_domain_hash(&snapshot);
         bc.register_consensus_domain(dom.clone()).unwrap();
 
         let mut c = commitment_for(&dom, 1, 0, 12);
         c.consensus_kind = ConsensusKind::Bft;
-        let (cert, snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+        let cert = crate::tests::finality_proof_support::sign_quorum_cert(
             c.domain_height,
             [0xFFu8; 32], // signed a different block hash than the commitment
-            4,
-            100,
+            &snapshot,
+            &keys,
+            &[0, 1, 2, 3],
         );
         let proof = FinalityProof::Bft {
             cert,

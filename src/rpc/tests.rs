@@ -231,13 +231,17 @@ mod rpc_tests {
         assert_eq!(domains.as_array().unwrap().len(), 1);
         assert_eq!(domains[0]["domainId"], 1);
 
-        let poa_domain = crate::domain::plugin::default_domain(
+        let (poa_validator_snapshot, poa_validator_keys) =
+            crate::tests::finality_proof_support::make_validator_set(3, 100);
+        let mut poa_domain = crate::domain::plugin::default_domain(
             2,
             crate::domain::ConsensusKind::PoA,
             1338,
             "poa-authority-quorum",
             0,
         );
+        poa_domain.validator_set_hash =
+            crate::tests::finality_proof_support::snapshot_domain_hash(&poa_validator_snapshot);
         let registration = server
             .register_consensus_domain(poa_domain.clone())
             .await
@@ -247,7 +251,10 @@ mod rpc_tests {
             .as_str()
             .unwrap()
             .starts_with("0x"));
-        assert!(server.register_consensus_domain(poa_domain).await.is_err());
+        assert!(server
+            .register_consensus_domain(poa_domain.clone())
+            .await
+            .is_err());
         assert_eq!(
             server
                 .get_consensus_domains()
@@ -450,30 +457,24 @@ mod rpc_tests {
         burn_event_tree.push(burn_event.clone());
         let mut burn_block = block.clone();
         burn_block.index = 21;
-        let target_domain = crate::domain::plugin::default_domain(
-            2,
-            crate::domain::ConsensusKind::PoA,
-            1338,
-            "poa-authority-quorum",
-            0,
-        );
         let mut burn_commitment = crate::domain::DomainCommitment::from_block(
-            &target_domain,
+            &poa_domain,
             &burn_block,
             burn_event_tree.root(),
             [0u8; 32],
             5,
         )
         .unwrap();
-        let (burn_cert, burn_snapshot) = crate::tests::finality_proof_support::make_quorum_proof(
+        let burn_cert = crate::tests::finality_proof_support::sign_quorum_cert(
             burn_commitment.domain_height,
             burn_commitment.domain_block_hash,
-            3,
-            100,
+            &poa_validator_snapshot,
+            &poa_validator_keys,
+            &[0, 1, 2],
         );
         let burn_proof = crate::domain::FinalityProof::PoA {
             cert: burn_cert,
-            validator_snapshot: burn_snapshot,
+            validator_snapshot: poa_validator_snapshot,
         };
         burn_commitment.finality_proof_hash = crate::domain::hash_finality_proof(&burn_proof);
         server
