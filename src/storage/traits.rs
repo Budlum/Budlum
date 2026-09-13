@@ -72,4 +72,5 @@ pub struct DurableCommitBatch {
     pub global_headers: Vec<GlobalBlockHeader>,
     pub bridge_state: Option<BridgeState>,
     pub accounts: Vec<(Address, Account)>,
+    pub settled_domains: Vec<ConsensusDomain>,
 }

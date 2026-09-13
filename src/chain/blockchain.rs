@@ -155,6 +155,7 @@ impl Blockchain {
                     global_headers: Vec::new(),
                     bridge_state: Some(BridgeState::new()),
                     accounts: accounts_to_save,
+                    settled_domains: Vec::new(),
                 };
                 if let Err(e) = store.commit_durable_batch(&batch) {
                     error!("Failed to persist genesis block to storage: {:?}", e);
@@ -677,7 +678,7 @@ impl Blockchain {
                     .ok_or_else(|| format!("Domain {} not found", commitment.domain_id))?;
                 d_mut.status = DomainStatus::Frozen;
                 if let Some(store) = &self.storage {
-                    let _ = store.save_consensus_domain(d_mut);
+                    store.save_consensus_domain(d_mut).map_err(|e| format!("Failed to persist frozen domain: {}", e))?;
                 }
                 return Err(format!(
                     "Equivocation or invalid sequence detected for domain {} height {}",
@@ -710,7 +711,7 @@ impl Blockchain {
                     .ok_or_else(|| format!("Domain {} not found", commitment.domain_id))?;
                 d_mut.status = DomainStatus::Frozen;
                 if let Some(store) = &self.storage {
-                    let _ = store.save_consensus_domain(d_mut);
+                    store.save_consensus_domain(d_mut).map_err(|e| format!("Failed to persist frozen domain: {}", e))?;
                 }
                 return Err(format!(
                     "Equivocation or invalid sequence detected for domain {} height {}",
@@ -812,7 +813,19 @@ impl Blockchain {
             .into_iter()
             .map(|d| (d.id, d.last_committed_height))
             .collect();
-        self.replay_settlement_to_watermarks(&targets)
+        
+        let mut temp_state = self.state.clone();
+        let mut temp_registry = self.domain_registry.clone();
+        let settled_domains = self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets)?;
+        
+        self.state = temp_state;
+        self.domain_registry = temp_registry;
+        if let Some(store) = &self.storage {
+            for domain in &settled_domains {
+                let _ = store.save_consensus_domain(domain);
+            }
+        }
+        Ok(settled_domains)
     }
 
     /// Applies cross-domain settlement bounded by explicit per-domain target
@@ -826,14 +839,15 @@ impl Blockchain {
     /// still only applies the block's declared batch, so it reaches the same
     /// state the producer did instead of racing ahead independently.
     fn replay_settlement_to_watermarks(
-        &mut self,
+        &self,
+        temp_state: &mut AccountState,
+        temp_registry: &mut ConsensusDomainRegistry,
         targets: &BTreeMap<DomainId, u64>,
     ) -> Result<Vec<ConsensusDomain>, String> {
         let mut settled_domains = Vec::new();
         for (&domain_id, &target_height) in targets {
             loop {
-                let last_settled = self
-                    .domain_registry
+                let last_settled = temp_registry
                     .get(domain_id)
                     .ok_or_else(|| format!("Domain {} not found", domain_id))?
                     .last_settled_height;
@@ -853,44 +867,29 @@ impl Blockchain {
                     })?;
 
                 for (addr, new_nonce) in &com.state_updates {
-                    if *new_nonce <= self.state.get_nonce(addr) {
+                    if *new_nonce <= temp_state.get_nonce(addr) {
                         tracing::warn!(
                             "Skipping stale/conflicting state update from domain {} height {} for {}: new_nonce {} <= current nonce",
                             domain_id, next_height, addr, new_nonce
                         );
                         continue;
                     }
-                    let account = self.state.get_or_create(addr);
+                    let account = temp_state.get_or_create(addr);
                     account.nonce = *new_nonce;
                 }
 
-                let d_mut = self
-                    .domain_registry
+                let d_mut = temp_registry
                     .get_mut(domain_id)
                     .ok_or_else(|| format!("Domain {} not found", domain_id))?;
                 d_mut.last_settled_height = next_height;
                 settled_domains.push(d_mut.clone());
             }
         }
-        if let Some(store) = &self.storage {
-            for domain in &settled_domains {
-                let _ = store.save_consensus_domain(domain);
-            }
-        }
         Ok(settled_domains)
+
     }
 
-    /// The current per-domain settlement watermarks (`last_settled_height`),
-    /// suitable for embedding in a produced block via
-    /// `compute_settlement_batch_root` so receiving validators can replay the
-    /// exact same bounded settlement batch.
-    fn current_settlement_watermarks(&self) -> BTreeMap<DomainId, u64> {
-        self.domain_registry
-            .domains()
-            .into_iter()
-            .map(|d| (d.id, d.last_settled_height))
-            .collect()
-    }
+
 
     pub fn submit_verified_domain_commitment(
         &mut self,
@@ -1814,6 +1813,7 @@ impl Blockchain {
         &self,
         block: &Block,
         committed_state: &AccountState,
+        settled_domains: Vec<ConsensusDomain>,
     ) -> Result<(), String> {
         if let Some(ref store) = self.storage {
             let mut accounts_to_save = Vec::new();
@@ -1833,6 +1833,7 @@ impl Blockchain {
                 global_headers: self.global_headers.clone(),
                 bridge_state: Some(self.bridge_state.clone()),
                 accounts: accounts_to_save,
+                settled_domains,
             };
 
             let write_start = std::time::Instant::now();
@@ -1863,10 +1864,25 @@ impl Blockchain {
 
     pub fn produce_block(&mut self, producer_address: Address) -> Option<Block> {
         let round_start = std::time::Instant::now();
-        if let Err(e) = self.settle_pending_domain_commitments() {
-            tracing::error!("Failed to settle pending domain commitments: {}", e);
-            return None;
-        }
+        
+        let targets: BTreeMap<DomainId, u64> = self
+            .domain_registry
+            .domains()
+            .into_iter()
+            .map(|d| (d.id, d.last_committed_height))
+            .collect();
+
+        let mut temp_state = self.state.clone();
+        let mut temp_registry = self.domain_registry.clone();
+
+        let settled_domains = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &targets) {
+            Ok(domains) => domains,
+            Err(e) => {
+                tracing::error!("Failed to settle pending domain commitments: {}", e);
+                return None;
+            }
+        };
+
         let index = self.chain.len() as u64;
         let previous_hash = self
             .chain
@@ -1878,7 +1894,13 @@ impl Blockchain {
         if !self.pending_slashing_evidence.is_empty() {
             block.slashing_evidence = Some(self.pending_slashing_evidence.clone());
         }
-        block.settlement_watermarks = self.current_settlement_watermarks();
+        
+        block.settlement_watermarks = temp_registry
+            .domains()
+            .into_iter()
+            .map(|d| (d.id, d.last_settled_height))
+            .collect();
+            
         block.settlement_batch_root = hex::encode(
             crate::core::block::compute_settlement_batch_root(&block.settlement_watermarks),
         );
@@ -1889,13 +1911,13 @@ impl Blockchain {
 
         if self
             .consensus
-            .preview_block(&mut block, &self.state)
+            .preview_block(&mut block, &temp_state)
             .is_err()
         {
             return None;
         }
 
-        let mut committed_state = match Self::apply_block_effects(&self.state, &block) {
+        let mut committed_state = match Self::apply_block_effects(&temp_state, &block) {
             Ok(state) => state,
             Err(_) => return None,
         };
@@ -1914,12 +1936,12 @@ impl Blockchain {
             .unwrap_or([0u8; 32]);
         block.state_root = committed_state.calculate_state_root();
 
-        if let Err(_e) = self.consensus.prepare_block(&mut block, &self.state) {
+        if let Err(_e) = self.consensus.prepare_block(&mut block, &temp_state) {
             return None;
         }
 
         // Commit durably to database first, ensuring fail-closed security
-        if let Err(e) = self.commit_block_durable(&block, &committed_state) {
+        if let Err(e) = self.commit_block_durable(&block, &committed_state, settled_domains) {
             tracing::error!(
                 "Failed to commit block {} durably: {}. Block production aborted.",
                 block.index,
@@ -1929,6 +1951,7 @@ impl Blockchain {
         }
 
         self.state = committed_state;
+        self.domain_registry = temp_registry;
         self.record_validator_snapshot(self.state.epoch_index);
 
         self.chain.push(block.clone());
@@ -1942,6 +1965,7 @@ impl Blockchain {
                 .record_block(last_block, self.storage.as_ref())
             {
                 warn!("Engine record block error: {}", e);
+
             }
         }
 
@@ -2048,11 +2072,14 @@ impl Blockchain {
         // this block declares (never further, even if we already hold later
         // domain commitments), so this node reaches the same account state
         // the producer did before checking `state_root` below.
-        if let Err(e) = self.replay_settlement_to_watermarks(&block.settlement_watermarks) {
-            return Err(format!("Failed to replay block settlement batch: {}", e));
-        }
-
         let mut temp_state = self.state.clone();
+        let mut temp_registry = self.domain_registry.clone();
+        
+        let settled_domains = match self.replay_settlement_to_watermarks(&mut temp_state, &mut temp_registry, &block.settlement_watermarks) {
+            Ok(domains) => domains,
+            Err(e) => return Err(format!("Failed to replay block settlement batch: {}", e)),
+        };
+
         for (i, tx) in block.transactions.iter().enumerate() {
             if tx.chain_id != block.chain_id {
                 return Err(format!(
@@ -2075,7 +2102,7 @@ impl Blockchain {
             }
         }
 
-        let mut commit_state = Self::apply_block_effects(&self.state, &block)?;
+        let mut commit_state = Self::apply_block_effects(&temp_state, &block)?;
 
         if block.index > 0 {
             commit_state.bridge_root = self.bridge_state.root();
@@ -2101,10 +2128,11 @@ impl Blockchain {
         }
 
         // Commit durably to database first, ensuring fail-closed security
-        self.commit_block_durable(&block, &commit_state)
+        self.commit_block_durable(&block, &commit_state, settled_domains)
             .map_err(|e| format!("Failed to commit block {} durably: {}", block.index, e))?;
 
         self.state = commit_state;
+        self.domain_registry = temp_registry;
         self.record_validator_snapshot(self.state.epoch_index);
         self.mempool.set_min_fee(self.state.base_fee);
 
@@ -2313,7 +2341,7 @@ impl Blockchain {
             };
             for block in &self.chain[fork_point..] {
                 current_state = Self::apply_block_effects(&current_state, block)?;
-                self.commit_block_durable(block, &current_state)?;
+                self.commit_block_durable(block, &current_state, Vec::new()).unwrap();
             }
             if let Some(last) = self.chain.last() {
                 let _ = store.save_last_hash(&last.hash);

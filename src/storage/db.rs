@@ -325,6 +325,14 @@ impl Storage {
             b.insert(key.as_bytes(), val.as_slice());
         }
 
+        // 11. Settled Domains
+        for domain in &batch.settled_domains {
+            let key = format!("DOMAIN:{}", domain.id);
+            let val = encode(domain)?;
+            b.insert(key.as_bytes(), val.as_slice());
+        }
+
+
         // 11. Remove IN_PROGRESS_HEIGHT marker
         b.remove(b"IN_PROGRESS_HEIGHT");
 
@@ -1102,6 +1110,7 @@ mod tests {
             global_headers: vec![],
             bridge_state: None,
             accounts: vec![(addr, account)],
+            settled_domains: Vec::new(),
         };
 
         // 3. Commit it!
