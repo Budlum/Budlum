@@ -28,6 +28,22 @@ A second, independent review pass identified three further findings, closed in v
 
 Test count: 346 → 351. Full detail in `SPECIFICATION.md` §1.6, §3.2.2, §3.3.4.
 
+## 0c. v0.6 Third-Pass Fixes
+
+A third review pass identified seven further findings, closed in v0.6:
+
+| Finding | Fix |
+| --- | --- |
+| A `ValidatorSetSnapshot` inside an untrusted `FinalityProof` was trusted at face value — `FinalityCert::verify` compared `set_hash`/`total_stake` fields against each other, never against the actual validator list, so a spoofed `set_hash` paired with attacker-controlled validators could pass. `verify_pop()` existed but was called nowhere | `ValidatorSetSnapshot::verify_self_consistent()` recomputes `set_hash`/`total_stake` (overflow-checked) from the real validator list and requires strict address ordering (no duplicates); signers must pass PoP and can't use an identity-point key (`src/chain/finality.rs`) |
+| Settlement replay mutated live state/registry directly and persisted domain cursors via separate, error-swallowing writes, independent of whether the rest of block validation succeeded | Replay now runs on temporary state/registry clones; live state is swapped and settled-domain cursors persisted only after `commit_block_durable` succeeds, in the same atomic storage batch as the block (`src/chain/blockchain.rs`, `src/storage/db.rs`, `src/storage/traits.rs`) |
+| Startup unconditionally applied every stored domain commitment regardless of whether it was ever included in a block's settlement; reorg never rebuilt domain-registry settlement cursors and switched in-memory state before durable persistence | Startup, reorg, and snapshot rebuilding all replay through the same watermark-bounded `rebuild_state_and_registry`/`replay_settlement_to_watermarks` path block validation uses; reorg persists the new chain durably before adopting it in memory (`src/chain/blockchain.rs`) |
+| Equivocation/duplicate checks compared raw `domain_block_hash`, so a resubmission with the same block hash but a different `state_root` could be silently treated as a duplicate | Both dedup checks now compare `commitment_payload_hash()`; `settlement_batch_root` covers the ordered payload-hashes of applied commitments; a block can't declare a watermark that regresses a domain's already-settled height (`src/chain/blockchain.rs`, `src/domain/types.rs`) |
+| A block arriving before its required domain commitment(s) was rejected like an invalid block and its sender penalized | A `MissingDomainCommitment:` replay failure queues the block (`pending_blocks`) for automatic retry instead of discarding it; the network layer no longer penalizes the peer for this case (`src/chain/blockchain.rs`, `src/network/node.rs`) |
+| The `hash_to_g1` forgery regression test used an arbitrary wrong scalar instead of the real historical exploit, so it didn't prove the *specific* attack was closed | Test now reconstructs the exact old scalar derivation (SHA3-256 + domain tag) and the real `s₂/s₁` ratio — confirmed to succeed against the old implementation and fail against the current one (`src/chain/finality.rs`) |
+| `GlobalBlockHeader.global_state_root` referenced a block's state root without recording *which* block, so two headers with the same root value but different provenance were indistinguishable | Added `underlying_block_height`/`underlying_block_hash`, both fed into the header's own hash (`src/settlement/global_block.rs`, `src/chain/blockchain.rs`) |
+
+Test count: 351 → 359. Full detail in `SPECIFICATION.md` §1.7–1.9, §3.2.4–3.2.5, §3.5, §6.4.
+
 ## 1. Implemented Protections
 
 | Area | Current behavior |
@@ -41,7 +57,7 @@ Test count: 346 → 351. Full detail in `SPECIFICATION.md` §1.6, §3.2.2, §3.3
 | RPC | Separate public and operator HTTP listeners. Public: API-key auth, CORS allowlists, per-IP rate limiting, trusted-proxy validation, 10MB body limit, 500 max connections. Operator: localhost-only, no auth, 50MB body limit. `bud_health` and `bud_nodeInfo` endpoints. |
 | CI | GitHub Actions pins Rust `1.94.0`, checks formatting, runs `cargo check`, denies Clippy warnings, executes workspace tests, and builds `--release --locked`. |
 | PKCS#11 | `ConsensusSigner` trait + `Pkcs11Signer` adapter (via `cryptoki`) + `KeyPairSigner` local fallback. `ConsensusEngine` trait exposes `fn signer()`. Block signing uses HSM when configured, with local file fallback. |
-| BLS Finality | `BlsKeypair` in `ValidatorKeys` with new `sign_bls()` / `verify_bls_sig()` primitives. `ConsensusEngine::bls_secret_key()` exposed through PoS engine. Validators produce BLS-signed prevote/precommit messages. Periodic auto-precommit triggers when prevote quorum is reached. `FinalityCert` verification via BLS pairing. `hash_to_g1` uses real RFC 9380 hash-to-curve (v0.5), not a forgeable hash-then-multiply construction. |
+| BLS Finality | `BlsKeypair` in `ValidatorKeys` with new `sign_bls()` / `verify_bls_sig()` primitives. `ConsensusEngine::bls_secret_key()` exposed through PoS engine. Validators produce BLS-signed prevote/precommit messages. Periodic auto-precommit triggers when prevote quorum is reached. `FinalityCert` verification via BLS pairing. `hash_to_g1` uses real RFC 9380 hash-to-curve (v0.5), not a forgeable hash-then-multiply construction. `ValidatorSetSnapshot` self-consistency, PoP, and identity-key checks (v0.6) close a snapshot-spoofing forgery in domain-level quorum certs. |
 | P2P Hardening | Persistent node identity via `p2p_identity_file` (load-or-generate pattern). Durable peer bans persisted to JSON every 5 minutes and reloaded on startup. mDNS policy honors per-network `mdns_enabled` flag. DNS seed resolution via `resolve_dns_seeds()`. |
 
 ## 2. Staged or Partial Work
@@ -78,7 +94,7 @@ nix develop --command cargo build --release --locked
 git diff --check
 ```
 
-Current: **351 tests.** `cargo clippy -D warnings` passes on the CI-pinned Rust 1.94.0 toolchain; a newer local toolchain may surface new lints as clippy itself evolves.
+Current: **359 tests.** `cargo clippy -D warnings` passes on the CI-pinned Rust 1.94.0 toolchain; a newer local toolchain may surface new lints as clippy itself evolves.
 
 ## 5. What Remains for Mainnet v1
 
@@ -88,3 +104,5 @@ Current: **351 tests.** `cargo clippy -D warnings` passes on the CI-pinned Rust 
 - A settlement-level BFT round so `seal_global_header` requires a fresh quorum certificate per seal, not just a well-formed header (see §0)
 - A real `ZkFinalityAdapter` (an actual finality-proving circuit, not a non-zero-hash check)
 - A genuine external-chain PoW light client (the v0.4 header verification checks a Budlum-defined header format, not a real foreign chain's header history)
+- Active peer solicitation for missing domain commitments: the v0.6 retry queue (§0c) stops penalizing a peer for gossip arriving out of order and retries automatically as commitments arrive, but does not yet send a dedicated "give me commitment X" request — it relies on the commitment eventually arriving via ordinary gossip.
+- On-chain BLS key/PoP registration for Budlum's own validators: no production code path currently writes a real `bls_public_key`/`pop_signature` onto an `AccountState` validator record (only test setups do), so Budlum's own chain-level BLS checkpoint finality — as distinct from the domain-level quorum certs hardened in §0c — has no real registration flow for a validator's BLS key yet. Discovered while hardening §0c's PoP checks; out of scope for this pass.

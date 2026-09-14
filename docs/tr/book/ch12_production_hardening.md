@@ -28,6 +28,22 @@ Bağımsız bir ikinci inceleme turu üç bulgu daha tespit etti, v0.5'te kapat�
 
 Test sayısı: 346 → 351. Tam detay `SPECIFICATION.md` §1.6, §3.2.2, §3.3.4'te.
 
+## 0c. v0.6 Üçüncü Tur Düzeltmeleri
+
+Üçüncü bir inceleme turu yedi bulgu daha tespit etti, v0.6'da kapatıldı:
+
+| Bulgu | Düzeltme |
+| --- | --- |
+| Güvenilmeyen bir `FinalityProof` içindeki `ValidatorSetSnapshot` olduğu gibi güveniliyordu — `FinalityCert::verify`, `set_hash`/`total_stake` alanlarını birbirleriyle karşılaştırıyordu, gerçek validator listesiyle değil; bu yüzden sahte bir `set_hash`, saldırgan kontrolündeki validator'larla eşleştirilip geçebiliyordu. `verify_pop()` vardı ama hiçbir yerde çağrılmıyordu | `ValidatorSetSnapshot::verify_self_consistent()`, `set_hash`/`total_stake`'i (overflow kontrollü) gerçek validator listesinden yeniden hesaplıyor ve kesin adres sıralaması (tekrarsız) zorunlu kılıyor; imzalayanlar PoP'tan geçmeli ve identity-point anahtar kullanamaz (`src/chain/finality.rs`) |
+| Settlement replay canlı state/registry'yi doğrudan değiştiriyor ve domain cursor'larını ayrı, hata-yutan yazımlarla kaydediyordu — blok validasyonunun geri kalanı başarılı olsun ya da olmasın | Replay artık geçici state/registry kopyaları üzerinde çalışıyor; canlı state ve settle edilmiş domain cursor'ları yalnızca `commit_block_durable` başarılı olduktan sonra, bloğun aynı atomik storage batch'i içinde kaydediliyor (`src/chain/blockchain.rs`, `src/storage/db.rs`, `src/storage/traits.rs`) |
+| Startup, hiçbir bloğa dahil edilmemiş olsa bile kayıtlı her domain commitment'ı koşulsuz uyguluyordu; reorg domain-registry settlement cursor'larını hiç yeniden kurmuyordu ve durable persistence'tan önce in-memory state'i değiştiriyordu | Startup, reorg ve snapshot yeniden kurma artık blok validasyonunun kullandığı aynı watermark-sınırlı `rebuild_state_and_registry`/`replay_settlement_to_watermarks` yolunu kullanıyor; reorg yeni zinciri in-memory'ye almadan önce durable olarak persist ediyor (`src/chain/blockchain.rs`) |
+| Equivocation/tekrar kontrolleri ham `domain_block_hash`'i karşılaştırıyordu, bu yüzden aynı block hash'e ama farklı `state_root`'a sahip bir resubmission sessizce duplicate sayılabiliyordu | Her iki dedup kontrolü de artık `commitment_payload_hash()`'i karşılaştırıyor; `settlement_batch_root` uygulanan commitment'ların sıralı payload-hash'lerini kapsıyor; bir blok, bir domain'in zaten settle edilmiş height'ının altına gerileyen bir watermark iddia edemiyor (`src/chain/blockchain.rs`, `src/domain/types.rs`) |
+| Gereken domain commitment'ı henüz gelmemiş bir blok, geçersiz bir blok gibi reddediliyor ve gönderen peer cezalandırılıyordu | `MissingDomainCommitment:` replay hatası bloğu atmak yerine kuyruğa alıyor (`pending_blocks`) ve otomatik olarak yeniden deniyor; network katmanı bu durum için artık peer'ı cezalandırmıyor (`src/chain/blockchain.rs`, `src/network/node.rs`) |
+| `hash_to_g1` forgery regresyon testi gerçek tarihi exploit yerine keyfi yanlış bir skaler kullanıyordu, bu yüzden *o spesifik* saldırının kapatıldığını kanıtlamıyordu | Test artık tam eski skaler türetimini (SHA3-256 + domain tag) ve gerçek `s₂/s₁` oranını yeniden üretiyor — eski implementasyona karşı başarılı, güncel implementasyona karşı başarısız olduğu doğrulandı (`src/chain/finality.rs`) |
+| `GlobalBlockHeader.global_state_root`, hangi bloğa ait olduğunu kaydetmeden bir bloğun state root'unu referans alıyordu, bu yüzden aynı root değerine ama farklı kaynağa sahip iki header ayırt edilemiyordu | `underlying_block_height`/`underlying_block_hash` eklendi, ikisi de header'ın kendi hash'ine besleniyor (`src/settlement/global_block.rs`, `src/chain/blockchain.rs`) |
+
+Test sayısı: 351 → 359. Tam detay `SPECIFICATION.md` §1.7–1.9, §3.2.4–3.2.5, §3.5, §6.4'te.
+
 ## 1. Uygulanan Korumalar
 
 | Alan | Güncel davranış |
@@ -41,7 +57,7 @@ Test sayısı: 346 → 351. Tam detay `SPECIFICATION.md` §1.6, §3.2.2, §3.3.4
 | RPC | Ayrı public ve operator HTTP listener'ları. Public: API-key auth, CORS allowlist, per-IP rate limiting, trusted-proxy doğrulama, 10MB body limiti, 500 max bağlantı. Operator: yalnızca localhost, auth yok, 50MB body limiti. `bud_health` ve `bud_nodeInfo` endpoint'leri. |
 | CI | GitHub Actions Rust `1.94.0` sürümünü pinler; format, `cargo check`, warning'leri reddeden Clippy, workspace testleri ve `--release --locked` build çalıştırır. |
 | PKCS#11 | `ConsensusSigner` trait + `Pkcs11Signer` adaptörü (`cryptoki` ile) + `KeyPairSigner` local fallback. `ConsensusEngine` trait `fn signer()` sunar. Blok imzalama HSM varsa onu, yoksa local dosyayı kullanır. |
-| BLS Finality | `ValidatorKeys` içinde yeni `sign_bls()` / `verify_bls_sig()` primitifleriyle `BlsKeypair`. `ConsensusEngine::bls_secret_key()`, PoS engine üzerinden açığa çıkar. Validatörler BLS imzalı prevote/precommit mesajları üretir. Prevote quorum'a ulaşıldığında periyodik auto-precommit tetiklenir. `FinalityCert` doğrulaması BLS pairing ile yapılır. `hash_to_g1` artık gerçek RFC 9380 hash-to-curve kullanıyor (v0.5), sahteciliğe açık hash-sonra-çarp yapısı değil. |
+| BLS Finality | `ValidatorKeys` içinde yeni `sign_bls()` / `verify_bls_sig()` primitifleriyle `BlsKeypair`. `ConsensusEngine::bls_secret_key()`, PoS engine üzerinden açığa çıkar. Validatörler BLS imzalı prevote/precommit mesajları üretir. Prevote quorum'a ulaşıldığında periyodik auto-precommit tetiklenir. `FinalityCert` doğrulaması BLS pairing ile yapılır. `hash_to_g1` artık gerçek RFC 9380 hash-to-curve kullanıyor (v0.5), sahteciliğe açık hash-sonra-çarp yapısı değil. `ValidatorSetSnapshot` self-consistency, PoP ve identity-key kontrolleri (v0.6) domain-seviyeli quorum sertifikalarındaki bir snapshot-spoofing sahteciliğini kapatıyor. |
 | P2P Hardening | `p2p_identity_file` üzerinden kalıcı node kimliği (yükle-yoksa-üret deseni). Kalıcı peer ban'lar her 5 dakikada bir JSON'a yazılır ve başlangıçta yeniden yüklenir. mDNS politikası ağ bazlı `mdns_enabled` bayrağına uyar. `resolve_dns_seeds()` üzerinden DNS seed çözümlemesi. |
 
 ## 2. Aşamalı veya Kısmi İşler
@@ -78,7 +94,7 @@ nix develop --command cargo build --release --locked
 git diff --check
 ```
 
-Güncel durum: **351 test.** `cargo clippy -D warnings`, CI'ın pinlediği Rust 1.94.0 toolchain'inde geçiyor; daha yeni bir yerel toolchain'de clippy'nin kendisi geliştiği için yeni uyarılar çıkabilir. Kritik adapter'lar tamamlanmadığı sürece Mainnet profili bilinçli olarak fail-closed davranır.
+Güncel durum: **359 test.** `cargo clippy -D warnings`, CI'ın pinlediği Rust 1.94.0 toolchain'inde geçiyor; daha yeni bir yerel toolchain'de clippy'nin kendisi geliştiği için yeni uyarılar çıkabilir. Kritik adapter'lar tamamlanmadığı sürece Mainnet profili bilinçli olarak fail-closed davranır.
 
 ## 5. Mainnet v1 İçin Kalanlar
 
@@ -88,3 +104,5 @@ Güncel durum: **351 test.** `cargo clippy -D warnings`, CI'ın pinlediği Rust 
 - Her seal işleminin taze bir quorum sertifikası taşımasını zorunlu kılan settlement-seviyeli bir BFT round'u (`seal_global_header` şu an sadece iyi biçimlendirilmiş bir header istiyor — bkz. §0)
 - Gerçek bir `ZkFinalityAdapter` (sıfır-olmayan hash kontrolü değil, gerçek bir finality-proving devresi)
 - Gerçek bir foreign-chain PoW light client'ı (v0.4'teki header doğrulaması Budlum'un tanımladığı bir formatı kontrol ediyor, gerçek bir foreign chain'in header geçmişini değil)
+- Eksik domain commitment'lar için aktif peer talebi: v0.6'daki retry kuyruğu (§0c) sıra dışı gelen gossip için peer cezalandırmasını durduruyor ve commitment'lar geldikçe otomatik yeniden deniyor, ama henüz özel bir "bana X commitment'ını ver" isteği göndermiyor — commitment'ın normal gossip yoluyla eninde sonunda gelmesine güveniyor.
+- Budlum'un kendi validator'ları için on-chain BLS anahtar/PoP kaydı: hiçbir production kod yolu bir `AccountState` validator kaydına gerçek bir `bls_public_key`/`pop_signature` yazmıyor (yalnızca test setup'ları yazıyor) — bu yüzden Budlum'un kendi chain-seviyeli BLS checkpoint finality'sinin (§0c'de sertleştirilen domain-seviyeli quorum sertifikalarından ayrı olarak) gerçek validator'lar için hâlâ bir kayıt akışı yok. §0c'nin PoP kontrollerini sertleştirirken keşfedildi; bu tur kapsamı dışında.
